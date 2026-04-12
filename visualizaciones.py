@@ -21,19 +21,22 @@ st.markdown("""
     }
     footer {visibility: hidden;}
     .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
+        padding-top: 1.5rem;
+        padding-bottom: 1.5rem;
+    }
+    /* Estilo para que las métricas se vean bien en móvil */
+    [data-testid="stMetricValue"] {
+        font-size: 1.8rem !important;
     }
     </style>
     """, unsafe_allow_html=True)
 
 # --- CONFIGURACIÓN DE GRÁFICOS FIJOS PARA MÓVIL ---
-# Esta configuración desactiva zoom, arrastre y barra de herramientas
 CONFIG_FIJA = {
-    'staticPlot': False,  # Permite tooltips (ver info al tocar), pero no interacción
+    'staticPlot': False, 
     'scrollZoom': False,
     'doubleClick': 'reset',
-    'displayModeBar': False, # Oculta la barra de herramientas
+    'displayModeBar': False,
     'showAxisDragHandles': False,
     'showAxisRangeEntryBoxes': False
 }
@@ -69,7 +72,7 @@ try:
 except:
     equipos_db = []
 
-st.sidebar.title("Panel de Control")
+st.sidebar.title("⚽ Panel de Control")
 st.sidebar.markdown("---")
 
 try:
@@ -90,21 +93,21 @@ try:
     away_team = corregir_nombre_equipo(away_raw.strip(), equipos_db)
 
 except Exception as e:
-    st.error("❌ No se encontró la tabla de la jornada. Corre 'actualizar_jornada.py' primero.")
+    st.error("❌ No se encontró la tabla de la jornada.")
     st.stop()
 
 # --- TÍTULO PRINCIPAL ---
-st.title(f"🏆 {liga_sel}: {home_team} vs {away_team}")
+st.title(f"{home_team} vs {away_team}")
 if home_raw != home_team or away_raw != away_team:
-    st.caption(f"🔧 Normalización: {home_raw} ➔ {home_team} | {away_raw} ➔ {away_team}")
+    st.caption(f"🔧 Match: {home_raw}➔{home_team} | {away_raw}➔{away_team}")
 
-col1, col2 = st.columns([1.2, 1])
+col1, col2 = st.columns([1.1, 1])
 
 with col1:
-    st.subheader("Historial Directo (H2H)")
+    st.subheader("📊 Historial H2H")
     q_h2h = f"""
-        SELECT Date, HomeTeam as Local, AwayTeam as Visita, 
-               FTHG as [Goles L], FTAG as [Goles V], FTR as Resultado 
+        SELECT Date, HomeTeam as L, AwayTeam as V, 
+               FTHG as [GL], FTAG as [GV], FTR as R 
         FROM historial_multiliga_ml 
         WHERE (HomeTeam='{home_team}' AND AwayTeam='{away_team}') 
            OR (HomeTeam='{away_team}' AND AwayTeam='{home_team}') 
@@ -113,17 +116,14 @@ with col1:
     df_h2h = pd.read_sql(q_h2h, conn)
     
     if not df_h2h.empty:
-        df_h2h['Date'] = pd.to_datetime(df_h2h['Date']).dt.strftime('%d/%m/%Y')
-        mapa_resultados = {'H': 'Local', 'A': 'Visita', 'D': 'Empate'}
-        df_h2h['Resultado'] = df_h2h['Resultado'].map(mapa_resultados)
-        df_h2h = df_h2h.rename(columns={'Date': 'Fecha'})
+        df_h2h['Date'] = pd.to_datetime(df_h2h['Date']).dt.strftime('%d/%m/%y')
         st.dataframe(df_h2h, use_container_width=True, hide_index=True)
     else:
-        st.info(f"Sin enfrentamientos previos registrados.")
+        st.info(f"Sin registros previos.")
 
-    st.subheader("Tendencia de Goles")
+    st.subheader("📈 Tendencia de Goles")
     q_trend = f"""
-        SELECT FTHG as [Goles Local], FTAG as [Goles Visita] FROM historial_multiliga_ml 
+        SELECT FTHG as [Local], FTAG as [Visita] FROM historial_multiliga_ml 
         WHERE HomeTeam='{home_team}' OR AwayTeam='{home_team}' 
         ORDER BY Date DESC LIMIT 10
     """
@@ -131,7 +131,7 @@ with col1:
     st.line_chart(df_trend)
 
 with col2:
-    st.subheader("Análisis Predictivo")
+    st.subheader("🤖 IA Predictiva")
     model = cargar_modelo()
     
     if model:
@@ -152,74 +152,68 @@ with col2:
             names=['Local', 'Empate', 'Visita'],
             color=['Local', 'Empate', 'Visita'],
             color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'},
-            hole=0.4
+            hole=0.45
         )
-        # Aplicamos dragmode=False y la configuración fija
-        fig_pie.update_layout(dragmode=False)
+        fig_pie.update_layout(dragmode=False, margin=dict(t=0, b=0, l=0, r=0))
         st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
 
-        st.markdown("#### **Doble Oportunidad**")
-        c1, c2 = st.columns(2)
-        c1.metric("1X (Local o Empate)", f"{(p_loc + p_emp):.1%}")
-        c2.metric("X2 (Visita o Empate)", f"{(p_vis + p_emp):.1%}")
-
+        st.markdown("---")
+        # MERCADO DE GOLES DESTACADO
         promedio_goles = (stats_h['FTHG'] + stats_h['FTAG'] + stats_a['FTHG'] + stats_a['FTAG']) / 2
         prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
-        st.progress(prob_over, text=f"Probabilidad Over 2.5: {prob_over:.1%}")
+        
+        c_g1, c_g2 = st.columns(2)
+        c_g1.metric("Goles Exp.", f"{promedio_goles:.2f}")
+        c_g2.metric("Prob. Over 2.5", f"{prob_over:.1%}")
+        st.progress(prob_over)
 
-        # --- AÑADIMOS LAS PROYECCIONES DE JUEGO AQUÍ ---
-        st.markdown("#### **Proyecciones de Juego**")
-        c_proj1, c_proj2 = st.columns(2)
-        with c_proj1:
-            st.caption("Tiros al Arco esperados")
-            st.write(f"L: {stats_h['HST']:.1f} | V: {stats_a['AST']:.1f}")
-        with c_proj2:
-            st.caption("Córners esperados")
-            st.write(f"L: {stats_h['HC']:.1f} | V: {stats_a['AC']:.1f}")
+        # PROYECCIONES DE JUEGO
+        st.markdown("#### **🎯 Proyecciones**")
+        cp1, cp2 = st.columns(2)
+        with cp1:
+            st.caption("Tiros al Arco")
+            st.write(f"L: **{stats_h['HST']:.1f}** | V: **{stats_a['AST']:.1f}**")
+        with cp2:
+            st.caption("Córners")
+            st.write(f"L: **{stats_h['HC']:.1f}** | V: **{stats_a['AC']:.1f}**")
 
 # --- SECCIÓN DE DISCIPLINA ---
 st.divider()
-st.subheader("Análisis de Disciplina y Tarjetas")
-col_disc1, col_disc2 = st.columns(2)
+st.subheader("🟨 Disciplina y Tarjetas")
+cd1, cd2 = st.columns(2)
 
-with col_disc1:
-    st.markdown("#### **Promedio Amarillas**")
-    c1, c2 = st.columns(2)
-    c1.metric(f"Media {home_team}", f"{stats_h['HY']:.1f}")
-    c2.metric(f"Media {away_team}", f"{stats_a['AY']:.1f}")
+with cd1:
+    st.markdown("#### **Media Amarillas**")
+    m1, m2 = st.columns(2)
+    m1.metric(f"{home_team[:10]}", f"{stats_h['HY']:.1f}")
+    m2.metric(f"{away_team[:10]}", f"{stats_a['AY']:.1f}")
 
-with col_disc2:
-    st.markdown("#### **Tarjetas en últimos H2H**")
-    q_cards_h2h = f"""
-        SELECT Date, (HY + AY) as Total_Amarillas
+with cd2:
+    q_cards = f"""
+        SELECT Date, (HY + AY) as Total
         FROM historial_multiliga_ml 
         WHERE (HomeTeam = '{home_team}' AND AwayTeam = '{away_team}') 
            OR (HomeTeam = '{away_team}' AND AwayTeam = '{home_team}')
         ORDER BY Date DESC LIMIT 5
     """
-    df_cards_h2h = pd.read_sql(q_cards_h2h, conn)
-    
-    if not df_cards_h2h.empty:
-        fig_cards = px.bar(df_cards_h2h, x='Date', y='Total_Amarillas', 
-                           color_discrete_sequence=['#f1c40f'])
-        # Aplicamos dragmode=False y la configuración fija
+    df_cards = pd.read_sql(q_cards, conn)
+    if not df_cards.empty:
+        fig_cards = px.bar(df_cards, x='Date', y='Total', color_discrete_sequence=['#f1c40f'])
         fig_cards.update_layout(dragmode=False, xaxis={'fixedrange': True}, yaxis={'fixedrange': True})
         st.plotly_chart(fig_cards, use_container_width=True, config=CONFIG_FIJA)
     else:
-        st.info("Sin registros de tarjetas previos.")
+        st.info("Sin datos de tarjetas.")
 
 # --- SECCIÓN INFERIOR: PATRONES ---
 st.divider()
-st.subheader("Patrones Relevantes del Modelo")
+st.subheader("🧬 Peso de Variables (IA)")
 if model:
     importancia = pd.DataFrame({
         'Feature': ['Goles L', 'Goles V', 'Tiros L', 'Tiros V', 'ST L', 'ST V', 'Córners L', 'Córners V', 'Amarillas L', 'Amarillas V'],
         'Weight': model.feature_importances_
     }).sort_values(by='Weight', ascending=True)
     
-    fig_imp = px.bar(importancia, x='Weight', y='Feature', orientation='h', 
-                     color_discrete_sequence=['#3498db'])
-    # Aplicamos dragmode=False y la configuración fija, además de fijar rangos de ejes
+    fig_imp = px.bar(importancia, x='Weight', y='Feature', orientation='h', color_discrete_sequence=['#3498db'])
     fig_imp.update_layout(dragmode=False, xaxis={'fixedrange': True}, yaxis={'fixedrange': True})
     st.plotly_chart(fig_imp, use_container_width=True, config=CONFIG_FIJA)
 
