@@ -1,13 +1,8 @@
 streamlit
-numpy
-os
-requests
 pandas
-sqlite3
 joblib
+plotly
+numpy
 thefuzz
-plotly.express
-time
-datetime
-sklearn.ensemble
-sklearn.model_selection
+python-Levenshtein
+scikit-learn
