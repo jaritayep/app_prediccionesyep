@@ -11,12 +11,23 @@ from thefuzz import process, fuzz
 st.set_page_config(layout="wide", page_title="AI Betting Lab Pro", page_icon="⚽")
 DB_NAME = 'database_partidos.db'
 MODEL_PATH = "modelo_ia.pkl"
+# --- BLOQUE PARA APARIENCIA DE APP MÓVIL (Versión Corregida) ---
 st.markdown("""
     <style>
-    /* Ocultar el menú de Streamlit y el pie de página para que parezca App nativa */
-    #MainMenu {visibility: hidden;}
+    /* Ocultamos la línea roja superior y el logo, pero dejamos el botón del menú */
+    [data-testid="stHeader"] {
+        background-color: rgba(0,0,0,0);
+        color: white;
+    }
+    
+    /* Ocultar el pie de página (Made with Streamlit) */
     footer {visibility: hidden;}
-    header {visibility: hidden;}
+
+    /* Ajuste de márgenes para que no se vea cortado en el celu */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
     </style>
     """, unsafe_allow_html=True)
 
