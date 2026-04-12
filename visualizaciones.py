@@ -171,7 +171,7 @@ with col2:
             color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'},
             hole=0.4
         )
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, use_container_width=True, config={'staticPlot': False, 'scrollZoom': False, 'displayModeBar': False})
 
         st.markdown("#### **Doble Oportunidad**")
         c1, c2 = st.columns(2)
@@ -222,7 +222,13 @@ with col_disc2:
         fig_cards = px.bar(df_cards_h2h, x='Date', y='Total_Amarillas', 
                            title="Intensidad de Amarillas en H2H",
                            color_discrete_sequence=['#f1c40f'])
-        st.plotly_chart(fig_cards, use_container_width=True)
+        fig.update_layout(dragmode=False)
+        st.plotly_chart(fig, use_container_width=True, config={
+    'staticPlot': False, 
+    'displayModeBar': False, 
+    'scrollZoom': False,
+    'doubleClick': 'reset'
+})
     else:
         st.info("Sin registros de tarjetas previos.")
 
