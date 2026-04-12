@@ -27,6 +27,17 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# --- CONFIGURACIÓN DE GRÁFICOS FIJOS PARA MÓVIL ---
+# Esta configuración desactiva zoom, arrastre y barra de herramientas
+CONFIG_FIJA = {
+    'staticPlot': False,  # Permite tooltips (ver info al tocar), pero no interacción
+    'scrollZoom': False,
+    'doubleClick': 'reset',
+    'displayModeBar': False, # Oculta la barra de herramientas
+    'showAxisDragHandles': False,
+    'showAxisRangeEntryBoxes': False
+}
+
 # --- FUNCIONES AUXILIARES ---
 def corregir_nombre_equipo(nombre_api, lista_db):
     if not lista_db: return nombre_api
@@ -143,8 +154,9 @@ with col2:
             color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'},
             hole=0.4
         )
+        # Aplicamos dragmode=False y la configuración fija
         fig_pie.update_layout(dragmode=False)
-        st.plotly_chart(fig_pie, use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
 
         st.markdown("#### **Doble Oportunidad**")
         c1, c2 = st.columns(2)
@@ -154,6 +166,16 @@ with col2:
         promedio_goles = (stats_h['FTHG'] + stats_h['FTAG'] + stats_a['FTHG'] + stats_a['FTAG']) / 2
         prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
         st.progress(prob_over, text=f"Probabilidad Over 2.5: {prob_over:.1%}")
+
+        # --- AÑADIMOS LAS PROYECCIONES DE JUEGO AQUÍ ---
+        st.markdown("#### **Proyecciones de Juego**")
+        c_proj1, c_proj2 = st.columns(2)
+        with c_proj1:
+            st.caption("Tiros al Arco esperados")
+            st.write(f"L: {stats_h['HST']:.1f} | V: {stats_a['AST']:.1f}")
+        with c_proj2:
+            st.caption("Córners esperados")
+            st.write(f"L: {stats_h['HC']:.1f} | V: {stats_a['AC']:.1f}")
 
 # --- SECCIÓN DE DISCIPLINA ---
 st.divider()
@@ -180,8 +202,9 @@ with col_disc2:
     if not df_cards_h2h.empty:
         fig_cards = px.bar(df_cards_h2h, x='Date', y='Total_Amarillas', 
                            color_discrete_sequence=['#f1c40f'])
-        fig_cards.update_layout(dragmode=False)
-        st.plotly_chart(fig_cards, use_container_width=True, config={'displayModeBar': False})
+        # Aplicamos dragmode=False y la configuración fija
+        fig_cards.update_layout(dragmode=False, xaxis={'fixedrange': True}, yaxis={'fixedrange': True})
+        st.plotly_chart(fig_cards, use_container_width=True, config=CONFIG_FIJA)
     else:
         st.info("Sin registros de tarjetas previos.")
 
@@ -196,8 +219,9 @@ if model:
     
     fig_imp = px.bar(importancia, x='Weight', y='Feature', orientation='h', 
                      color_discrete_sequence=['#3498db'])
-    fig_imp.update_layout(dragmode=False)
-    st.plotly_chart(fig_imp, use_container_width=True, config={'displayModeBar': False})
+    # Aplicamos dragmode=False y la configuración fija, además de fijar rangos de ejes
+    fig_imp.update_layout(dragmode=False, xaxis={'fixedrange': True}, yaxis={'fixedrange': True})
+    st.plotly_chart(fig_imp, use_container_width=True, config=CONFIG_FIJA)
 
 conn.close()
 # ABRIR CMD Y "cd C:\Users\sealj\OneDrive\Escritorio\proyecto_app" 
