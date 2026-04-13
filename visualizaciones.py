@@ -212,11 +212,9 @@ elif menu == "BetBuilder Simulator":
         fechas_bb = sorted(df_j['Date'].unique())
         f_sel = st.selectbox("Día", [d.strftime('%A %d/%m') for d in pd.to_datetime(fechas_bb)], key="fecha_bb")
         
-        # Filtramos partidos de ese día específico
         partidos_f = df_j[df_j['Date'].dt.strftime('%A %d/%m') == f_sel]
         
         if not partidos_f.empty:
-            # CORRECCIÓN AQUÍ: Usamos partidos_f en ambos lados
             partido_sel = st.selectbox("Seleccionar Partido", partidos_f['Local'] + " vs " + partidos_f['Visita'], key="partido_bb")
             
             h_team, v_team = partido_sel.split(" vs ")
@@ -228,25 +226,33 @@ elif menu == "BetBuilder Simulator":
                 "Córners: Más de 8.5", "Córners: Más de 10.5",
                 "Tarjetas: Más de 3.5"
             ])
+
+            # --- Lógica de Probabilidades con Poisson ---
             prob_pick = 0.5
-            # Cálculo de Probabilidad (Lógica Sigmoide)
+            
             if "Goles" in mercado:
-            promedio = (s_h['FTHG'] + s_h['FTAG'] + s_v['FTHG'] + s_v['FTAG']) / 2
-            umbral = 2.5 if "2.5" in mercado else 1.5
-            prob_pick = prob_over(promedio, umbral)
+                promedio = (s_h['FTHG'] + s_h['FTAG'] + s_v['FTHG'] + s_v['FTAG']) / 2
+                umbral = 2.5 if "2.5" in mercado else 1.5
+                prob_pick = prob_over(promedio, umbral)
 
             elif "Córners" in mercado:
-            promedio = s_h['HC'] + s_v['AC']
-            umbral = 10.5 if "10.5" in mercado else 8.5
-            # Poisson es perfecto para córners
-            prob_pick = prob_over(promedio, umbral)
+                promedio = s_h['HC'] + s_v['AC']
+                umbral = 10.5 if "10.5" in mercado else 8.5
+                prob_pick = prob_over(promedio, umbral)
 
             elif "Tarjetas" in mercado:
-            promedio = s_h['HY'] + s_v['AY']
-            prob_pick = prob_over(promedio, 3.5)
+                promedio = s_h['HY'] + s_v['AY']
+                prob_pick = prob_over(promedio, 3.5)
+
+            # Ajuste final de realismo (Vig 5%)
+            prob_pick = max(0.05, min(0.95, prob_pick * 0.95))
 
             if st.button("Añadir a la Combinada"):
-                st.session_state.mi_combinada.append({"partido": partido_sel, "mercado": mercado, "prob": prob_pick})
+                st.session_state.mi_combinada.append({
+                    "partido": partido_sel, 
+                    "mercado": mercado, 
+                    "prob": prob_pick
+                })
                 st.rerun()
         else:
             st.warning("No hay partidos programados para este día.")
@@ -262,7 +268,9 @@ elif menu == "BetBuilder Simulator":
             st.divider()
             c1, c2 = st.columns(2)
             c1.metric("Prob. Total", f"{prob_total:.1%}")
-            c2.metric("Cuota Justa", f"{1/prob_total:.2f}" if prob_total > 0 else "0")
+            # Evitar división por cero
+            cuota_val = 1/prob_total if prob_total > 0 else 0
+            c2.metric("Cuota Justa", f"{cuota_val:.2f}")
             
             if st.button("Limpiar Cupón"):
                 st.session_state.mi_combinada = []
