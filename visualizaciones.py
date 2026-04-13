@@ -199,9 +199,11 @@ elif menu == "BetBuilder Simulator":
     st.title("🛠️ AI BetBuilder Pro")
     st.markdown("Construye tu combinada seleccionando partidos reales de la jornada.")
 
+    # Cargar datos para los selectores
     df_j = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
     df_j['Date'] = pd.to_datetime(df_j['Date']).dt.normalize()
     
+    # Mantener los picks en la sesión
     if 'mi_combinada' not in st.session_state:
         st.session_state.mi_combinada = []
 
@@ -210,42 +212,50 @@ elif menu == "BetBuilder Simulator":
     with col_izq:
         st.subheader("➕ Añadir Pick")
         fechas_bb = sorted(df_j['Date'].unique())
-        f_sel = st.selectbox("Día", [d.strftime('%A %d/%m') for d in pd.to_datetime(fechas_bb)], key="fecha_bb")
+        f_display = [d.strftime('%A %d/%m') for d in pd.to_datetime(fechas_bb)]
+        f_sel = st.selectbox("📅 Día", f_display, key="fecha_bb")
         
+        # Filtrar partidos por la fecha seleccionada
         partidos_f = df_j[df_j['Date'].dt.strftime('%A %d/%m') == f_sel]
         
         if not partidos_f.empty:
-            partido_sel = st.selectbox("Seleccionar Partido", partidos_f['Local'] + " vs " + partidos_f['Visita'], key="partido_bb")
+            partido_sel = st.selectbox("🏟️ Seleccionar Partido", 
+                                       partidos_f['Local'] + " vs " + partidos_f['Visita'], 
+                                       key="partido_bb")
             
             h_team, v_team = partido_sel.split(" vs ")
             s_h = get_recent_stats(h_team, conn)
             s_v = get_recent_stats(v_team, conn)
             
-            mercado = st.selectbox("Mercado", [
+            mercado = st.selectbox("🎯 Mercado", [
                 "Goles: Más de 1.5", "Goles: Más de 2.5", 
                 "Córners: Más de 8.5", "Córners: Más de 10.5",
                 "Tarjetas: Más de 3.5"
             ])
 
-            # --- Lógica de Probabilidades con Poisson ---
+            # --- LÓGICA DE PROBABILIDADES AJUSTADA ---
             prob_pick = 0.5
             
             if "Goles" in mercado:
                 promedio = (s_h['FTHG'] + s_h['FTAG'] + s_v['FTHG'] + s_v['FTAG']) / 2
                 umbral = 2.5 if "2.5" in mercado else 1.5
-                prob_pick = prob_over(promedio, umbral)
+                # Sigmoide con suavizado 1.2
+                prob_pick = 1 / (1 + np.exp(-(promedio - umbral) / 1.2))
 
             elif "Córners" in mercado:
                 promedio = s_h['HC'] + s_v['AC']
                 umbral = 10.5 if "10.5" in mercado else 8.5
-                prob_pick = prob_over(promedio, umbral)
+                # Sigmoide con suavizado 2.0 para estabilidad
+                prob_pick = 1 / (1 + np.exp(-(promedio - umbral) / 2.0))
 
             elif "Tarjetas" in mercado:
                 promedio = s_h['HY'] + s_v['AY']
-                prob_pick = prob_over(promedio, 3.5)
+                # Factor de Tensión: Evita que baje de un suelo realista para ligas competitivas
+                promedio_ajustado = max(promedio, 3.2) 
+                prob_pick = 1 / (1 + np.exp(-(promedio_ajustado - 3.5) / 1.0))
 
-            # Ajuste final de realismo (Vig 5%)
-            prob_pick = max(0.05, min(0.95, prob_pick * 0.95))
+            # Ajuste de realismo: margen de casa y límites (15% - 88%)
+            prob_pick = max(0.15, min(0.88, prob_pick * 0.95))
 
             if st.button("Añadir a la Combinada"):
                 st.session_state.mi_combinada.append({
@@ -262,17 +272,29 @@ elif menu == "BetBuilder Simulator":
         if st.session_state.mi_combinada:
             prob_total = 1.0
             for i, p in enumerate(st.session_state.mi_combinada):
-                st.info(f"**{p['partido']}**\n\n{p['mercado']} | IA: {p['prob']:.1%}")
+                # Estilo tipo ticket de apuestas
+                st.markdown(f"""
+                <div style="background-color: #1e2129; padding: 10px; border-radius: 5px; margin-bottom: 5px; border-left: 4px solid #f1c40f;">
+                    <small style="color: gray;">{p['partido']}</small><br>
+                    <b>{p['mercado']}</b><br>
+                    <span style="color: #27ae60;">IA: {p['prob']:.1%}</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
                 prob_total *= p['prob']
+                
+                if st.button(f"Remover", key=f"btn_del_{i}"):
+                    st.session_state.mi_combinada.pop(i)
+                    st.rerun()
             
             st.divider()
             c1, c2 = st.columns(2)
             c1.metric("Prob. Total", f"{prob_total:.1%}")
-            # Evitar división por cero
+            
             cuota_val = 1/prob_total if prob_total > 0 else 0
             c2.metric("Cuota Justa", f"{cuota_val:.2f}")
             
-            if st.button("Limpiar Cupón"):
+            if st.button("Limpiar Todo", type="primary"):
                 st.session_state.mi_combinada = []
                 st.rerun()
         else:
