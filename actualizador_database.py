@@ -48,9 +48,15 @@ def actualizar_resultados_pro():
                 match_link = "https://fbref.com" + row['Match Report'][1]
                 
                 # 1. VERIFICACIÓN: ¿Ya existe en la base de datos?
-                cursor.execute("SELECT 1 FROM historial_multiliga_ml WHERE HomeTeam=? AND Date=?", (home, fecha))
-                if cursor.fetchone():
+                cursor.execute("SELECT HC FROM historial_multiliga_ml WHERE HomeTeam=? AND Date=?", (home, fecha))
+                resultado = cursor.fetchone()
+                if resultado is not None:
+					if resultado[0] is not None:
                     continue
+				else:
+					print(f"🔄 Datos incompletos para {home} vs {away}. Re-intentando...")
+        			cursor.execute("DELETE FROM historial_multiliga_ml WHERE HomeTeam=? AND Date=?", (home, fecha))
+       				conn.commit()
 
                 # 2. ESPERA DE SEGURIDAD (1 MINUTO)
                 print(f"⏳ Pausa de 60s antes de scrapear: {home} vs {away}...")
