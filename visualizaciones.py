@@ -184,87 +184,76 @@ elif menu == "BetBuilder Simulator":
     st.title("🛠️ AI BetBuilder Pro")
     st.markdown("Construye tu combinada seleccionando partidos reales de la jornada.")
 
-    # 1. Preparar datos de la jornada
     df_j = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
     df_j['Date'] = pd.to_datetime(df_j['Date']).dt.normalize()
     
-    # 2. Inicializar el "Carrito de Picks" en la sesión de Streamlit
     if 'mi_combinada' not in st.session_state:
         st.session_state.mi_combinada = []
 
     col_izq, col_der = st.columns([1.2, 1])
 
     with col_izq:
-        st.subheader("➕ Añadir Pick a la Combinada")
-        
-        # Filtros para buscar el pick
+        st.subheader("➕ Añadir Pick")
         fechas_bb = sorted(df_j['Date'].unique())
         f_sel = st.selectbox("Día", [d.strftime('%A %d/%m') for d in pd.to_datetime(fechas_bb)], key="fecha_bb")
         
+        # Filtramos partidos de ese día específico
         partidos_f = df_j[df_j['Date'].dt.strftime('%A %d/%m') == f_sel]
-        partido_sel = st.selectbox("Partido", partidos_f['Local'] + " vs " + partidos_dia['Visita'], key="partido_bb")
         
-        # Obtener stats de la IA para este partido
-        h_team, v_team = partido_sel.split(" vs ")
-        s_h = get_recent_stats(h_team, conn)
-        s_v = get_recent_stats(v_team, conn)
-        
-        # Mercados disponibles basados en la IA
-        mercado = st.selectbox("Mercado", [
-            "Goles: Más de 1.5", 
-            "Goles: Más de 2.5", 
-            "Córners: Más de 7.5", 
-            "Córners: Más de 9.5",
-            "Tarjetas: Más de 3.5"
-        ])
+        if not partidos_f.empty:
+            # CORRECCIÓN AQUÍ: Usamos partidos_f en ambos lados
+            partido_sel = st.selectbox("Seleccionar Partido", partidos_f['Local'] + " vs " + partidos_f['Visita'], key="partido_bb")
+            
+            h_team, v_team = partido_sel.split(" vs ")
+            s_h = get_recent_stats(h_team, conn)
+            s_v = get_recent_stats(v_team, conn)
+            
+            mercado = st.selectbox("Mercado", [
+                "Goles: Más de 1.5", "Goles: Más de 2.5", 
+                "Córners: Más de 8.5", "Córners: Más de 10.5",
+                "Tarjetas: Más de 3.5"
+            ])
 
-        # Lógica de probabilidad según la IA (Cálculo dinámico)
-        prob_pick = 0.5 # Valor por defecto
-        if "Goles: Más de 1.5" in mercado:
-            promedio = (s_h['FTHG'] + s_h['FTAG'] + s_v['FTHG'] + s_v['FTAG']) / 2
-            prob_pick = 1 / (1 + np.exp(-(promedio - 1.5)))
-        elif "Goles: Más de 2.5" in mercado:
-            promedio = (s_h['FTHG'] + s_h['FTAG'] + s_v['FTHG'] + s_v['FTAG']) / 2
-            prob_pick = 1 / (1 + np.exp(-(promedio - 2.5)))
-        elif "Córners" in mercado:
-            total_c = s_h['HC'] + s_v['AC']
-            umbral = 9.5 if "9.5" in mercado else 7.5
-            prob_pick = 1 / (1 + np.exp(-(total_c - umbral)))
-        
-        if st.button("Añadir Pick"):
-            st.session_state.mi_combinada.append({
-                "partido": partido_sel,
-                "mercado": mercado,
-                "prob": prob_pick
-            })
-            st.toast(f"Añadido: {mercado}")
+            # Cálculo de Probabilidad (Lógica Sigmoide)
+            prob_pick = 0.5
+            if "Goles: Más de 1.5" in mercado:
+                p_goles = (s_h['FTHG'] + s_h['FTAG'] + s_v['FTHG'] + s_v['FTAG']) / 2
+                prob_pick = 1 / (1 + np.exp(-(p_goles - 1.5)))
+            elif "Goles: Más de 2.5" in mercado:
+                p_goles = (s_h['FTHG'] + s_h['FTAG'] + s_v['FTHG'] + s_v['FTAG']) / 2
+                prob_pick = 1 / (1 + np.exp(-(p_goles - 2.5)))
+            elif "Córners" in mercado:
+                total_c = s_h['HC'] + s_v['AC']
+                umbral = 10.5 if "10.5" in mercado else 8.5
+                prob_pick = 1 / (1 + np.exp(-(total_c - umbral)))
+            elif "Tarjetas" in mercado:
+                total_y = s_h['HY'] + s_v['AY']
+                prob_pick = 1 / (1 + np.exp(-(total_y - 3.5)))
+
+            if st.button("Añadir a la Combinada"):
+                st.session_state.mi_combinada.append({"partido": partido_sel, "mercado": mercado, "prob": prob_pick})
+                st.rerun()
+        else:
+            st.warning("No hay partidos programados para este día.")
 
     with col_der:
-        st.subheader("Tu Combinada")
-        
+        st.subheader("📝 Tu Cupón")
         if st.session_state.mi_combinada:
-            prob_acumulada = 1.0
+            prob_total = 1.0
             for i, p in enumerate(st.session_state.mi_combinada):
-                with st.expander(f"{p['partido']} - {p['mercado']}", expanded=True):
-                    st.write(f"Prob. IA: **{p['prob']:.1%}**")
-                    if st.button("Eliminar", key=f"del_{i}"):
-                        st.session_state.mi_combinada.pop(i)
-                        st.rerun()
-                prob_acumulada *= p['prob']
+                st.info(f"**{p['partido']}**\n\n{p['mercado']} | IA: {p['prob']:.1%}")
+                prob_total *= p['prob']
             
             st.divider()
-            # RESULTADO FINAL
-            cuota_justa = 1 / prob_acumulada if prob_acumulada > 0 else 0
-            
             c1, c2 = st.columns(2)
-            c1.metric("Prob. Total", f"{prob_acumulada:.1%}")
-            c2.metric("Cuota Justa", f"{cuota_justa:.2f}")
+            c1.metric("Prob. Total", f"{prob_total:.1%}")
+            c2.metric("Cuota Justa", f"{1/prob_total:.2f}" if prob_total > 0 else "0")
             
-            if st.button("Limpiar Todo"):
+            if st.button("Limpiar Cupón"):
                 st.session_state.mi_combinada = []
                 st.rerun()
         else:
-            st.info("Selecciona un partido y mercado para empezar a calcular.")
+            st.caption("Añade picks para ver la probabilidad acumulada.")
 
 conn.close()
 # ABRIR CMD Y "cd C:\Users\sealj\OneDrive\Escritorio\proyecto_app" 
