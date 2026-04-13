@@ -57,7 +57,10 @@ if menu == "Análisis del Día":
         df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
         df_jornada['Date'] = pd.to_datetime(df_jornada['Date'])
         
-        fechas_str = [d.strftime('%A %d/%m') for d in pd.to_datetime(sorted(df_jornada['Date'].unique()))]
+# --- FILTRO DE FECHA SIN REPETIDOS ---
+        fechas_unicas = sorted(df_jornada['Date'].unique())
+        fechas_str = [d.strftime('%A %d/%m') for d in pd.to_datetime(fechas_unicas)]
+        
         dia_sel_str = st.sidebar.selectbox("📅 Seleccionar Día:", fechas_str)
         
         partidos_dia = df_jornada[df_jornada['Date'].dt.strftime('%A %d/%m') == dia_sel_str]
