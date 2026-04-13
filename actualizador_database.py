@@ -31,11 +31,9 @@ def actualizar_resultados_pro():
         print(f"📡 Revisando jornada de {liga}...")
         try:
             response = requests.get(url, headers=headers)
-            # Extraemos links para llegar al Match Report
             tablas = pd.read_html(response.text, extract_links="body")
             df = tablas[0]
 
-            # Filtrar solo partidos con marcador (formato tupla del extract_links)
             df_jugados = df[df['Score'].apply(lambda x: isinstance(x, tuple) and x[0] != '')].copy()
 
             for idx, row in df_jugados.iterrows():
@@ -43,20 +41,21 @@ def actualizar_resultados_pro():
                 away = row['Away'][0]
                 fecha = row['Date'][0]
                 score_text = row['Score'][0]
-                
-                # Link al reporte detallado
                 match_link = "https://fbref.com" + row['Match Report'][1]
                 
-                # 1. VERIFICACIÓN: ¿Ya existe en la base de datos?
+                # 1. VERIFICACIÓN: ¿Existe? ¿Tiene stats?
                 cursor.execute("SELECT HC FROM historial_multiliga_ml WHERE HomeTeam=? AND Date=?", (home, fecha))
                 resultado = cursor.fetchone()
+                
                 if resultado is not None:
-					if resultado[0] is not None:
-                    continue
-					else:
-					print(f"🔄 Datos incompletos para {home} vs {away}. Re-intentando...")
-        			cursor.execute("DELETE FROM historial_multiliga_ml WHERE HomeTeam=? AND Date=?", (home, fecha))
-       				conn.commit()
+                    if resultado[0] is not None:
+                        # Ya está completo, saltar
+                        continue
+                    else:
+                        # Existe pero sin stats (como mencionaste), borrar para re-intentar
+                        print(f"🔄 Datos incompletos para {home} vs {away}. Re-intentando...")
+                        cursor.execute("DELETE FROM historial_multiliga_ml WHERE HomeTeam=? AND Date=?", (home, fecha))
+                        conn.commit()
 
                 # 2. ESPERA DE SEGURIDAD (1 MINUTO)
                 print(f"⏳ Pausa de 60s antes de scrapear: {home} vs {away}...")
@@ -70,36 +69,29 @@ def actualizar_resultados_pro():
                     # Buscamos la tabla 'Team Stats'
                     df_stats = next(t for t in match_tablas if 'Possession' in t.values)
                     
-                    # Marcador
                     goles_l, goles_v = map(int, score_text.split('–'))
                     ftr = 'H' if goles_l > goles_v else ('A' if goles_v > goles_l else 'D')
 
-                    # Extraer Stats (HST, AST, HC, AC, HY, AY)
-                    # Nota: Buscamos por texto en la columna central (índice 1)
                     hst = limpiar_dato(df_stats[df_stats.iloc[:,1].str.contains('Shots on Target', na=False)].iloc[0,0])
                     ast = limpiar_dato(df_stats[df_stats.iloc[:,1].str.contains('Shots on Target', na=False)].iloc[0,2])
-                    
-                    # Córners
                     hc = limpiar_dato(df_stats[df_stats.iloc[:,1].str.contains('Corners', na=False)].iloc[0,0])
                     ac = limpiar_dato(df_stats[df_stats.iloc[:,1].str.contains('Corners', na=False)].iloc[0,2])
-                    
-                    # Tarjetas (Amarillas)
                     hy = limpiar_dato(df_stats[df_stats.iloc[:,1].str.contains('Cards', na=False)].iloc[0,0])
                     ay = limpiar_dato(df_stats[df_stats.iloc[:,1].str.contains('Cards', na=False)].iloc[0,2])
 
-                    # 4. INSERTAR EN LA BASE DE DATOS
+                    # 4. INSERTAR
                     nuevo_partido = {
                         'Date': fecha, 'HomeTeam': home, 'AwayTeam': away,
                         'FTHG': goles_l, 'FTAG': goles_v, 'FTR': ftr,
                         'HST': hst, 'AST': ast, 'HC': hc, 'AC': ac, 'HY': hy, 'AY': ay,
-                        'HS': hst * 2, 'AS': ast * 2 # Estimación de tiros totales si no hay dato exacto
+                        'HS': hst * 2, 'AS': ast * 2
                     }
                     
                     pd.DataFrame([nuevo_partido]).to_sql('historial_multiliga_ml', conn, if_exists='append', index=False)
                     print(f"✅ Guardado con éxito: {home} {goles_l}-{goles_v} {away}")
 
                 except Exception as e:
-                    print(f"⚠️ No se pudieron obtener stats detalladas para {home} vs {away}: {e}")
+                    print(f"⚠️ Error al obtener match report: {e}")
 
         except Exception as e:
             print(f"❌ Error grave en liga {liga}: {e}")
