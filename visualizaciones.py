@@ -65,79 +65,91 @@ if menu == "Análisis del Día":
         equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
         df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
         
-        # 1. Normalizar fechas para evitar duplicados por horas
+        # 1. Normalizar fechas y filtrar para mostrar solo HOY y el FUTURO
         df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.normalize()
-        df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m')
         
-        # 2. Lista de fechas única y limpia
-        opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
-        dia_sel_str = st.sidebar.selectbox("📅 Seleccionar Día:", opciones_fecha)
-        
-        # 3. Filtrar partidos del día
-        partidos_dia = df_jornada[df_jornada['Fecha_Display'] == dia_sel_str]
-        partido_texto = st.sidebar.selectbox("🏟️ Partido:", partidos_dia['Local'] + " vs " + partidos_dia['Visita'])
-        
-        home_raw, away_raw = partido_texto.split(" vs ")
-        home_team = corregir_nombre_equipo(home_raw, equipos_db)
-        away_team = corregir_nombre_equipo(away_raw, equipos_db)
+        # Obtenemos la fecha actual (puedes usar pd.Timestamp.now() o date.today())
+        hoy = pd.Timestamp.now().normalize()
+        df_jornada = df_jornada[df_jornada['Date'] >= hoy]
 
-        # --- AQUÍ EMPIEZA EL DASHBOARD ---
-        st.title(f"{home_team} vs {away_team}")
-        st.caption(f"📅 {dia_sel_str}")
-
-        col1, col2 = st.columns([1.1, 1])
-        
-        with col1:
-            st.subheader("📊 Historial H2H")
-            q_h2h = f'SELECT Date, HomeTeam as L, AwayTeam as V, FTHG as [GL], FTAG as [GV], FTR as R FROM historial_multiliga_ml WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
-            df_h2h = pd.read_sql(q_h2h, conn)
-            if not df_h2h.empty:
-                df_h2h['Date'] = pd.to_datetime(df_h2h['Date']).dt.strftime('%d/%m/%y')
-                st.dataframe(df_h2h, use_container_width=True, hide_index=True)
+        if not df_jornada.empty:
+            df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m')
             
-            st.subheader("📈 Tendencia de Goles")
-            q_trend = f'SELECT FTHG as [Local], FTAG as [Visita] FROM historial_multiliga_ml WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" ORDER BY Date DESC LIMIT 10'
-            st.line_chart(pd.read_sql(q_trend, conn).iloc[::-1])
+            # 2. Lista de fechas única y limpia (solo días que no han pasado)
+            opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
+            dia_sel_str = st.sidebar.selectbox("📅 Seleccionar Día:", opciones_fecha)
+            
+            # 3. Filtrar partidos del día seleccionado
+            partidos_dia = df_jornada[df_jornada['Fecha_Display'] == dia_sel_str]
+            partido_texto = st.sidebar.selectbox("🏟️ Partido:", partidos_dia['Local'] + " vs " + partidos_dia['Visita'])
+            
+            home_raw, away_raw = partido_texto.split(" vs ")
+            home_team = corregir_nombre_equipo(home_raw, equipos_db)
+            away_team = corregir_nombre_equipo(away_raw, equipos_db)
 
-        with col2:
-            st.subheader("🤖 IA Predictiva")
-            model = cargar_modelo()
-            if model:
-                stats_h, stats_a = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
-                input_data = [[stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], stats_h['HY'], stats_h['AY']]]
-                prob_ia = model.predict_proba(input_data)[0]
+            # --- AQUÍ EMPIEZA EL DASHBOARD ---
+            st.title(f"{home_team} vs {away_team}")
+            st.caption(f"📅 {dia_sel_str}")
+
+            col1, col2 = st.columns([1.1, 1])
+            
+            with col1:
+                st.subheader("📊 Historial H2H")
+                q_h2h = f'SELECT Date, HomeTeam as L, AwayTeam as V, FTHG as [GL], FTAG as [GV], FTR as R FROM historial_multiliga_ml WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
+                df_h2h = pd.read_sql(q_h2h, conn)
+                if not df_h2h.empty:
+                    df_h2h['Date'] = pd.to_datetime(df_h2h['Date']).dt.strftime('%d/%m/%y')
+                    st.dataframe(df_h2h, use_container_width=True, hide_index=True)
                 
-                fig_pie = px.pie(values=[prob_ia[2], prob_ia[1], prob_ia[0]], names=['Local', 'Empate', 'Visita'], color=['Local', 'Empate', 'Visita'], color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'}, hole=0.45)
-                fig_pie.update_layout(dragmode=False, margin=dict(t=0, b=0, l=0, r=0))
-                st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
-                
-                promedio_goles = (stats_h['FTHG'] + stats_h['FTAG'] + stats_a['FTHG'] + stats_a['FTAG']) / 2
-                prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
-                c1, c2 = st.columns(2)
-                c1.metric("Goles Exp.", f"{promedio_goles:.2f}")
-                c2.metric("Prob. Over 2.5", f"{prob_over:.1%}")
-                st.progress(prob_over)
+                st.subheader("📈 Tendencia de Goles")
+                q_trend = f'SELECT FTHG as [Local], FTAG as [Visita] FROM historial_multiliga_ml WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" ORDER BY Date DESC LIMIT 10'
+                st.line_chart(pd.read_sql(q_trend, conn).iloc[::-1])
 
-                st.markdown("#### **Tiros y Córners**")
-                cp1, cp2 = st.columns(2)
-                with cp1: st.write(f"Tiros: **{stats_h['HST']:.1f}** | **{stats_a['AST']:.1f}**")
-                with cp2: st.write(f"Córners: **{stats_h['HC']:.1f}** | **{stats_a['AC']:.1f}**")
+            with col2:
+                st.subheader("🤖 IA Predictiva")
+                model = cargar_modelo()
+                if model:
+                    stats_h, stats_a = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
+                    input_data = [[stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], stats_h['HY'], stats_h['AY']]]
+                    prob_ia = model.predict_proba(input_data)[0]
+                    
+                    fig_pie = px.pie(values=[prob_ia[2], prob_ia[1], prob_ia[0]], names=['Local', 'Empate', 'Visita'], color=['Local', 'Empate', 'Visita'], color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'}, hole=0.45)
+                    fig_pie.update_layout(dragmode=False, margin=dict(t=0, b=0, l=0, r=0))
+                    st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
+                    
+                    promedio_goles = (stats_h['FTHG'] + stats_h['FTAG'] + stats_a['FTHG'] + stats_a['FTAG']) / 2
+                    prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
+                    c1, c2 = st.columns(2)
+                    c1.metric("Goles Exp.", f"{promedio_goles:.2f}")
+                    c2.metric("Prob. Over 2.5", f"{prob_over:.1%}")
+                    st.progress(prob_over)
 
-        st.divider()
-        st.subheader("🟨 Disciplina y Tarjetas")
-        cd1, cd2 = st.columns(2)
-        with cd1:
-            st.markdown("#### **Media Amarillas**")
-            m1, m2 = st.columns(2)
-            m1.metric(f"{home_team[:12]}", f"{stats_h['HY']:.1f}")
-            m2.metric(f"{away_team[:12]}", f"{stats_a['AY']:.1f}")
-        with cd2:
-            q_cards = f'SELECT Date, (HY + AY) as Total FROM historial_multiliga_ml WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
-            df_cards = pd.read_sql(q_cards, conn)
-            if not df_cards.empty:
-                fig_cards = px.bar(df_cards, x='Date', y='Total', color_discrete_sequence=['#f1c40f'])
-                fig_cards.update_layout(dragmode=False, xaxis={'fixedrange': True}, yaxis={'fixedrange': True})
-                st.plotly_chart(fig_cards, use_container_width=True, config=CONFIG_FIJA)
+                    st.markdown("#### **Tiros y Córners**")
+                    cp1, cp2 = st.columns(2)
+                    with cp1: st.write(f"Tiros: **{stats_h['HST']:.1f}** | **{stats_a['AST']:.1f}**")
+                    with cp2: st.write(f"Córners: **{stats_h['HC']:.1f}** | **{stats_a['AC']:.1f}**")
+
+            st.divider()
+            st.subheader("🟨 Disciplina y Tarjetas")
+            cd1, cd2 = st.columns(2)
+            
+            # Recalculamos stats por si acaso para la sección de tarjetas
+            stats_h, stats_a = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
+            
+            with cd1:
+                st.markdown("#### **Media Amarillas**")
+                m1, m2 = st.columns(2)
+                m1.metric(f"{home_team[:12]}", f"{stats_h['HY']:.1f}")
+                m2.metric(f"{away_team[:12]}", f"{stats_a['AY']:.1f}")
+            with cd2:
+                q_cards = f'SELECT Date, (HY + AY) as Total FROM historial_multiliga_ml WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
+                df_cards = pd.read_sql(q_cards, conn)
+                if not df_cards.empty:
+                    fig_cards = px.bar(df_cards, x='Date', y='Total', color_discrete_sequence=['#f1c40f'])
+                    fig_cards.update_layout(dragmode=False, xaxis={'fixedrange': True}, yaxis={'fixedrange': True})
+                    st.plotly_chart(fig_cards, use_container_width=True, config=CONFIG_FIJA)
+        else:
+            st.info("No hay partidos programados para hoy o los próximos días. Revisa la sección de Auditoría para ver resultados pasados.")
 
     except Exception as e:
         st.error(f"Error al cargar dashboard: {e}")
