@@ -106,7 +106,7 @@ if menu == "Análisis del Día":
                 st.line_chart(pd.read_sql(q_trend, conn).iloc[::-1])
 
             with col2:
-                st.subheader("🤖 IA Predictiva")
+                st.subheader("IA Predictiva")
                 model = cargar_modelo()
                 if model:
                     stats_h, stats_a = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
@@ -159,11 +159,13 @@ elif menu == "Auditoría (Resultados)":
     
     # 1. Cargar datos
     df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
-    df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.normalize()
-    
     # Traemos resultados reales
     df_reales = pd.read_sql("SELECT * FROM historial_multiliga_ml ORDER BY Date DESC", conn)
-    df_reales['Date'] = pd.to_datetime(df_reales['Date']).dt.normalize()
+
+    # --- LIMPIEZA CRÍTICA DE FECHAS (Parche para evitar error de comparación) ---
+    df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
+    df_reales['Date'] = pd.to_datetime(df_reales['Date']).dt.tz_localize(None).dt.normalize()
+    # ----------------------------------------------------------------------------
 
     if not df_reales.empty:
         # Buscamos la última fecha que tiene resultados cargados
@@ -179,16 +181,17 @@ elif menu == "Auditoría (Resultados)":
 
         # Primero recorremos para calcular la métrica global
         for _, fila in partidos_auditar.iterrows():
+            # Buscamos coincidencia por equipo local y fecha exacta
             match_r = df_reales[(df_reales['HomeTeam'] == fila['Local']) & (df_reales['Date'] == ultima_fecha_real)].head(1)
             if not match_r.empty:
                 r = match_r.iloc[0]
                 sh, sa = get_recent_stats(fila['Local'], conn), get_recent_stats(fila['Visita'], conn)
                 
                 # Definimos qué cuenta como "acierto" (usamos Goles y Córners como base)
-                # Si el promedio IA se cumplió en la realidad
+                # Si el promedio IA se cumplió o superó en la realidad
                 if (r['FTHG'] + r['FTAG']) >= ((sh['FTHG']+sh['FTAG']+sa['FTHG']+sa['FTAG'])/2): cumplidas += 1
                 if (r['HC'] + r['AC']) >= (sh['HC'] + sa['AC']): cumplidas += 1
-                total_predicciones += 2 # Sumamos 2 mercados por partido
+                total_predicciones += 2 
 
         # Mostrar Métrica Superior
         if total_predicciones > 0:
@@ -219,8 +222,10 @@ elif menu == "Auditoría (Resultados)":
                         ]
 
                         for label, p, re in metrica_data:
-                            check = "✅" if re >= p else "❌"
-                            color = "#27ae60" if re >= p else "#c0392b"
+                            # Evitamos errores si el dato real es None/Null
+                            real_val = re if pd.notnull(re) else 0
+                            check = "✅" if real_val >= p else "❌"
+                            color = "#27ae60" if real_val >= p else "#c0392b"
                             
                             st.markdown(f"""
                             <div style="border-left: 5px solid {color}; padding: 10px; margin-bottom: 8px; background-color: #1e2129; border-radius: 5px;">
@@ -228,7 +233,7 @@ elif menu == "Auditoría (Resultados)":
                                     <span style="color: gray; font-size: 0.8rem;">{label.upper()}</span>
                                     <span>{check}</span>
                                 </div>
-                                <span style="font-size: 1.1rem;">IA: <b>{p:.1f}</b> | Real: <b>{re}</b></span>
+                                <span style="font-size: 1.1rem;">IA: <b>{p:.1f}</b> | Real: <b>{real_val}</b></span>
                             </div>
                             """, unsafe_allow_html=True)
                     else:
