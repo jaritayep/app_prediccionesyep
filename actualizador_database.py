@@ -53,7 +53,7 @@ def actualizar_resultados_pro():
                 if resultado is not None:
 					if resultado[0] is not None:
                     continue
-				else:
+					else:
 					print(f"🔄 Datos incompletos para {home} vs {away}. Re-intentando...")
         			cursor.execute("DELETE FROM historial_multiliga_ml WHERE HomeTeam=? AND Date=?", (home, fecha))
        				conn.commit()
