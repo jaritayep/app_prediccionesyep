@@ -256,121 +256,110 @@ elif menu == "Auditoría (Resultados)":
     else:
         st.info("No hay datos históricos para auditar. Ejecuta el actualizador de base de datos.")
 
-if menu == "BetBuilder Simulator":
-    st.title("🛠️ BetBuilder Pro")
+elif menu == "BetBuilder Simulator":
+    st.title("🛠️ BetBuilder Simulator")
     
-    # --- FUNCIONES DE SOPORTE LOCALES (Para evitar que falle si no están definidas) ---
-    def get_stats_local(team, conexion):
-        try:
-            query = f"SELECT * FROM historial_multiliga_ml WHERE HomeTeam='{team}' OR AwayTeam='{team}' ORDER BY Date DESC LIMIT 10"
-            df = pd.read_sql(query, conexion)
-            if df.empty: return None
-            return {
-                'FTHG': df['FTHG'].mean(), 'FTAG': df['FTAG'].mean(),
-                'HST': df['HST'].mean() if 'HST' in df else 4.0,
-                'AST': df['AST'].mean() if 'AST' in df else 3.5,
-                'HC': df['HC'].mean() if 'HC' in df else 5.0,
-                'AC': df['AC'].mean() if 'AC' in df else 4.5,
-                'HY': df['HY'].mean() if 'HY' in df else 2.0,
-                'AY': df['AY'].mean() if 'AY' in df else 2.1
-            }
-        except: return None
-
     try:
-        # 1. Verificar conexión a DB
+        # 1. Cargar la jornada desde la tabla de predicciones
         equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
+        df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
         
-        # 2. Selectores de Equipo
-        col_sel1, col_sel2 = st.columns(2)
-        with col_sel1:
-            h_team = st.selectbox("🏠 Local:", equipos_db, key="bb_h")
-        with col_sel2:
-            a_team = st.selectbox("🚀 Visitante:", equipos_db, key="bb_a")
+        # Filtrar solo partidos de hoy en adelante
+        df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
+        hoy = pd.Timestamp.now().normalize()
+        df_jornada = df_jornada[df_jornada['Date'] >= hoy]
 
-        # 3. Cargar estadísticas para el cálculo
-        stats_h = get_stats_local(h_team, conn)
-        stats_a = get_stats_local(a_team, conn)
-
-        if stats_h and stats_a:
-            st.divider()
-            c_config, c_res = st.columns([1, 1.5])
-
-            with c_config:
-                st.subheader("🎯 Configurar Pick")
-                
-                # --- GOLES ---
-                st.markdown("##### **Mercado Goles**")
-                linea_g = st.selectbox("Línea Goles:", [0.5, 1.5, 2.5, 3.5, 4.5], index=2)
-                tipo_g = st.radio("Predicción Goles:", ["Over", "Under"], horizontal=True)
-
-                # --- CÓRNERS ---
-                st.markdown("##### **Mercado Córners**")
-                linea_c = st.slider("Línea Córners:", 5.5, 15.5, 8.5, 1.0)
-                tipo_c = st.radio("Predicción Córners:", ["Over", "Under"], horizontal=True, key="c_radio_bb")
-
-                # --- RESULTADO ---
-                st.markdown("##### **Doble Oportunidad**")
-                mercado_res = st.multiselect("Opciones:", ["Local", "Empate", "Visita"], default=["Local", "Empate"])
-
-                # --- TIROS ---
-                st.markdown("##### **Tiros a Puerta**")
-                linea_t = st.number_input("Mínimo Tiros Totales:", 4, 20, 8)
-
-            with c_res:
-                st.subheader("📊 Probabilidades")
-                
-                # CÁLCULOS (Matemática Sigmoide)
-                # Goles
-                prom_g = (stats_h['FTHG'] + stats_h['FTAG'] + stats_a['FTHG'] + stats_a['FTAG']) / 2
-                prob_g = 1 / (1 + np.exp(-(prom_g - linea_g)))
-                if tipo_g == "Under": prob_g = 1 - prob_g
-                
-                # Córners
-                prom_c = stats_h['HC'] + stats_a['AC']
-                prob_c = 1 / (1 + np.exp(-(prom_c - linea_c)))
-                if tipo_c == "Under": prob_c = 1 - prob_c
-                
-                # Tiros
-                prom_t = stats_h['HST'] + stats_a['AST']
-                prob_t = 1 / (1 + np.exp(-(prom_t - linea_t)))
-
-                # Resultado (Doble Oportunidad Simplificada si no carga el modelo)
-                prob_res = len(mercado_res) * 0.30 # Estimación base si falla IA
-                try:
-                    m_ia = cargar_modelo()
-                    if m_ia:
-                        in_ia = [[stats_h['FTHG'], stats_h['FTAG'], 10, 10, stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], stats_h['HY'], stats_h['AY']]]
-                        p_ia = m_ia.predict_proba(in_ia)[0]
-                        prob_res = 0
-                        if "Local" in mercado_res: prob_res += p_ia[2]
-                        if "Empate" in mercado_res: prob_res += p_ia[1]
-                        if "Visita" in mercado_res: prob_res += p_ia[0]
-                except: pass
-
-                # --- MOSTRAR MÉTRICAS ---
-                g1, g2 = st.columns(2)
-                g1.metric(f"⚽ {tipo_g} {linea_g}", f"{prob_g:.1%}")
-                g2.metric(f"🚩 {tipo_c} {linea_c}", f"{prob_c:.1%}")
-                
-                g3, g4 = st.columns(2)
-                g3.metric("🛡️ Doble Oportunidad", f"{prob_res:.1%}")
-                g4.metric(f"🎯 Tiros > {linea_t}", f"{prob_t:.1%}")
-
-                # --- CUOTA JUSTA ---
-                st.divider()
-                prob_total = prob_g * prob_c * prob_res * prob_t
-                cuota = 1 / prob_total if prob_total > 0.01 else 100.0
-                
-                st.success(f"🔥 **Probabilidad del Pick:** {prob_total:.1%}")
-                st.info(f"💰 **Cuota Justa (Valor):** {cuota:.2f}")
-                
-                if prob_total > 0.40: st.balloons()
-
+        if df_jornada.empty:
+            st.warning("No hay partidos programados para hoy. Carga la jornada en la sección de Auditoría.")
         else:
-            st.error("❌ No hay datos históricos suficientes para estos equipos.")
+            # 2. SELECCIÓN DE PARTIDO (Vinculado a la jornada)
+            df_jornada['Fecha_Disp'] = df_jornada['Date'].dt.strftime('%d/%m')
+            partido_sel = st.selectbox(
+                "🏟️ Selecciona un Partido de la Jornada:", 
+                df_jornada['Fecha_Disp'] + " | " + df_jornada['Local'] + " vs " + df_jornada['Visita']
+            )
+
+            # Extraer nombres y corregirlos para la DB
+            partido_limpio = partido_sel.split(" | ")[1]
+            h_raw, v_raw = partido_limpio.split(" vs ")
+            home_team = corregir_nombre_equipo(h_raw, equipos_db)
+            away_team = corregir_nombre_equipo(v_raw, equipos_db)
+
+            # 3. CARGAR STATS
+            stats_h = get_recent_stats(home_team, conn)
+            stats_a = get_recent_stats(away_team, conn)
+
+            st.divider()
+            col_config, col_ticket = st.columns([1.2, 1])
+
+            with col_config:
+                st.subheader("🎯 Configurar Mercados")
+                
+                # Selector de Mercado
+                tipo_mercado = st.selectbox("Selecciona Mercado:", [
+                    "Goles Totales", "Córners Totales", "Doble Oportunidad", "Tiros a Puerta"
+                ])
+
+                # Opciones dinámicas según mercado
+                with st.container(border=True):
+                    if tipo_mercado == "Goles Totales":
+                        l_g = st.selectbox("Línea:", [0.5, 1.5, 2.5, 3.5, 4.5], index=2)
+                        t_g = st.radio("Predicción:", ["Over", "Under"], horizontal=True)
+                        # Cálculo
+                        prom = (stats_h['FTHG'] + stats_h['FTAG'] + stats_a['FTHG'] + stats_a['FTAG']) / 2
+                        prob = 1 / (1 + np.exp(-(prom - l_g))) if t_g == "Over" else 1 - (1 / (1 + np.exp(-(prom - l_g))))
+                        desc_pick = f"{t_g} {l_g} Goles"
+
+                    elif tipo_mercado == "Córners Totales":
+                        l_c = st.slider("Línea:", 5.5, 14.5, 8.5, 0.5)
+                        t_c = st.radio("Predicción:", ["Over", "Under"], horizontal=True)
+                        prom = stats_h['HC'] + stats_a['AC']
+                        prob = 1 / (1 + np.exp(-(prom - l_c))) if t_c == "Over" else 1 - (1 / (1 + np.exp(-(prom - l_c))))
+                        desc_pick = f"{t_c} {l_c} Córners"
+
+                    elif tipo_mercado == "Doble Oportunidad":
+                        opciones = st.multiselect("Opciones:", ["Local", "Empate", "Visita"], default=["Local", "Empate"])
+                        # Simulación IA rápida
+                        prob = len(opciones) * 0.32 
+                        desc_pick = " o ".join(opciones)
+
+                    elif tipo_mercado == "Tiros a Puerta":
+                        l_t = st.number_input("Mínimo Tiros Totales:", 4, 20, 8)
+                        prom = stats_h['HST'] + stats_a['AST']
+                        prob = 1 / (1 + np.exp(-(prom - l_t)))
+                        desc_pick = f"Más de {l_t} Tiros a Puerta"
+
+                # BOTÓN DE AÑADIR (Uso de Session State para guardar el ticket)
+                if "ticket" not in st.session_state: st.session_state.ticket = []
+                
+                if st.button("➕ Añadir al Pick"):
+                    st.session_state.ticket.append({"desc": desc_pick, "prob": prob})
+                    st.toast(f"Añadido: {desc_pick}")
+
+            with col_ticket:
+                st.subheader("📋 Tu Combinada")
+                
+                if not st.session_state.ticket:
+                    st.info("Añade mercados para ver la probabilidad acumulada.")
+                else:
+                    prob_acumulada = 1.0
+                    for i, item in enumerate(st.session_state.ticket):
+                        c1, c2 = st.columns([4, 1])
+                        c1.write(f"🔹 {item['desc']}")
+                        c2.write(f"{item['prob']:.0%}")
+                        prob_acumulada *= item['prob']
+                    
+                    st.divider()
+                    cuota_falsa = 1 / prob_acumulada if prob_acumulada > 0 else 100
+                    st.metric("Probabilidad Total", f"{prob_acumulada:.1%}")
+                    st.metric("Cuota Justa Sugerida", f"{cuota_falsa:.2f}")
+
+                    if st.button("🗑️ Limpiar Ticket"):
+                        st.session_state.ticket = []
+                        st.rerun()
 
     except Exception as e:
-        st.error(f"⚠️ Error al cargar BetBuilder: {e}")
+        st.error(f"Error en el Simulador: {e}")
 
 conn.close()
 # ABRIR CMD Y "cd C:\Users\sealj\OneDrive\Escritorio\proyecto_app" 
