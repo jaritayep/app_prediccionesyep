@@ -21,7 +21,7 @@ jobs:
 
       - name: Instalar Dependencias
         run: |
-          pip install pandas sqlite3 lxml html5lib requests numpy
+          pip install pandas lxml html5lib requests numpy
 
       - name: Ejecutar Actualización
         run: python actualizador_database.py
