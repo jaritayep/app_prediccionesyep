@@ -259,93 +259,113 @@ elif menu == "Auditoría (Resultados)":
 if menu == "BetBuilder":
     st.title("🛠️ BetBuilder Pro")
     
-    # Supongamos que ya tienes seleccionados home_team y away_team arriba
-    # y las stats cargadas en stats_h y stats_a
-    
-    col_izq, col_der = st.columns([1, 2])
-    
-    with col_izq:
-        st.subheader("🎯 Configurar Pick")
+    try:
+        # 1. Recuperar equipos para el selectbox si no vienen de la sidebar
+        equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
         
-        # 1. Mercado de Goles (Línea Dinámica)
-        st.markdown("---")
-        linea_goles = st.selectbox("Línea de Goles (Total):", [0.5, 1.5, 2.5, 3.5, 4.5], index=1)
-        tipo_goles = st.radio("Predicción Goles:", ["Over (Más de)", "Under (Menos de)"], horizontal=True)
-        
-        # 2. Mercado de Córners (Línea Dinámica)
-        st.markdown("---")
-        linea_corners = st.number_input("Línea de Córners:", min_value=0.5, max_value=20.5, value=8.5, step=1.0)
-        tipo_corners = st.radio("Predicción Córners:", ["Over", "Under"], horizontal=True, key="c_radio")
-        
-        # 3. Doble Oportunidad / Resultado
-        st.markdown("---")
-        mercado_resultado = st.multiselect(
-            "Doble Oportunidad / Resultado:",
-            ["Local (1)", "Empate (X)", "Visita (2)"],
-            default=["Local (1)", "Empate (X)"],
-            max_selections=2
-        )
+        # 2. Selectores de Partido (si no quieres usar los de la sidebar)
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            h_team = st.selectbox("🏠 Equipo Local:", equipos_db, key="bb_home")
+        with col_p2:
+            a_team = st.selectbox("🚀 Equipo Visitante:", equipos_db, key="bb_away")
 
-        # 4. Tiros a Puerta (Nuevo)
-        st.markdown("---")
-        min_tiros = st.slider("Mínimo de Tiros a Puerta Totales:", 0, 15, 7)
+        # 3. Cargar Estadísticas (CRÍTICO: Sin esto no sale nada)
+        stats_h = get_recent_stats(h_team, conn)
+        stats_a = get_recent_stats(a_team, conn)
+        
+        if stats_h and stats_a:
+            st.divider()
+            col_izq, col_der = st.columns([1, 1.5])
+            
+            with col_izq:
+                st.subheader("🎯 Configurar Pick")
+                
+                # --- MERCADO: GOLES ---
+                st.markdown("##### **Goles**")
+                linea_goles = st.selectbox("Línea:", [0.5, 1.5, 2.5, 3.5, 4.5], index=2)
+                tipo_goles = st.radio("Predicción:", ["Over", "Under"], horizontal=True, key="goal_r")
+                
+                # --- MERCADO: CÓRNERS ---
+                st.markdown("##### **Córners**")
+                linea_corners = st.number_input("Línea Total:", min_value=0.5, max_value=18.5, value=8.5, step=1.0)
+                tipo_corners = st.radio("Predicción:", ["Over", "Under"], horizontal=True, key="corn_r")
+                
+                # --- MERCADO: RESULTADO ---
+                st.markdown("##### **Doble Oportunidad**")
+                mercado_resultado = st.multiselect(
+                    "Opciones:",
+                    ["Local (1)", "Empate (X)", "Visita (2)"],
+                    default=["Local (1)", "Empate (X)"]
+                )
 
-    with col_der:
-        st.subheader("📊 Probabilidades Calculadas")
-        
-        # --- LÓGICA DE CÁLCULO ---
-        # Goles
-        promedio_goles = (stats_h['FTHG'] + stats_h['FTAG'] + stats_a['FTHG'] + stats_a['FTAG']) / 2
-        prob_goles = 1 / (1 + np.exp(-(promedio_goles - linea_goles)))
-        if tipo_goles == "Under (Menos de)": prob_goles = 1 - prob_goles
-        
-        # Córners
-        total_corners_exp = stats_h['HC'] + stats_a['AC']
-        prob_c = 1 / (1 + np.exp(-(total_corners_exp - linea_corners)))
-        if tipo_corners == "Under": prob_c = 1 - prob_c
-        
-        # Tiros a Puerta
-        total_tiros_exp = stats_h['HST'] + stats_a['AST']
-        prob_tiros = 1 / (1 + np.exp(-(total_tiros_exp - min_tiros)))
+                # --- MERCADO: TIROS A PUERTA ---
+                st.markdown("##### **Tiros a Puerta**")
+                min_tiros = st.slider("Mínimo Totales:", 0, 15, 8)
 
-        # Resultado / Doble Oportunidad (Usando tu modelo de IA)
-        model = cargar_modelo()
-        input_data = [[stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], stats_h['HY'], stats_h['AY']]]
-        prob_ia = model.predict_proba(input_data)[0]
-        
-        # Sumar probabilidades según selección de doble oportunidad
-        p_res = 0
-        if "Local (1)" in mercado_resultado: p_res += prob_ia[2]
-        if "Empate (X)" in mercado_resultado: p_res += prob_ia[1]
-        if "Visita (2)" in mercado_resultado: p_res += prob_ia[0]
+            with col_der:
+                st.subheader("📊 Probabilidades")
+                
+                # --- CÁLCULOS ESTADÍSTICOS ---
+                # 1. Goles (Distribución simplificada basada en promedios)
+                prom_g = (stats_h['FTHG'] + stats_h['FTAG'] + stats_a['FTHG'] + stats_a['FTAG']) / 2
+                prob_g = 1 / (1 + np.exp(-(prom_g - linea_goles)))
+                if tipo_goles == "Under": prob_g = 1 - prob_g
+                
+                # 2. Córners
+                prom_c = stats_h['HC'] + stats_a['AC']
+                prob_c = 1 / (1 + np.exp(-(prom_c - linea_corners)))
+                if tipo_corners == "Under": prob_c = 1 - prob_c
+                
+                # 3. Tiros a Puerta
+                prom_t = stats_h['HST'] + stats_a['AST']
+                prob_t = 1 / (1 + np.exp(-(prom_t - min_tiros)))
+                
+                # 4. Resultado (IA)
+                model = cargar_modelo()
+                p_res = 0.5 # Valor por defecto
+                if model:
+                    in_data = [[stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], 
+                                stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], 
+                                stats_h['HY'], stats_h['AY']]]
+                    prob_ia = model.predict_proba(in_data)[0]
+                    if "Local (1)" in mercado_resultado: p_res += prob_ia[2]
+                    if "Empate (X)" in mercado_resultado: p_res += prob_ia[1]
+                    if "Visita (2)" in mercado_resultado: p_res += prob_ia[0]
+                    # Ajuste para no exceder 1 (0.5 era base)
+                    p_res = min(p_res, 0.99) 
 
-        # --- MOSTRAR RESULTADOS EN TARJETAS ---
-        m1, m2 = st.columns(2)
-        m1.metric(f"Prob. {tipo_goles} {linea_goles}", f"{prob_goles:.1%}")
-        m2.metric(f"Prob. {tipo_corners} {linea_corners}", f"{prob_c:.1%}")
-        
-        m3, m4 = st.columns(2)
-        m3.metric("Doble Oportunidad", f"{p_res:.1%}")
-        m4.metric(f"Tiros a Puerta > {min_tiros}", f"{prob_tiros:.1%}")
+                # --- RENDERIZADO DE MÉTRICAS ---
+                m1, m2 = st.columns(2)
+                m1.metric(f"⚽ {tipo_goles} {linea_goles}", f"{prob_g:.1%}")
+                m2.metric(f"🚩 {tipo_corners} {linea_corners}", f"{prob_c:.1%}")
+                
+                m3, m4 = st.columns(2)
+                m3.metric("🛡️ Doble Oportunidad", f"{p_res:.1%}")
+                m4.metric(f"🎯 Tiros > {min_tiros}", f"{prob_t:.1%}")
 
-        # --- SUGERENCIA FINAL ---
-        st.divider()
-        st.subheader("📝 Tu Combinada (Pick)")
-        
-        # Calculamos una cuota estimada (Fair Odds)
-        # Nota: Multiplicar probabilidades asume independencia (es una simplificación)
-        prob_combinada = prob_goles * prob_c * p_res * prob_tiros
-        cuota_justa = 1 / prob_combinada if prob_combinada > 0 else 0
-        
-        st.info(f"💡 **Cuota Justa Estimada:** {cuota_justa:.2f}")
-        st.write(f"Confianza del algoritmo: **{prob_combinada:.1%}**")
-        
-        if prob_combinada > 0.4:
-            st.success("✅ Este pick tiene alta probabilidad estadística.")
-        elif prob_combinada > 0.2:
-            st.warning("⚠️ Riesgo moderado. Considera ajustar las líneas.")
+                # --- CÁLCULO DE CUOTA JUSTA ---
+                st.divider()
+                # Probabilidad combinada (asumiendo independencia parcial)
+                prob_final = prob_g * prob_c * p_res * prob_t
+                cuota_justa = 1 / prob_final if prob_final > 0.01 else 100.0
+                
+                st.subheader("📝 Pick Sugerido")
+                container = st.container(border=True)
+                with container:
+                    st.write(f"🔥 **Probabilidad Combinada:** {prob_final:.1%}")
+                    st.write(f"💰 **Cuota Justa (Valor):** {cuota_justa:.2f}")
+                    
+                    if prob_final > 0.35:
+                        st.success("✅ RECOMENDADO: Alta probabilidad estadística.")
+                    else:
+                        st.warning("⚠️ RIESGO: La probabilidad es baja para una combinada.")
+
         else:
-            st.error("❌ Probabilidad baja. No se recomienda este pick.")
+            st.warning("No se pudieron cargar las estadísticas de estos equipos.")
+
+    except Exception as e:
+        st.error(f"Error en la sección BetBuilder: {e}")
 
 conn.close()
 # ABRIR CMD Y "cd C:\Users\sealj\OneDrive\Escritorio\proyecto_app" 
