@@ -130,71 +130,55 @@ if menu == "Análisis del Día":
 elif menu == "Auditoría (Resultados)":
     st.title("⚖️ Auditoría de Precisión")
     
-    # 1. Cargar predicciones y resultados
     df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
     df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.normalize()
     
-    # 2. Traer resultados reales de los últimos días
-    df_reales = pd.read_sql("SELECT Date, HomeTeam, AwayTeam, FTHG, FTAG, (FTHG+FTAG) as GolesTotales FROM historial_multiliga_ml WHERE Date >= date('now', '-7 days')", conn)
-    df_reales['Date'] = pd.to_datetime(df_reales['Date']).dt.normalize()
-
     # Filtro de fecha para auditar
     fechas_audit = list(dict.fromkeys(df_jornada['Date'].dt.strftime('%A %d/%m').tolist()))
-    dia_audit = st.sidebar.selectbox("📅 Auditar Día:", fechas_audit)
+    dia_audit = st.sidebar.selectbox("📅 Seleccionar Día a Evaluar:", fechas_audit)
+    
+    # Resultados reales (últimos 7 días para comparar)
+    q_reales = "SELECT * FROM historial_multiliga_ml WHERE Date >= date('now', '-7 days')"
+    df_reales = pd.read_sql(q_reales, conn)
     
     partidos_dia = df_jornada[df_jornada['Date'].dt.strftime('%A %d/%m') == dia_audit]
-    
-    # --- CÁLCULO DE TASA DE EFECTIVIDAD (Basado en Goles) ---
-    aciertos_goles = 0
-    total_con_resultado = 0
-    
-    # Primero hacemos un barrido para la métrica superior
-    for _, f in partidos_dia.iterrows():
-        res_real = df_reales[(df_reales['HomeTeam'] == f['Local'])].head(1)
-        if not res_real.empty:
-            total_con_resultado += 1
-            # Para la tasa, calculamos si se cumplió el Over 2.5 (o la métrica que prefieras)
-            if res_real.iloc[0]['GolesTotales'] >= 2.5: aciertos_goles += 1
 
-    if total_con_resultado > 0:
-        tasa = aciertos_goles / total_con_resultado
-        st.metric("Cumplimiento Goles (Over 2.5)", f"{tasa:.1%}", delta=f"{aciertos_goles}/{total_con_resultado} Partidos")
-    else:
-        st.info("Esperando resultados finales para calcular efectividad...")
-
+    # --- TASA DE EFECTIVIDAD GENERAL ---
+    total_finalizados = len(df_reales[df_reales['HomeTeam'].isin(partidos_dia['Local'])])
+    if total_finalizados > 0:
+        st.metric("Partidos Procesados", f"{total_finalizados}", help="Partidos de este día que ya tienen resultado en la DB")
     st.divider()
 
-    # --- LISTADO DETALLADO ---
+    # --- DESGLOSE POR PARTIDO (EXPANDERS) ---
     for _, fila in partidos_dia.iterrows():
-        # Buscamos las estadísticas ponderadas que la IA usó para predecir
-        stats_h = get_recent_stats(fila['Local'], conn)
-        stats_a = get_recent_stats(fila['Visita'], conn)
-        prediccion_goles = (stats_h['FTHG'] + stats_h['FTAG'] + stats_a['FTHG'] + stats_a['FTAG']) / 2
-        
-        # Buscamos el resultado real
         match_real = df_reales[df_reales['HomeTeam'] == fila['Local']].head(1)
         
-        with st.container():
-            c1, c2, c3 = st.columns([2, 1, 1])
-            c1.markdown(f"#### {fila['Local']} vs {fila['Visita']}")
-            
+        with st.expander(f"🏟️ {fila['Local']} vs {fila['Visita']}"):
             if not match_real.empty:
                 r = match_real.iloc[0]
-                goles_r = int(r['GolesTotales'])
+                # Obtenemos las proyecciones que la IA calculó (Ponderadas)
+                sh, sa = get_recent_stats(fila['Local'], conn), get_recent_stats(fila['Visita'], conn)
                 
-                # LÓGICA DEL TICK O EQUIS
-                # Si los goles reales igualan o superan la predicción esperada
-                simbolo = "✅" if goles_r >= prediccion_goles else "❌"
-                color = "green" if goles_r >= prediccion_goles else "red"
+                # Definimos los targets (IA) vs Realidad
+                targets = {
+                    "Goles": {"pred": (sh['FTHG']+sh['FTAG']+sa['FTHG']+sa['FTAG'])/2, "real": r['FTHG']+r['FTAG']},
+                    "Tiros Arco": {"pred": sh['HST'] + sa['AST'], "real": r['HST'] + r['AST']},
+                    "Córners": {"pred": sh['HC'] + sa['AC'], "real": r['HC'] + r['AC']},
+                    "Amarillas": {"pred": sh['HY'] + sa['AY'], "real": r['HY'] + r['AY']}
+                }
+
+                # Renderizamos en 4 columnas
+                c1, c2, c3, c4 = st.columns(4)
+                cols = [c1, c2, c3, c4]
                 
-                c2.metric("IA Esperaba", f"{prediccion_goles:.2f}")
-                c3.markdown(f"<div style='background-color: #1e2129; padding: 10px; border-radius: 10px; text-align: center; border: 1px solid {color};'>"
-                            f"<span style='font-size: 0.8rem; color: gray;'>REALIDAD</span><br>"
-                            f"<span style='font-size: 1.5rem;'>{goles_r} {simbolo}</span>"
-                            f"</div>", unsafe_allow_html=True)
+                for idx, (label, data) in enumerate(targets.items()):
+                    p, re = data['pred'], data['real']
+                    check = "✅" if re >= p else "❌"
+                    cols[idx].markdown(f"**{label}**")
+                    cols[idx].write(f"IA: {p:.1f}")
+                    cols[idx].write(f"Real: **{re}** {check}")
             else:
-                c2.write("En juego / Pendiente ⏳")
-            st.write("") # Espaciador
+                st.write("⌛ El resultado de este partido aún no está en la base de datos.")
 
 elif menu == "BetBuilder Simulator":
     st.title("🛠️ BetBuilder AI")
