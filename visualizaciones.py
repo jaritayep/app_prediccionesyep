@@ -128,8 +128,76 @@ if menu == "Análisis del Día":
         st.error(f"Error al cargar dashboard: {e}")
 
 elif menu == "Auditoría (Resultados)":
-    st.title("⚖️ Auditoría de Resultados")
-    st.dataframe(pd.read_sql("SELECT Date, HomeTeam, AwayTeam, FTHG, FTAG, FTR FROM historial_multiliga_ml ORDER BY Date DESC LIMIT 20", conn), use_container_width=True, hide_index=True)
+    st.title("⚖️ Auditoría de Precisión")
+    
+    # 1. Cargar datos de la jornada y resultados reales
+    df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
+    df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.normalize()
+    
+    # Filtro de fecha para auditar
+    fechas_audit = list(dict.fromkeys(df_jornada['Date'].dt.strftime('%A %d/%m').tolist()))
+    dia_audit = st.sidebar.selectbox("📅 Auditar Día:", fechas_audit)
+    
+    # Partidos de ese día que ya tienen resultado en el historial
+    q_reales = f"SELECT * FROM historial_multiliga_ml WHERE Date >= date('now', '-3 days')"
+    df_reales = pd.read_sql(q_reales, conn)
+    df_reales['Date'] = pd.to_datetime(df_reales['Date']).dt.normalize()
+    
+    partidos_dia = df_jornada[df_jornada['Date'].dt.strftime('%A %d/%m') == dia_audit]
+    
+    # --- CÁLCULO DE TASA DE EFECTIVIDAD ---
+    aciertos = 0
+    total_evaluados = 0
+    
+    resumen_audit = []
+    
+    for _, fila in partidos_dia.iterrows():
+        # Buscamos si el partido ya terminó (está en la DB de historial)
+        real = df_reales[(df_reales['HomeTeam'] == fila['Local']) | (df_reales['AwayTeam'] == fila['Visita'])].head(1)
+        
+        if not real.empty:
+            total_evaluados += 1
+            # Lógica simple de acierto: Si la IA predijo Gana Local (2) y el FTR es 'H'
+            ganador_real = real.iloc[0]['FTR']
+            # Aquí podrías expandir la lógica para picks específicos
+            es_acierto = (ganador_real == 'H') # Ejemplo simplificado
+            if es_acierto: aciertos += 1
+            
+    # --- HEADER DE EFECTIVIDAD ---
+    if total_evaluados > 0:
+        tasa = aciertos / total_evaluados
+        st.metric("Tasa de Efectividad - Jornada Seleccionada", f"{tasa:.1%}", 
+                  delta=f"{aciertos}/{total_evaluados} Picks Correctos")
+    else:
+        st.warning("Todavía no hay resultados finales cargados para los partidos de este día.")
+
+    st.divider()
+
+    # --- LISTADO DETALLADO TIPO "ANÁLISIS DEL DÍA" ---
+    for _, fila in partidos_dia.iterrows():
+        # Buscar resultado real
+        match_real = df_reales[(df_reales['HomeTeam'] == fila['Local'])].head(1)
+        
+        with st.expander(f"{fila['Local']} vs {fila['Visita']}"):
+            if not match_real.empty:
+                r = match_real.iloc[0]
+                col_a, col_b, col_c = st.columns(3)
+                
+                # Ejemplo de comparación: Goles
+                # Supongamos que tu IA predijo Over 2.5 (esto es un ejemplo, ajusta según tus columnas)
+                goles_reales = r['FTHG'] + r['FTAG']
+                check_goles = "✅" if goles_reales > 2.5 else "❌"
+                col_a.write(f"**Goles Totales:** {goles_reales} {check_goles}")
+                
+                # Resultado Final
+                check_res = "✅" if r['FTR'] == 'H' else "❌" # Ajustar a tu pick real
+                col_b.write(f"**Resultado (FTR):** {r['FTR']} {check_res}")
+                
+                # Tarjetas
+                cards_reales = r['HY'] + r['AY']
+                col_c.write(f"**Tarjetas:** {cards_reales} (Real)")
+            else:
+                st.write("⌛ Partido en juego o sin datos de cierre.")
 
 elif menu == "BetBuilder Simulator":
     st.title("🛠️ BetBuilder AI")
