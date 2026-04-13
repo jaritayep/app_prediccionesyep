@@ -1,0 +1,11 @@
+name: Actualizar Jornada Semanal
+on:
+  schedule:
+    - cron: '0 8 * * 1' # Todos los lunes a las 08:00
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Ejecutar actualizador
+        run: python actualizar_jornadas.py
