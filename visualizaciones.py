@@ -57,13 +57,20 @@ if menu == "Análisis del Día":
         df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
         df_jornada['Date'] = pd.to_datetime(df_jornada['Date'])
         
-# --- FILTRO DE FECHA SIN REPETIDOS ---
+        # --- CORRECCIÓN DE DUPLICADOS EN FECHAS ---
+        # Creamos una columna temporal para mostrar en el selectbox
+        df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m')
+        
+        # Obtenemos los días únicos basándonos en la fecha real (para que el orden sea correcto)
         fechas_unicas = sorted(df_jornada['Date'].unique())
-        fechas_str = [d.strftime('%A %d/%m') for d in pd.to_datetime(fechas_unicas)]
+        opciones_fecha = [d.strftime('%A %d/%m') for d in pd.to_datetime(fechas_unicas)]
         
-        dia_sel_str = st.sidebar.selectbox("📅 Seleccionar Día:", fechas_str)
+        # El selectbox ahora usa la lista limpia y sin repetidos
+        dia_sel_str = st.sidebar.selectbox("📅 Seleccionar Día:", opciones_fecha)
         
-        partidos_dia = df_jornada[df_jornada['Date'].dt.strftime('%A %d/%m') == dia_sel_str]
+        # Filtramos los partidos que coincidan exactamente con ese string de fecha
+        partidos_dia = df_jornada[df_jornada['Fecha_Display'] == dia_sel_str]
+        
         partido_texto = st.sidebar.selectbox("🏟️ Partido:", partidos_dia['Local'] + " vs " + partidos_dia['Visita'])
         
         home_raw, away_raw = partido_texto.split(" vs ")
