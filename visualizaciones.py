@@ -6,7 +6,22 @@ import plotly.express as px
 import numpy as np
 import os
 from thefuzz import process, fuzz 
+import math
 
+def poisson_prob(lamba_val, k):
+    """Calcula la probabilidad de que ocurran exactamente k eventos"""
+    if lamba_val <= 0: return 0
+    return (math.exp(-lamba_val) * (lamba_val**k)) / math.factorial(k)
+
+def prob_over(promedio, umbral):
+    """Calcula la probabilidad de que ocurra MÁS que el umbral"""
+    if promedio <= 0: return 0.05
+    prob_acumulada = 0
+    # Sumamos las probabilidades de 0 hasta el umbral
+    for k in range(int(umbral) + 1):
+        prob_acumulada += poisson_prob(promedio, k)
+    return 1 - prob_acumulada
+    
 # --- CONFIGURACIÓN ---
 st.set_page_config(layout="wide", page_title="AI Betting Lab Pro", page_icon="⚽")
 DB_NAME = 'database_partidos.db'
@@ -213,23 +228,22 @@ elif menu == "BetBuilder Simulator":
                 "Córners: Más de 8.5", "Córners: Más de 10.5",
                 "Tarjetas: Más de 3.5"
             ])
-
-            # Cálculo de Probabilidad (Lógica Sigmoide)
             prob_pick = 0.5
-            if "Goles: Más de 1.5" in mercado:
-                p_goles = (s_h['FTHG'] + s_h['FTAG'] + s_v['FTHG'] + s_v['FTAG']) / 2
-                prob_pick = 1 / (1 + np.exp(-(p_goles - 1.5)))
-            elif "Goles: Más de 2.5" in mercado:
-                p_goles = (s_h['FTHG'] + s_h['FTAG'] + s_v['FTHG'] + s_v['FTAG']) / 2
-                prob_pick = 1 / (1 + np.exp(-(p_goles - 2.5)))
+            # Cálculo de Probabilidad (Lógica Sigmoide)
+            if "Goles" in mercado:
+            promedio = (s_h['FTHG'] + s_h['FTAG'] + s_v['FTHG'] + s_v['FTAG']) / 2
+            umbral = 2.5 if "2.5" in mercado else 1.5
+            prob_pick = prob_over(promedio, umbral)
+
             elif "Córners" in mercado:
-                total_c = s_h['HC'] + s_v['AC']
-                umbral = 10.5 if "10.5" in mercado else 8.5
-                calculo_raw = 1 / (1 + np.exp(-(total_c - umbral) / 2.0))
-                prob_pick = calculo_raw * 0.90
+            promedio = s_h['HC'] + s_v['AC']
+            umbral = 10.5 if "10.5" in mercado else 8.5
+            # Poisson es perfecto para córners
+            prob_pick = prob_over(promedio, umbral)
+
             elif "Tarjetas" in mercado:
-                total_y = s_h['HY'] + s_v['AY']
-                prob_pick = 1 / (1 + np.exp(-(total_y - 3.5)))
+            promedio = s_h['HY'] + s_v['AY']
+            prob_pick = prob_over(promedio, 3.5)
 
             if st.button("Añadir a la Combinada"):
                 st.session_state.mi_combinada.append({"partido": partido_sel, "mercado": mercado, "prob": prob_pick})
