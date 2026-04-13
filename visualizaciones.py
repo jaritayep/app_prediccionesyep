@@ -225,7 +225,8 @@ elif menu == "BetBuilder Simulator":
             elif "Córners" in mercado:
                 total_c = s_h['HC'] + s_v['AC']
                 umbral = 10.5 if "10.5" in mercado else 8.5
-                prob_pick = 1 / (1 + np.exp(-(total_c - umbral)))
+                calculo_raw = 1 / (1 + np.exp(-(total_c - umbral) / 2.0))
+                prob_pick = calculo_raw * 0.90
             elif "Tarjetas" in mercado:
                 total_y = s_h['HY'] + s_v['AY']
                 prob_pick = 1 / (1 + np.exp(-(total_y - 3.5)))
