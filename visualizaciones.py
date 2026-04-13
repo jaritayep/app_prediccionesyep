@@ -145,55 +145,84 @@ if menu == "Análisis del Día":
 elif menu == "Auditoría (Resultados)":
     st.title("Auditoría de Precisión")
     
+    # 1. Cargar datos
     df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
     df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.normalize()
     
-    # Filtro de fecha para auditar
-    fechas_audit = list(dict.fromkeys(df_jornada['Date'].dt.strftime('%A %d/%m').tolist()))
-    dia_audit = st.sidebar.selectbox("📅 Seleccionar Día a Evaluar:", fechas_audit)
-    
-    # Resultados reales (últimos 7 días para comparar)
-    q_reales = "SELECT * FROM historial_multiliga_ml WHERE Date >= date('now', '-7 days')"
-    df_reales = pd.read_sql(q_reales, conn)
-    
-    partidos_dia = df_jornada[df_jornada['Date'].dt.strftime('%A %d/%m') == dia_audit]
+    # Traemos resultados reales
+    df_reales = pd.read_sql("SELECT * FROM historial_multiliga_ml ORDER BY Date DESC", conn)
+    df_reales['Date'] = pd.to_datetime(df_reales['Date']).dt.normalize()
 
-    # --- TASA DE EFECTIVIDAD GENERAL ---
-    total_finalizados = len(df_reales[df_reales['HomeTeam'].isin(partidos_dia['Local'])])
-    if total_finalizados > 0:
-        st.metric("Partidos Procesados", f"{total_finalizados}", help="Partidos de este día que ya tienen resultado en la DB")
-    st.divider()
+    if not df_reales.empty:
+        # Buscamos la última fecha que tiene resultados cargados
+        ultima_fecha_real = df_reales['Date'].max()
+        st.subheader(f"📊 Resumen Jornada: {ultima_fecha_real.strftime('%d/%m/%Y')}")
 
-    # --- DESGLOSE POR PARTIDO (EXPANDERS) ---
-    for _, fila in partidos_dia.iterrows():
-        match_real = df_reales[df_reales['HomeTeam'] == fila['Local']].head(1)
+        # Filtrar partidos de esa jornada que estaban en nuestras predicciones
+        partidos_auditar = df_jornada[df_jornada['Date'] == ultima_fecha_real]
         
-        with st.expander(f" {fila['Local']} vs {fila['Visita']}"):
-            if not match_real.empty:
-                r = match_real.iloc[0]
-                # Obtenemos las proyecciones que la IA calculó (Ponderadas)
+        # --- CÁLCULO DE TASA DE CUMPLIMIENTO TOTAL ---
+        total_predicciones = 0
+        cumplidas = 0
+
+        # Primero recorremos para calcular la métrica global
+        for _, fila in partidos_auditar.iterrows():
+            match_r = df_reales[(df_reales['HomeTeam'] == fila['Local']) & (df_reales['Date'] == ultima_fecha_real)].head(1)
+            if not match_r.empty:
+                r = match_r.iloc[0]
                 sh, sa = get_recent_stats(fila['Local'], conn), get_recent_stats(fila['Visita'], conn)
                 
-                # Definimos los targets (IA) vs Realidad
-                targets = {
-                    "Goles": {"pred": (sh['FTHG']+sh['FTAG']+sa['FTHG']+sa['FTAG'])/2, "real": r['FTHG']+r['FTAG']},
-                    "Tiros Arco": {"pred": sh['HST'] + sa['AST'], "real": r['HST'] + r['AST']},
-                    "Córners": {"pred": sh['HC'] + sa['AC'], "real": r['HC'] + r['AC']},
-                    "Amarillas": {"pred": sh['HY'] + sa['AY'], "real": r['HY'] + r['AY']}
-                }
+                # Definimos qué cuenta como "acierto" (usamos Goles y Córners como base)
+                # Si el promedio IA se cumplió en la realidad
+                if (r['FTHG'] + r['FTAG']) >= ((sh['FTHG']+sh['FTAG']+sa['FTHG']+sa['FTAG'])/2): cumplidas += 1
+                if (r['HC'] + r['AC']) >= (sh['HC'] + sa['AC']): cumplidas += 1
+                total_predicciones += 2 # Sumamos 2 mercados por partido
 
-                # Renderizamos en 4 columnas
-                c1, c2, c3, c4 = st.columns(4)
-                cols = [c1, c2, c3, c4]
+        # Mostrar Métrica Superior
+        if total_predicciones > 0:
+            tasa_total = cumplidas / total_predicciones
+            st.metric("Tasa de Cumplimiento Global", f"{tasa_total:.1%}", 
+                      delta=f"{cumplidas}/{total_predicciones} Predicciones Logradas",
+                      help="Porcentaje de mercados (Goles y Córners) donde el resultado real igualó o superó la proyección de la IA.")
+        
+        st.divider()
+
+        # --- LISTADO DE PARTIDOS ---
+        if partidos_auditar.empty:
+            st.warning("No se encontraron predicciones guardadas para la última fecha con resultados.")
+        else:
+            for _, fila in partidos_auditar.iterrows():
+                match_real = df_reales[(df_reales['HomeTeam'] == fila['Local']) & (df_reales['Date'] == ultima_fecha_real)].head(1)
                 
-                for idx, (label, data) in enumerate(targets.items()):
-                    p, re = data['pred'], data['real']
-                    check = "✅" if re >= p else "❌"
-                    cols[idx].markdown(f"**{label}**")
-                    cols[idx].write(f"IA: {p:.1f}")
-                    cols[idx].write(f"Real: **{re}** {check}")
-            else:
-                st.write("⌛ El resultado de este partido aún no está en la base de datos.")
+                with st.expander(f"🏟️ {fila['Local']} vs {fila['Visita']}"):
+                    if not match_real.empty:
+                        r = match_real.iloc[0]
+                        sh, sa = get_recent_stats(fila['Local'], conn), get_recent_stats(fila['Visita'], conn)
+                        
+                        metrica_data = [
+                            ("Goles", (sh['FTHG']+sh['FTAG']+sa['FTHG']+sa['FTAG'])/2, r['FTHG']+r['FTAG']),
+                            ("Tiros Arco", sh['HST'] + sa['AST'], r['HST'] + r['AST']),
+                            ("Córners", sh['HC'] + sa['AC'], r['HC'] + r['AC']),
+                            ("Amarillas", sh['HY'] + sa['AY'], r['HY'] + r['AY'])
+                        ]
+
+                        for label, p, re in metrica_data:
+                            check = "✅" if re >= p else "❌"
+                            color = "#27ae60" if re >= p else "#c0392b"
+                            
+                            st.markdown(f"""
+                            <div style="border-left: 5px solid {color}; padding: 10px; margin-bottom: 8px; background-color: #1e2129; border-radius: 5px;">
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: gray; font-size: 0.8rem;">{label.upper()}</span>
+                                    <span>{check}</span>
+                                </div>
+                                <span style="font-size: 1.1rem;">IA: <b>{p:.1f}</b> | Real: <b>{re}</b></span>
+                            </div>
+                            """, unsafe_allow_html=True)
+                    else:
+                        st.info("Resultado no disponible para este partido específico.")
+    else:
+        st.info("No hay datos históricos para auditar. Ejecuta el actualizador de base de datos.")
 
 elif menu == "BetBuilder Simulator":
     st.title("🛠️ AI BetBuilder Pro")
