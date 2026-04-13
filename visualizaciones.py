@@ -55,29 +55,39 @@ if menu == "Análisis del Día":
     try:
         equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
         df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
-        df_jornada['Date'] = pd.to_datetime(df_jornada['Date'])
         
-        # --- CORRECCIÓN DE DUPLICADOS EN FECHAS ---
-        # Creamos una columna temporal para mostrar en el selectbox
+        # 1. Convertimos a datetime y ELIMINAMOS la hora (dejamos solo la fecha)
+        df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.normalize()
+        
+        # 2. Creamos la columna de visualización
         df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m')
         
-        # Obtenemos los días únicos basándonos en la fecha real (para que el orden sea correcto)
-        fechas_unicas = sorted(df_jornada['Date'].unique())
-        opciones_fecha = [d.strftime('%A %d/%m') for d in pd.to_datetime(fechas_unicas)]
+        # 3. Obtenemos las opciones únicas directamente de la columna de display
+        # Usamos dict.fromkeys para mantener el orden cronológico sin duplicados
+        opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
         
-        # El selectbox ahora usa la lista limpia y sin repetidos
+        # 4. El Selectbox ahora es 100% limpio
         dia_sel_str = st.sidebar.selectbox("📅 Seleccionar Día:", opciones_fecha)
         
-        # Filtramos los partidos que coincidan exactamente con ese string de fecha
+        # 5. Filtrar partidos
         partidos_dia = df_jornada[df_jornada['Fecha_Display'] == dia_sel_str]
         
-        partido_texto = st.sidebar.selectbox("🏟️ Partido:", partidos_dia['Local'] + " vs " + partidos_dia['Visita'])
-        
-        home_raw, away_raw = partido_texto.split(" vs ")
-        home_team = corregir_nombre_equipo(home_raw, equipos_db)
-        away_team = corregir_nombre_equipo(away_raw, equipos_db)
+        if not partidos_dia.empty:
+            partido_texto = st.sidebar.selectbox("🏟️ Partido:", partidos_dia['Local'] + " vs " + partidos_dia['Visita'])
+            
+            home_raw, away_raw = partido_texto.split(" vs ")
+            home_team = corregir_nombre_equipo(home_raw, equipos_db)
+            away_team = corregir_nombre_equipo(away_raw, equipos_db)
 
-        st.title(f"{home_team} vs {away_team}")
+            st.title(f"{home_team} vs {away_team}")
+            st.caption(f"📅 {dia_sel_str}")
+            
+            # --- Aquí sigue el resto de tus columnas col1 y col2 ---
+        else:
+            st.warning("No hay partidos para esta fecha.")
+
+    except Exception as e:
+        st.error(f"Error crítico: {e}")
         
         col1, col2 = st.columns([1.1, 1])
         with col1:
