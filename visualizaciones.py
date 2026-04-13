@@ -66,7 +66,7 @@ if menu == "Análisis del Día":
         df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
         
         # 1. Normalizar fechas y filtrar para mostrar solo HOY y el FUTURO
-        df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.normalize()
+        df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
         
         # Obtenemos la fecha actual (puedes usar pd.Timestamp.now() o date.today())
         hoy = pd.Timestamp.now().normalize()
