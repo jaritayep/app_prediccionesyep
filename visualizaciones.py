@@ -103,7 +103,7 @@ if menu == "Análisis del Día":
                 c2.metric("Prob. Over 2.5", f"{prob_over:.1%}")
                 st.progress(prob_over)
 
-                st.markdown("#### **🎯 Tiros y Córners**")
+                st.markdown("#### **Tiros y Córners**")
                 cp1, cp2 = st.columns(2)
                 with cp1: st.write(f"Tiros: **{stats_h['HST']:.1f}** | **{stats_a['AST']:.1f}**")
                 with cp2: st.write(f"Córners: **{stats_h['HC']:.1f}** | **{stats_a['AC']:.1f}**")
@@ -128,7 +128,7 @@ if menu == "Análisis del Día":
         st.error(f"Error al cargar dashboard: {e}")
 
 elif menu == "Auditoría (Resultados)":
-    st.title("⚖️ Auditoría de Precisión")
+    st.title("Auditoría de Precisión")
     
     df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
     df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.normalize()
@@ -153,7 +153,7 @@ elif menu == "Auditoría (Resultados)":
     for _, fila in partidos_dia.iterrows():
         match_real = df_reales[df_reales['HomeTeam'] == fila['Local']].head(1)
         
-        with st.expander(f"🏟️ {fila['Local']} vs {fila['Visita']}"):
+        with st.expander(f" {fila['Local']} vs {fila['Visita']}"):
             if not match_real.empty:
                 r = match_real.iloc[0]
                 # Obtenemos las proyecciones que la IA calculó (Ponderadas)
@@ -181,16 +181,90 @@ elif menu == "Auditoría (Resultados)":
                 st.write("⌛ El resultado de este partido aún no está en la base de datos.")
 
 elif menu == "BetBuilder Simulator":
-    st.title("🛠️ BetBuilder AI")
-    col_bb1, col_bb2 = st.columns(2)
-    picks = []
-    with col_bb1:
-        for i in range(st.number_input("Eventos:", 1, 5, 2)):
-            picks.append(st.slider(f"Prob. Pick {i+1} (%)", 1, 99, 50, key=f"bb_{i}")/100)
-    with col_bb2:
-        res_prob = np.prod(picks)
-        st.metric("Probabilidad Total", f"{res_prob:.1%}")
-        st.metric("Cuota Justa", f"{1/res_prob:.2f}" if res_prob > 0 else "0")
+    st.title("🛠️ AI BetBuilder Pro")
+    st.markdown("Construye tu combinada seleccionando partidos reales de la jornada.")
+
+    # 1. Preparar datos de la jornada
+    df_j = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
+    df_j['Date'] = pd.to_datetime(df_j['Date']).dt.normalize()
+    
+    # 2. Inicializar el "Carrito de Picks" en la sesión de Streamlit
+    if 'mi_combinada' not in st.session_state:
+        st.session_state.mi_combinada = []
+
+    col_izq, col_der = st.columns([1.2, 1])
+
+    with col_izq:
+        st.subheader("➕ Añadir Pick a la Combinada")
+        
+        # Filtros para buscar el pick
+        fechas_bb = sorted(df_j['Date'].unique())
+        f_sel = st.selectbox("Día", [d.strftime('%A %d/%m') for d in pd.to_datetime(fechas_bb)], key="fecha_bb")
+        
+        partidos_f = df_j[df_j['Date'].dt.strftime('%A %d/%m') == f_sel]
+        partido_sel = st.selectbox("Partido", partidos_f['Local'] + " vs " + partidos_dia['Visita'], key="partido_bb")
+        
+        # Obtener stats de la IA para este partido
+        h_team, v_team = partido_sel.split(" vs ")
+        s_h = get_recent_stats(h_team, conn)
+        s_v = get_recent_stats(v_team, conn)
+        
+        # Mercados disponibles basados en la IA
+        mercado = st.selectbox("Mercado", [
+            "Goles: Más de 1.5", 
+            "Goles: Más de 2.5", 
+            "Córners: Más de 7.5", 
+            "Córners: Más de 9.5",
+            "Tarjetas: Más de 3.5"
+        ])
+
+        # Lógica de probabilidad según la IA (Cálculo dinámico)
+        prob_pick = 0.5 # Valor por defecto
+        if "Goles: Más de 1.5" in mercado:
+            promedio = (s_h['FTHG'] + s_h['FTAG'] + s_v['FTHG'] + s_v['FTAG']) / 2
+            prob_pick = 1 / (1 + np.exp(-(promedio - 1.5)))
+        elif "Goles: Más de 2.5" in mercado:
+            promedio = (s_h['FTHG'] + s_h['FTAG'] + s_v['FTHG'] + s_v['FTAG']) / 2
+            prob_pick = 1 / (1 + np.exp(-(promedio - 2.5)))
+        elif "Córners" in mercado:
+            total_c = s_h['HC'] + s_v['AC']
+            umbral = 9.5 if "9.5" in mercado else 7.5
+            prob_pick = 1 / (1 + np.exp(-(total_c - umbral)))
+        
+        if st.button("Añadir Pick"):
+            st.session_state.mi_combinada.append({
+                "partido": partido_sel,
+                "mercado": mercado,
+                "prob": prob_pick
+            })
+            st.toast(f"Añadido: {mercado}")
+
+    with col_der:
+        st.subheader("Tu Combinada")
+        
+        if st.session_state.mi_combinada:
+            prob_acumulada = 1.0
+            for i, p in enumerate(st.session_state.mi_combinada):
+                with st.expander(f"{p['partido']} - {p['mercado']}", expanded=True):
+                    st.write(f"Prob. IA: **{p['prob']:.1%}**")
+                    if st.button("Eliminar", key=f"del_{i}"):
+                        st.session_state.mi_combinada.pop(i)
+                        st.rerun()
+                prob_acumulada *= p['prob']
+            
+            st.divider()
+            # RESULTADO FINAL
+            cuota_justa = 1 / prob_acumulada if prob_acumulada > 0 else 0
+            
+            c1, c2 = st.columns(2)
+            c1.metric("Prob. Total", f"{prob_acumulada:.1%}")
+            c2.metric("Cuota Justa", f"{cuota_justa:.2f}")
+            
+            if st.button("Limpiar Todo"):
+                st.session_state.mi_combinada = []
+                st.rerun()
+        else:
+            st.info("Selecciona un partido y mercado para empezar a calcular.")
 
 conn.close()
 # ABRIR CMD Y "cd C:\Users\sealj\OneDrive\Escritorio\proyecto_app" 
