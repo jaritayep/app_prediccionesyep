@@ -12,7 +12,6 @@ st.set_page_config(layout="wide", page_title="AI Betting Lab Pro", page_icon="�
 DB_NAME = 'database_partidos.db'
 MODEL_PATH = "modelo_ia.pkl"
 
-# --- ESTILO ---
 st.markdown("""
     <style>
     [data-testid="stHeader"] { background-color: rgba(0,0,0,0); color: white; }
@@ -23,12 +22,8 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-CONFIG_FIJA = {
-    'staticPlot': False, 'scrollZoom': False, 'doubleClick': 'reset',
-    'displayModeBar': False, 'showAxisDragHandles': False
-}
+CONFIG_FIJA = {'staticPlot': False, 'scrollZoom': False, 'doubleClick': 'reset', 'displayModeBar': False, 'showAxisDragHandles': False}
 
-# --- FUNCIONES ---
 def corregir_nombre_equipo(nombre_api, lista_db):
     if not lista_db: return nombre_api
     mejor_match, score = process.extractOne(nombre_api.strip(), lista_db, scorer=fuzz.token_set_ratio)
@@ -46,7 +41,6 @@ def get_recent_stats(equipo, conn):
 
 conn = sqlite3.connect(DB_NAME)
 
-# --- NAVEGACIÓN ---
 st.sidebar.title("⚽ Menú Principal")
 menu = st.sidebar.radio("Ir a:", ["Análisis del Día", "Auditoría (Resultados)", "BetBuilder Simulator"])
 st.sidebar.markdown("---")
@@ -56,40 +50,28 @@ if menu == "Análisis del Día":
         equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
         df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
         
-        # 1. Convertimos a datetime y ELIMINAMOS la hora (dejamos solo la fecha)
+        # 1. Normalizar fechas para evitar duplicados por horas
         df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.normalize()
-        
-        # 2. Creamos la columna de visualización
         df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m')
         
-        # 3. Obtenemos las opciones únicas directamente de la columna de display
-        # Usamos dict.fromkeys para mantener el orden cronológico sin duplicados
+        # 2. Lista de fechas única y limpia
         opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
-        
-        # 4. El Selectbox ahora es 100% limpio
         dia_sel_str = st.sidebar.selectbox("📅 Seleccionar Día:", opciones_fecha)
         
-        # 5. Filtrar partidos
+        # 3. Filtrar partidos del día
         partidos_dia = df_jornada[df_jornada['Fecha_Display'] == dia_sel_str]
+        partido_texto = st.sidebar.selectbox("🏟️ Partido:", partidos_dia['Local'] + " vs " + partidos_dia['Visita'])
         
-        if not partidos_dia.empty:
-            partido_texto = st.sidebar.selectbox("🏟️ Partido:", partidos_dia['Local'] + " vs " + partidos_dia['Visita'])
-            
-            home_raw, away_raw = partido_texto.split(" vs ")
-            home_team = corregir_nombre_equipo(home_raw, equipos_db)
-            away_team = corregir_nombre_equipo(away_raw, equipos_db)
+        home_raw, away_raw = partido_texto.split(" vs ")
+        home_team = corregir_nombre_equipo(home_raw, equipos_db)
+        away_team = corregir_nombre_equipo(away_raw, equipos_db)
 
-            st.title(f"{home_team} vs {away_team}")
-            st.caption(f"📅 {dia_sel_str}")
-            
-            # --- Aquí sigue el resto de tus columnas col1 y col2 ---
-        else:
-            st.warning("No hay partidos para esta fecha.")
+        # --- AQUÍ EMPIEZA EL DASHBOARD ---
+        st.title(f"{home_team} vs {away_team}")
+        st.caption(f"📅 {dia_sel_str}")
 
-    except Exception as e:
-        st.error(f"Error crítico: {e}")
-        
         col1, col2 = st.columns([1.1, 1])
+        
         with col1:
             st.subheader("📊 Historial H2H")
             q_h2h = f'SELECT Date, HomeTeam as L, AwayTeam as V, FTHG as [GL], FTAG as [GV], FTR as R FROM historial_multiliga_ml WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
@@ -114,7 +96,6 @@ if menu == "Análisis del Día":
                 fig_pie.update_layout(dragmode=False, margin=dict(t=0, b=0, l=0, r=0))
                 st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
                 
-                # --- GOLES ---
                 promedio_goles = (stats_h['FTHG'] + stats_h['FTAG'] + stats_a['FTHG'] + stats_a['FTAG']) / 2
                 prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
                 c1, c2 = st.columns(2)
@@ -122,15 +103,11 @@ if menu == "Análisis del Día":
                 c2.metric("Prob. Over 2.5", f"{prob_over:.1%}")
                 st.progress(prob_over)
 
-                # --- PROYECCIONES ---
                 st.markdown("#### **🎯 Tiros y Córners**")
                 cp1, cp2 = st.columns(2)
-                with cp1:
-                    st.write(f"Tiros: **{stats_h['HST']:.1f}** | **{stats_a['AST']:.1f}**")
-                with cp2:
-                    st.write(f"Córners: **{stats_h['HC']:.1f}** | **{stats_a['AC']:.1f}**")
+                with cp1: st.write(f"Tiros: **{stats_h['HST']:.1f}** | **{stats_a['AST']:.1f}**")
+                with cp2: st.write(f"Córners: **{stats_h['HC']:.1f}** | **{stats_a['AC']:.1f}**")
 
-        # --- SECCIÓN DE DISCIPLINA (RESTORED) ---
         st.divider()
         st.subheader("🟨 Disciplina y Tarjetas")
         cd1, cd2 = st.columns(2)
@@ -148,11 +125,11 @@ if menu == "Análisis del Día":
                 st.plotly_chart(fig_cards, use_container_width=True, config=CONFIG_FIJA)
 
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error al cargar dashboard: {e}")
 
 elif menu == "Auditoría (Resultados)":
     st.title("⚖️ Auditoría de Resultados")
-    st.dataframe(pd.read_sql("SELECT Date, HomeTeam, AwayTeam, FTHG, FTAG, FTR FROM historial_multiliga_ml ORDER BY Date DESC LIMIT 20", conn), use_container_width=True)
+    st.dataframe(pd.read_sql("SELECT Date, HomeTeam, AwayTeam, FTHG, FTAG, FTR FROM historial_multiliga_ml ORDER BY Date DESC LIMIT 20", conn), use_container_width=True, hide_index=True)
 
 elif menu == "BetBuilder Simulator":
     st.title("🛠️ BetBuilder AI")
@@ -160,7 +137,7 @@ elif menu == "BetBuilder Simulator":
     picks = []
     with col_bb1:
         for i in range(st.number_input("Eventos:", 1, 5, 2)):
-            picks.append(st.slider(f"Prob. Pick {i+1} (%)", 1, 99, 50)/100)
+            picks.append(st.slider(f"Prob. Pick {i+1} (%)", 1, 99, 50, key=f"bb_{i}")/100)
     with col_bb2:
         res_prob = np.prod(picks)
         st.metric("Probabilidad Total", f"{res_prob:.1%}")
