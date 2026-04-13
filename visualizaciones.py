@@ -256,7 +256,7 @@ elif menu == "Auditoría (Resultados)":
     else:
         st.info("No hay datos históricos para auditar. Ejecuta el actualizador de base de datos.")
 
-if menu == "BetBuilder":
+if menu == "BetBuilder Simulator":
     st.title("🛠️ BetBuilder Pro")
     
     # --- FUNCIONES DE SOPORTE LOCALES (Para evitar que falle si no están definidas) ---
