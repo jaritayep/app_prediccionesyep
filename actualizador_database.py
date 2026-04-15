@@ -8,7 +8,7 @@ def auditoria_big_five_ayer():
     cursor = conn.cursor()
     
     # 1. Definir "Ayer" y las Ligas
-    ayer = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
+    rango_dias = [(datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(1, 8)]
     
     # Mapeo de ligas para SoccerData (Las 5 grandes)
     ligas = [
