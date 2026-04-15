@@ -173,103 +173,117 @@ if menu == "Análisis del Día":
 elif menu == "Auditoría (Resultados)":
     st.title("🎯 Auditoría de Precisión")
     
-    # --- 1. CONFIGURACIÓN DE FECHA (El "Toggle" Temporal) ---
+    # --- 1. SELECTOR DE FECHA (El "Toggle") ---
     col_f1, col_f2 = st.columns([2, 1])
     with col_f1:
-        # Por defecto ayer, pero puedes elegir cualquier día
+        # Selector de fecha (Ayer por defecto)
         fecha_audit = st.date_input("Selecciona fecha para auditar:", 
                                     datetime.now() - timedelta(days=1))
     
     fecha_str = fecha_audit.strftime('%Y-%m-%d')
 
-    # --- 2. CARGA DE DATOS ---
-    # Traemos los resultados reales de esa fecha específica
-    df_reales = pd.read_sql("SELECT * FROM historial_multiliga_ml WHERE Date = ?", 
-                            conn, params=(fecha_str,))
-    st.write(f"Total de filas en el historial: {pd.read_sql('SELECT COUNT(*) FROM historial_multiliga_ml', conn).iloc[0,0]}")
+    # --- 2. CARGA DE DATOS (Filtro Flexible) ---
+    # Usamos LIKE para capturar fechas aunque tengan horas (ej: 2026-04-13 00:00:00)
+    query = "SELECT * FROM historial_multiliga_ml WHERE Date LIKE ?"
+    df_reales = pd.read_sql(query, conn, params=(f"{fecha_str}%",))
 
     if df_reales.empty:
         st.warning(f"⚠️ No hay resultados registrados en el historial para el {fecha_audit.strftime('%d/%m/%Y')}.")
-        st.info("Asegúrate de que el script de SoccerData haya procesado esta fecha.")
+        
+        # DEBUG: Si no hay nada, veamos qué fechas existen realmente para orientarte
+        st.info("Buscando fechas disponibles en la base de datos...")
+        ultimas = pd.read_sql("SELECT DISTINCT Date FROM historial_multiliga_ml ORDER BY Date DESC LIMIT 3", conn)
+        if not ultimas.empty:
+            st.write("Últimas fechas con datos en el historial:", ultimas['Date'].tolist())
     else:
         st.subheader(f"📊 Resumen de Jornada: {fecha_audit.strftime('%d/%m/%Y')}")
 
-        # --- 3. CÁLCULO DE MÉTRICAS GLOBALES ---
         total_predicciones = 0
         cumplidas = 0
-        
-        # Lista para guardar los resultados procesados y mostrarlos abajo
         resultados_procesados = []
 
-        for _, r in df_reales.iterrows():
-            # Obtenemos las estadísticas que la IA habría usado (promedios recientes)
-            sh = get_recent_stats(r['HomeTeam'], conn)
-            sa = get_recent_stats(r['AwayTeam'], conn)
-            
-            if sh and sa:
-                # Proyecciones base de la IA
-                proj_goles = (sh['FTHG'] + sh['FTAG'] + sa['FTHG'] + sa['FTAG']) / 2
-                proj_corners = sh['HC'] + sa['AC']
+        # Barra de progreso para el cálculo
+        with st.spinner('Calculando precisión contra proyecciones IA...'):
+            for _, r in df_reales.iterrows():
+                # Obtenemos stats históricas de ambos equipos para recrear la proyección de la IA
+                sh = get_recent_stats(r['HomeTeam'], conn)
+                sa = get_recent_stats(r['AwayTeam'], conn)
                 
-                # Datos reales
-                real_goles = r['FTHG'] + r['FTAG']
-                real_corners = r['HC'] + r['AC']
-                
-                # Verificación de aciertos
-                goles_ok = real_goles >= proj_goles
-                corners_ok = real_corners >= proj_corners
-                
-                if goles_ok: cumplidas += 1
-                if corners_ok: cumplidas += 1
-                total_predicciones += 2
-                
-                resultados_procesados.append({
-                    'fila': r,
-                    'sh': sh,
-                    'sa': sa,
-                    'proj_goles': proj_goles,
-                    'proj_corners': proj_corners,
-                    'goles_ok': goles_ok,
-                    'corners_ok': corners_ok
-                })
+                if sh and sa:
+                    # Lo que la IA habría proyectado:
+                    proj_goles = (sh['FTHG'] + sh['FTAG'] + sa['FTHG'] + sa['FTAG']) / 2
+                    proj_corners = sh['HC'] + sa['AC']
+                    
+                    # Lo que pasó en realidad:
+                    real_goles = r['FTHG'] + r['FTAG']
+                    real_corners = r['HC'] + r['AC']
+                    
+                    # Verificación de aciertos
+                    goles_ok = real_goles >= proj_goles
+                    corners_ok = real_corners >= proj_corners
+                    
+                    if goles_ok: cumplidas += 1
+                    if corners_ok: cumplidas += 1
+                    total_predicciones += 2
+                    
+                    resultados_procesados.append({
+                        'fila': r,
+                        'sh': sh, 'sa': sa,
+                        'proj_goles': proj_goles, 'proj_corners': proj_corners,
+                        'goles_ok': goles_ok, 'corners_ok': corners_ok
+                    })
 
-        # Mostrar Tasa Global
+        # --- 3. MÉTRICAS SUPERIORES ---
         if total_predicciones > 0:
             tasa_total = cumplidas / total_predicciones
             st.metric("Tasa de Cumplimiento Global", f"{tasa_total:.1%}", 
                       delta=f"{cumplidas}/{total_predicciones} Mercados Logrados")
-        
-        st.divider()
-
-        # --- 4. LISTADO DE PARTIDOS DETALLADO ---
-        for res in resultados_procesados:
-            r = res['fila']
-            sh, sa = res['sh'], res['sa']
             
-            with st.expander(f"🏟️ {r['HomeTeam']} {r['FTHG']} - {r['FTAG']} {r['AwayTeam']}"):
+            st.divider()
+
+            # --- 4. ACORDEONES POR PARTIDO ---
+            for res in resultados_procesados:
+                r = res['fila']
+                sh, sa = res['sh'], res['sa']
                 
-                metrica_data = [
-                    ("Goles", res['proj_goles'], r['FTHG'] + r['FTAG']),
-                    ("Tiros Arco", sh['HST'] + sa['AST'], r['HST'] + r['AST']),
-                    ("Córners", res['proj_corners'], r['HC'] + r['AC']),
-                    ("Amarillas", sh['HY'] + sa['AY'], r['HY'] + r['AY'])
-                ]
+                # Formato del título del acordeón con el marcador real
+                titulo = f"🏟️ {r['HomeTeam']} {int(r['FTHG'])} - {int(r['FTAG'])} {r['AwayTeam']}"
+                
+                with st.expander(titulo):
+                    # Definimos las métricas a mostrar
+                    metrica_data = [
+                        ("Goles Total", res['proj_goles'], r['FTHG'] + r['FTAG']),
+                        ("Córners", res['proj_corners'], r['HC'] + r['AC']),
+                        ("Tiros Arco", sh['HST'] + sa['AST'], r['HST'] + r['AST']),
+                        ("Amarillas", sh['HY'] + sa['AY'], r['HY'] + r['AY'])
+                    ]
 
-                for label, p, re in metrica_data:
-                    real_val = re if pd.notnull(re) else 0
-                    check = "✅" if real_val >= p else "❌"
-                    color = "#27ae60" if real_val >= p else "#c0392b"
-                    
-                    st.markdown(f"""
-                    <div style="border-left: 5px solid {color}; padding: 10px; margin-bottom: 8px; background-color: #1e2129; border-radius: 5px;">
-                        <div style="display: flex; justify-content: space-between;">
-                            <span style="color: gray; font-size: 0.8rem;">{label.upper()}</span>
-                            <span>{check}</span>
-                        </div>
-                        <span style="font-size: 1.1rem;">IA Proyectó: <b>{p:.1f}</b> | Real: <b>{real_val}</b></span>
-                    </div>
-                    """, unsafe_allow_html=True)
-
+                    # Generamos el HTML para las cajas de resultados
+                    cols = st.columns(2)
+                    for i, (label, p, re) in enumerate(metrica_data):
+                        real_val = re if pd.notnull(re) else 0
+                        check = "✅" if real_val >= p else "❌"
+                        color = "#27ae60" if real_val >= p else "#c0392b"
+                        
+                        # Alternamos entre columna 0 y 1
+                        with cols[i % 2]:
+                            st.markdown(f"""
+                            <div style="border-left: 5px solid {color}; padding: 8px; margin-bottom: 10px; background-color: #1e2129; border-radius: 5px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span style="color: #888; font-size: 0.75rem; font-weight: bold;">{label.upper()}</span>
+                                    <span>{check}</span>
+                                </div>
+                                <div style="margin-top: 5px;">
+                                    <span style="font-size: 0.9rem; color: #bbb;">IA:</span> 
+                                    <span style="font-size: 1rem; font-weight: bold;">{p:.1f}</span>
+                                    <span style="color: #555; margin: 0 5px;">|</span>
+                                    <span style="font-size: 0.9rem; color: #bbb;">Real:</span> 
+                                    <span style="font-size: 1rem; font-weight: bold;">{int(real_val)}</span>
+                                </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+        else:
+            st.info("No se pudieron calcular proyecciones para los partidos de esta fecha (Faltan datos históricos de los equipos).")
 elif menu == "BetBuilder Simulator":
     st.title("🛠️ BetBuilder Simulator")
     
