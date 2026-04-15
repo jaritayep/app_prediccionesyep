@@ -186,6 +186,7 @@ elif menu == "Auditoría (Resultados)":
     # Traemos los resultados reales de esa fecha específica
     df_reales = pd.read_sql("SELECT * FROM historial_multiliga_ml WHERE Date = ?", 
                             conn, params=(fecha_str,))
+    st.write(f"Total de filas en el historial: {pd.read_sql('SELECT COUNT(*) FROM historial_multiliga_ml', conn).iloc[0,0]}")
 
     if df_reales.empty:
         st.warning(f"⚠️ No hay resultados registrados en el historial para el {fecha_audit.strftime('%d/%m/%Y')}.")
