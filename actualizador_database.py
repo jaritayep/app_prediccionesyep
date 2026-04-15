@@ -3,62 +3,71 @@ import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
 
-def auditoria_con_stats_reales():
+def auditoria_forzada():
     conn = sqlite3.connect('database_partidos.db')
     cursor = conn.cursor()
     
-    hoy = datetime.now()
-    fechas_a_revisar = [(hoy - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(1, 8)]
+    # Ligas Big Five
     ligas = ["ENG-Premier League", "ESP-La Liga", "ITA-Serie A", "GER-Bundesliga", "FRA-Ligue 1"]
+    
+    print("🚀 INICIANDO AUDITORÍA AGRESIVA...")
 
     try:
+        # Cargamos FBref para la temporada actual
         fbref = sd.FBref(leagues=ligas, seasons="2025")
-        
-        # 1. Traemos las estadísticas de "Manejo del balón" (donde FBref guarda corners y tiros)
-        print("📊 Descargando estadísticas detalladas (esto puede tardar un poco)...")
-        # 'passing' o 'shooting' suelen traer los tiros, pero para corners 
-        # a veces necesitamos 'misc' o procesar el match_stats
-        df_stats = fbref.read_team_match_stats(stat_type="misc") 
-        df_stats = df_stats.reset_index()
-        
-        # 2. Filtrar por nuestro rango de fechas
-        df_stats['date_str'] = df_stats['date'].dt.strftime('%Y-%m-%d')
-        df_recientes = df_stats[df_stats['date_str'].isin(fechas_a_revisar)].copy()
+        df = fbref.read_schedule()
+        df = df.reset_index()
 
-        if df_recientes.empty:
-            print("⚠️ No hay estadísticas nuevas en el rango de 7 días.")
+        # Aseguramos que la columna score sea string y no tenga nulos
+        df = df[df['score'].notnull()].copy()
+        
+        # Filtro: Solo partidos que ocurrieron en ABRIL 2026 (para limpiar todo el mes)
+        df['date_str'] = df['date'].dt.strftime('%Y-%m-%d')
+        df_abril = df[df['date_str'].str.contains('2026-04')].copy()
+
+        print(f"📊 Partidos con marcador encontrados en Abril: {len(df_abril)}")
+
+        if df_abril.empty:
+            print("❌ No se encontraron marcadores de Abril en FBref. ¿Quizás FBref no se ha actualizado?")
             return
 
-        # Agrupamos por partido para tener Local y Visita en la misma fila
-        for (fecha, league, home, away), group in df_recientes.groupby(['date_str', 'league', 'home_team', 'away_team']):
+        for _, row in df_abril.iterrows():
+            fecha = row['date_str']
+            home = row['home_team']
+            away = row['away_team']
+            score_raw = row['score']
             
-            # Extraemos los datos del grupo (un equipo es index 0, el otro es index 1)
-            # Nota: FBref devuelve una fila por equipo, las sumamos o mapeamos
-            team1 = group.iloc[0]
-            team2 = group.iloc[1]
-            
-            # Identificamos quién es local y quién visita para no cruzar cables
-            # (FBref suele poner el marcador y stats por equipo)
-            stats = {
-                'HC': team1['corner_kicks'] if team1['is_home'] else team2['corner_kicks'],
-                'AC': team2['corner_kicks'] if team1['is_home'] else team1['corner_kicks'],
-                'HY': team1['cards_yellow'] if team1['is_home'] else team2['cards_yellow'],
-                'AY': team2['cards_yellow'] if team1['is_home'] else team1['cards_yellow'],
-            }
-
-            # 3. UPDATE en la base de datos (rellenamos los ceros)
-            cursor.execute("""
-                UPDATE historial_multiliga_ml 
-                SET HC = ?, AC = ?, HY = ?, AY = ?
-                WHERE Date LIKE ? AND HomeTeam = ? AND AwayTeam = ?
-            """, (stats['HC'], stats['AC'], stats['HY'], stats['AY'], f"{fecha}%", home, away))
-            
-            print(f"✅ Stats actualizadas: {home} vs {away} ({fecha})")
+            try:
+                # Limpieza de marcador (FBref usa guiones largos '–')
+                goles = score_raw.replace('–', '-').split('-')
+                gl, gv = int(goles[0]), int(goles[1])
+                ftr = 'H' if gl > gv else ('A' if gv > gl else 'D')
+                
+                # INSERTAR/ACTUALIZAR
+                cursor.execute("""
+                    INSERT OR REPLACE INTO historial_multiliga_ml 
+                    ([Date], [HomeTeam], [AwayTeam], [FTHG], [FTAG], [FTR], [HC], [AC], [HST], [AST], [HY], [AY], [HS], [AS])
+                    VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0)
+                """, (fecha, home, away, gl, gv, ftr))
+                
+                # LIMPIAR PREDICCIONES PENDIENTES
+                cursor.execute("""
+                    DELETE FROM tabla_predicciones_limpia 
+                    WHERE (Local LIKE ? OR Visita LIKE ?) AND Date <= ?
+                """, (f"%{home[:5]}%", f"%{away[:5]}%", fecha))
+                
+                print(f"✅ Procesado: {fecha} | {home} {gl}-{gv} {away}")
+                
+            except Exception as e:
+                print(f"⚠️ Error procesando partido {home}-{away}: {e}")
 
         conn.commit()
-        print("\n🏁 ¡Historial enriquecido con estadísticas reales!")
+        print("\n🏁 ¡PROCESO COMPLETADO! Base de datos guardada localmente.")
 
     except Exception as e:
-        print(f"❌ Error al extraer stats: {e}")
+        print(f"❌ ERROR CRÍTICO EN EL SCRIPT: {e}")
     finally:
         conn.close()
+
+if __name__ == "__main__":
+    auditoria_forzada()
