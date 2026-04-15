@@ -3,8 +3,9 @@ import sqlite3
 import pandas as pd
 import time
 from datetime import datetime, timedelta
+import os
 
-API_KEY = "c81aa18fa4974dda90812a83f1aec599"
+API_KEY = os.getenv('API_KEY', 'TU_API_KEY_PARA_PRUEBAS_LOCALES')
 LIGAS = ['PL', 'PD', 'BL1', 'SA', 'FL1', 'PPL'] # Ligas principales
 DB_NAME = "../database_partidos.db"
 
