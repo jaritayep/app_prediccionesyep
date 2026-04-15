@@ -23,7 +23,7 @@ jobs:
           pip install pandas requests
 
       - name: Ejecutar actualizador
-        run: python actualizar_jornadas.py
+        run: python actualizar_jornada.py
         env:
           # Si usas una API KEY guardada en Secrets de GitHub, se pasa así:
           API_KEY: ${{ secrets.FOOTBALL_DATA_API_KEY }}
