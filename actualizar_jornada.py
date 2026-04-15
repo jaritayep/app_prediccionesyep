@@ -7,7 +7,7 @@ import os
 
 API_KEY = os.getenv('API_KEY', 'TU_API_KEY_PARA_PRUEBAS_LOCALES')
 LIGAS = ['PL', 'PD', 'BL1', 'SA', 'FL1', 'PPL'] # Ligas principales
-DB_NAME = "../database_partidos.db"
+DB_NAME = "database_partidos.db"
 
 def actualizar_partidos_semana():
     headers = {'X-Auth-Token': API_KEY}
