@@ -58,7 +58,7 @@ def get_recent_stats(equipo, conn):
 conn = sqlite3.connect(DB_NAME)
 
 st.sidebar.title("⚽ Menú Principal")
-menu = st.sidebar.radio("Ir a:", ["Análisis del Día", "Auditoría (Resultados)", "BetBuilder Simulator"])
+menu = st.sidebar.radio("Ir a:", ["Análisis del Día", "Auditoría (Resultados)", "BetBuilder Simulator", "Comparador H2H"])
 st.sidebar.markdown("---")
 
 if menu == "Análisis del Día":
