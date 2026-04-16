@@ -20,7 +20,7 @@ def auditoria_matchhistory_7_dias():
 
     try:
         # Llamamos a MatchHistory en lugar de FBref
-        mh = sd.MatchHistory(leagues=ligas, seasons="2026")
+        mh = sd.MatchHistory(leagues=ligas, seasons="2025")
         
         # read_games() trae todo: marcadores, corners, tiros y tarjetas de una vez
         df = mh.read_games().reset_index()
