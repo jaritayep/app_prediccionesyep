@@ -404,6 +404,115 @@ elif menu == "BetBuilder Simulator":
 
     except Exception as e:
         st.error(f"Error en el Simulador: {e}")
+elif menu == "Comparador H2H":
+    st.title("⚖️ Comparador H2H (Cara a Cara)")
+    st.markdown("Compara el rendimiento promedio de los últimos 10 partidos de dos equipos.")
+
+    # Función auxiliar para calcular promedios (se queda aquí para fácil copiado)
+    def obtener_stats_totales(equipo, conn_db, limite=10):
+        # Partidos de Local
+        query_h = """
+            SELECT FTHG as GF, FTAG as GC, HC as CF, AC as CC, HST as TF, AST as TC 
+            FROM historial_multiliga_ml 
+            WHERE HomeTeam = ? ORDER BY Date DESC LIMIT ?
+        """
+        df_h = pd.read_sql(query_h, conn_db, params=(equipo, limite))
+        
+        # Partidos de Visita (Invertimos GF/GC porque ahora es el visitante)
+        query_a = """
+            SELECT FTAG as GF, FTHG as GC, AC as CF, HC as CC, AST as TF, HST as TC 
+            FROM historial_multiliga_ml 
+            WHERE AwayTeam = ? ORDER BY Date DESC LIMIT ?
+        """
+        df_a = pd.read_sql(query_a, conn_db, params=(equipo, limite))
+        
+        # Unir ambos historiales
+        df_total = pd.concat([df_h, df_a])
+        
+        if df_total.empty:
+            return None
+            
+        # Calcular promedios
+        return {
+            'Goles a Favor': df_total['GF'].mean(),
+            'Goles en Contra': df_total['GC'].mean(),
+            'Córners a Favor': df_total['CF'].mean(),
+            'Córners en Contra': df_total['CC'].mean(),
+            'Tiros al Arco': df_total['TF'].mean()
+        }
+
+    # 1. Obtener lista única de equipos disponibles en la BD
+    query_equipos = """
+        SELECT DISTINCT HomeTeam as Team FROM historial_multiliga_ml
+        UNION
+        SELECT DISTINCT AwayTeam FROM historial_multiliga_ml
+    """
+    df_equipos = pd.read_sql(query_equipos, conn)
+    lista_equipos = sorted(df_equipos['Team'].dropna().unique().tolist())
+
+    if len(lista_equipos) < 2:
+        st.warning("No hay suficientes equipos en la base de datos para comparar.")
+    else:
+        # 2. Selectores de equipos
+        col1, col2 = st.columns(2)
+        with col1:
+            equipo_a = st.selectbox("Selecciona Equipo A (Local)", lista_equipos, index=0)
+        with col2:
+            idx_b = 1 if len(lista_equipos) > 1 else 0
+            equipo_b = st.selectbox("Selecciona Equipo B (Visita)", lista_equipos, index=idx_b)
+
+        if equipo_a and equipo_b:
+            st.divider()
+            
+            # 3. Calcular estadísticas
+            stats_a = obtener_stats_totales(equipo_a, conn)
+            stats_b = obtener_stats_totales(equipo_b, conn)
+
+            if stats_a and stats_b:
+                # 4. Diseño de la comparativa
+                st.markdown(f"<h3 style='text-align: center;'>{equipo_a} vs {equipo_b}</h3>", unsafe_allow_html=True)
+                
+                metricas = [
+                    ("⚽ Goles a Favor", 'Goles a Favor'),
+                    ("🛡️ Goles en Contra", 'Goles en Contra'),
+                    ("🚩 Córners a Favor", 'Córners a Favor'),
+                    ("🎯 Tiros al Arco", 'Tiros al Arco')
+                ]
+
+                # Mostrar métricas
+                for icono, clave in metricas:
+                    val_a = stats_a[clave]
+                    val_b = stats_b[clave]
+                    
+                    diff_a = val_a - val_b
+                    diff_b = val_b - val_a
+                    
+                    # Para goles en contra, menos es mejor
+                    delta_color = "inverse" if clave == 'Goles en Contra' else "normal"
+
+                    c1, c2, c3 = st.columns([1, 2, 1])
+                    with c1:
+                        st.metric(label="", value=f"{val_a:.1f}", delta=f"{diff_a:.1f}", delta_color=delta_color)
+                    with c2:
+                        st.markdown(f"<div style='text-align: center; padding-top: 15px; font-weight: bold; color: #888;'>{icono}</div>", unsafe_allow_html=True)
+                    with c3:
+                        st.metric(label="", value=f"{val_b:.1f}", delta=f"{diff_b:.1f}", delta_color=delta_color)
+
+                st.divider()
+
+                # 5. Gráfico Comparativo
+                st.subheader("Visualización")
+                df_grafico = pd.DataFrame({
+                    'Métrica': [m[1] for m in metricas],
+                    equipo_a: [stats_a[m[1]] for m in metricas],
+                    equipo_b: [stats_b[m[1]] for m in metricas]
+                }).set_index('Métrica')
+
+                st.bar_chart(df_grafico)
+
+            else:
+                st.info("Faltan datos históricos para uno o ambos equipos seleccionados.")
+
 conn.close()
 # ABRIR CMD Y "cd C:\Users\sealj\OneDrive\Escritorio\proyecto_app" 
 # luego ejecutar py -m streamlit run visualizaciones.py
