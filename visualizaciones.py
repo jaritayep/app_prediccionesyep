@@ -405,7 +405,6 @@ elif menu == "BetBuilder Simulator":
     except Exception as e:
         st.error(f"Error en el Simulador: {e}")
 elif menu == "Comparador H2H":
-elif menu == "Comparador H2H":
     st.title("⚖️ Comparador H2H Inteligente")
     st.markdown("Ajusta el análisis según el factor campo para obtener proyecciones más precisas.")
 
