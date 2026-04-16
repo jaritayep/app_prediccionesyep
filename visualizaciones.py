@@ -405,30 +405,41 @@ elif menu == "BetBuilder Simulator":
     except Exception as e:
         st.error(f"Error en el Simulador: {e}")
 elif menu == "Comparador H2H":
-    st.title("⚖️ Comparador H2H (Cara a Cara)")
-    st.markdown("Filtra por liga y selecciona los equipos para comparar su rendimiento.")
+elif menu == "Comparador H2H":
+    st.title("⚖️ Comparador H2H Inteligente")
+    st.markdown("Ajusta el análisis según el factor campo para obtener proyecciones más precisas.")
 
-    def obtener_stats_totales(equipo, conn_db, limite=10):
+    # --- FUNCIÓN DE CÁLCULO AJUSTADA ---
+    def obtener_stats_personalizadas(equipo, conn_db, modo, limite=10):
+        """
+        Calcula stats filtrando por: 'Local', 'Visitante' o 'Todas (Últimos 10)'
+        """
+        # Query para Local
         query_h = "SELECT FTHG as GF, FTAG as GC, HC as CF, AC as CC, HST as TF, AST as TC FROM historial_multiliga_ml WHERE HomeTeam = ? ORDER BY Date DESC LIMIT ?"
-        df_h = pd.read_sql(query_h, conn_db, params=(equipo, limite))
+        # Query para Visita
         query_a = "SELECT FTAG as GF, FTHG as GC, AC as CF, HC as CC, AST as TF, HST as TC FROM historial_multiliga_ml WHERE AwayTeam = ? ORDER BY Date DESC LIMIT ?"
-        df_a = pd.read_sql(query_a, conn_db, params=(equipo, limite))
-        df_total = pd.concat([df_h, df_a])
-        if df_total.empty: return None
+        
+        if modo == "Solo Local":
+            df = pd.read_sql(query_h, conn_db, params=(equipo, limite))
+        elif modo == "Solo Visitante":
+            df = pd.read_sql(query_a, conn_db, params=(equipo, limite))
+        else:
+            df_h = pd.read_sql(query_h, conn_db, params=(equipo, limite))
+            df_a = pd.read_sql(query_a, conn_db, params=(equipo, limite))
+            df = pd.concat([df_h, df_a]).sort_index(ascending=False).head(limite)
+
+        if df.empty: return None
         return {
-            'Goles a Favor': df_total['GF'].mean(),
-            'Goles en Contra': df_total['GC'].mean(),
-            'Córners a Favor': df_total['CF'].mean(),
-            'Córners en Contra': df_total['CC'].mean(),
-            'Tiros al Arco': df_total['TF'].mean()
+            'Goles a Favor': df['GF'].mean(),
+            'Goles en Contra': df['GC'].mean(),
+            'Córners a Favor': df['CF'].mean(),
+            'Córners en Contra': df['CC'].mean(),
+            'Tiros al Arco': df['TF'].mean()
         }
 
-    # --- TRUCO DE FILTRADO INTELIGENTE ---
-    # Extraemos todos los equipos únicos que realmente tienes en la base de datos
+    # --- DICCIONARIO DE LIGAS (El mismo que ya tienes) ---
     query_todos = "SELECT DISTINCT HomeTeam FROM historial_multiliga_ml"
     equipos_db = sorted(pd.read_sql(query_todos, conn)['HomeTeam'].dropna().tolist())
-
-    # Diccionario con palabras clave para atrapar a los equipos de las 5 grandes ligas
     keywords_ligas = {
         "Premier League": ["Arsenal", "Aston", "Bournemouth", "Brentford", "Brighton", "Chelsea", "Crystal", "Everton", "Fulham", "Ipswich", "Leicester", "Liverpool", "Man", "Newcastle", "Nott", "Southampton", "Tottenham", "West Ham", "Wolves"],
         "La Liga": ["Alaves", "Athletic", "Atletico", "Barcelona", "Betis", "Celta", "Espanyol", "Getafe", "Girona", "Palmas", "Leganes", "Mallorca", "Osasuna", "Rayo", "Real Madrid", "Real Sociedad", "Sevilla", "Valencia", "Valladolid", "Villarreal"],
@@ -436,43 +447,33 @@ elif menu == "Comparador H2H":
         "Bundesliga": ["Augsburg", "Bayer", "Bayern", "Bochum", "Dortmund", "Frankfurt", "Freiburg", "Heidenheim", "Hoffenheim", "Kiel", "Leipzig", "Mainz", "Monchengladbach", "Pauli", "Stuttgart", "Union", "Werder", "Wolfsburg"],
         "Ligue 1": ["Angers", "Auxerre", "Brest", "Havre", "Lens", "Lille", "Lyon", "Marseille", "Monaco", "Montpellier", "Nantes", "Nice", "Paris", "PSG", "Reims", "Rennes", "Etienne", "Strasbourg", "Toulouse"]
     }
-    
     ligas_opciones = list(keywords_ligas.keys()) + ["Todas / Otras Ligas"]
 
-    # 1. Selectores de Liga
-    col_l1, col_l2 = st.columns(2)
-    with col_l1:
-        liga_a = st.selectbox("Liga Equipo A", ligas_opciones, index=0, key="liga_a")
-    with col_l2:
-        liga_b = st.selectbox("Liga Equipo B", ligas_opciones, index=1, key="liga_b")
+    # --- UI: FILTROS DE LIGA Y EQUIPO ---
+    col_a, col_b = st.columns(2)
+    
+    with col_a:
+        l_a = st.selectbox("Liga A", ligas_opciones, key="la")
+        filt_a = [eq for eq in equipos_db if any(k.lower() in eq.lower() for k in keywords_ligas.get(l_a, []))] or equipos_db
+        eq_a = st.selectbox("Equipo A", sorted(filt_a), key="ea")
+        # EL NUEVO SELECTOR DE LOCALÍA
+        modo_a = st.radio("Ver rendimiento de:", ["Juntas", "Solo Local", "Solo Visitante"], key="ma", horizontal=True)
 
-    # 2. Motor de filtrado
-    def filtrar_equipos(liga_seleccionada):
-        if liga_seleccionada == "Todas / Otras Ligas":
-            return equipos_db
-        # Cruza los nombres de tu base de datos con las palabras clave de la liga elegida
-        filtrados = [eq for eq in equipos_db if any(k.lower() in eq.lower() for k in keywords_ligas[liga_seleccionada])]
-        # Si por alguna razón no encuentra equipos (error de escritura), devuelve todos por seguridad
-        return sorted(filtrados) if filtrados else equipos_db
+    with col_b:
+        l_b = st.selectbox("Liga B", ligas_opciones, key="lb", index=1)
+        filt_b = [eq for eq in equipos_db if any(k.lower() in eq.lower() for k in keywords_ligas.get(l_b, []))] or equipos_db
+        eq_b = st.selectbox("Equipo B", sorted(filt_b), key="eb")
+        # EL NUEVO SELECTOR DE LOCALÍA
+        modo_b = st.radio("Ver rendimiento de:", ["Juntas", "Solo Visitante", "Solo Local"], key="mb", horizontal=True)
 
-    lista_a = filtrar_equipos(liga_a)
-    lista_b = filtrar_equipos(liga_b)
-
-    # 3. Selectores de Equipos (Ahora sí, filtrados)
-    col_e1, col_e2 = st.columns(2)
-    with col_e1:
-        equipo_a = st.selectbox("Selecciona Equipo A", lista_a, key="eq_a")
-    with col_e2:
-        equipo_b = st.selectbox("Selecciona Equipo B", lista_b, key="eq_b")
-
-    # --- RENDERIZADO DE LAS STATS ---
-    if equipo_a and equipo_b:
+    # --- RENDERIZADO DE RESULTADOS ---
+    if eq_a and eq_b:
         st.divider()
-        stats_a = obtener_stats_totales(equipo_a, conn)
-        stats_b = obtener_stats_totales(equipo_b, conn)
+        stats_a = obtener_stats_personalizadas(eq_a, conn, modo_a)
+        stats_b = obtener_stats_personalizadas(eq_b, conn, modo_b)
 
         if stats_a and stats_b:
-            st.markdown(f"<h3 style='text-align: center;'>{equipo_a} vs {equipo_b}</h3>", unsafe_allow_html=True)
+            st.markdown(f"<h3 style='text-align: center;'>{eq_a} ({modo_a}) vs {eq_b} ({modo_b})</h3>", unsafe_allow_html=True)
             
             metricas = [
                 ("⚽ Goles a Favor", 'Goles a Favor'),
@@ -492,15 +493,16 @@ elif menu == "Comparador H2H":
                 with c3: st.metric(label="", value=f"{val_b:.1f}", delta=f"{diff_b:.1f}", delta_color=delta_color)
 
             st.divider()
-            st.subheader("Visualización Comparativa")
+            st.subheader("Gráfico Comparativo Ajustado")
             df_grafico = pd.DataFrame({
                 'Métrica': [m[1] for m in metricas],
-                equipo_a: [stats_a[m[1]] for m in metricas],
-                equipo_b: [stats_b[m[1]] for m in metricas]
+                f"{eq_a} ({modo_a})": [stats_a[m[1]] for m in metricas],
+                f"{eq_b} ({modo_b})": [stats_b[m[1]] for m in metricas]
             }).set_index('Métrica')
             st.bar_chart(df_grafico)
         else:
-            st.info("Faltan datos históricos para uno o ambos equipos seleccionados.")
+            st.info("Datos insuficientes para este filtro de localía.")
+
 
 
 conn.close()
