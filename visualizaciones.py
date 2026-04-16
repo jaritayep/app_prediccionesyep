@@ -423,32 +423,49 @@ elif menu == "Comparador H2H":
             'Tiros al Arco': df_total['TF'].mean()
         }
 
-    # 1. Definir Ligas (puedes ajustarlas según tus tablas)
-    ligas_disponibles = ["Premier League", "La Liga", "Serie A", "Bundesliga", "Ligue 1"]
+    # --- TRUCO DE FILTRADO INTELIGENTE ---
+    # Extraemos todos los equipos únicos que realmente tienes en la base de datos
+    query_todos = "SELECT DISTINCT HomeTeam FROM historial_multiliga_ml"
+    equipos_db = sorted(pd.read_sql(query_todos, conn)['HomeTeam'].dropna().tolist())
 
-    # 2. Selectores de Ligas
+    # Diccionario con palabras clave para atrapar a los equipos de las 5 grandes ligas
+    keywords_ligas = {
+        "Premier League": ["Arsenal", "Aston", "Bournemouth", "Brentford", "Brighton", "Chelsea", "Crystal", "Everton", "Fulham", "Ipswich", "Leicester", "Liverpool", "Man", "Newcastle", "Nott", "Southampton", "Tottenham", "West Ham", "Wolves"],
+        "La Liga": ["Alaves", "Athletic", "Atletico", "Barcelona", "Betis", "Celta", "Espanyol", "Getafe", "Girona", "Palmas", "Leganes", "Mallorca", "Osasuna", "Rayo", "Real Madrid", "Real Sociedad", "Sevilla", "Valencia", "Valladolid", "Villarreal"],
+        "Serie A": ["Atalanta", "Bologna", "Cagliari", "Como", "Empoli", "Fiorentina", "Genoa", "Verona", "Inter", "Juventus", "Lazio", "Lecce", "Milan", "Monza", "Napoli", "Parma", "Roma", "Torino", "Udinese", "Venezia"],
+        "Bundesliga": ["Augsburg", "Bayer", "Bayern", "Bochum", "Dortmund", "Frankfurt", "Freiburg", "Heidenheim", "Hoffenheim", "Kiel", "Leipzig", "Mainz", "Monchengladbach", "Pauli", "Stuttgart", "Union", "Werder", "Wolfsburg"],
+        "Ligue 1": ["Angers", "Auxerre", "Brest", "Havre", "Lens", "Lille", "Lyon", "Marseille", "Monaco", "Montpellier", "Nantes", "Nice", "Paris", "PSG", "Reims", "Rennes", "Etienne", "Strasbourg", "Toulouse"]
+    }
+    
+    ligas_opciones = list(keywords_ligas.keys()) + ["Todas / Otras Ligas"]
+
+    # 1. Selectores de Liga
     col_l1, col_l2 = st.columns(2)
     with col_l1:
-        liga_a = st.selectbox("Liga Equipo A", ligas_disponibles, key="liga_a")
+        liga_a = st.selectbox("Liga Equipo A", ligas_opciones, index=0, key="liga_a")
     with col_l2:
-        liga_b = st.selectbox("Liga Equipo B", ligas_disponibles, key="liga_b")
+        liga_b = st.selectbox("Liga Equipo B", ligas_opciones, index=1, key="liga_b")
 
-    # 3. Obtener equipos filtrados (usamos una query que busque equipos que hayan jugado en esas ligas)
-    # Si no tienes columna 'League' en historial, esta query mostrará todos los equipos por ahora
-    def obtener_equipos(conn_db):
-        query = "SELECT DISTINCT HomeTeam FROM historial_multiliga_ml UNION SELECT DISTINCT AwayTeam FROM historial_multiliga_ml"
-        return sorted(pd.read_sql(query, conn_db)['Team'].dropna().unique().tolist())
-    
-    # Para un filtrado real por liga, necesitarías: "SELECT DISTINCT HomeTeam FROM historial_multiliga_ml WHERE League = ?"
-    # Por ahora, traeremos la lista general, pero separada por selectores
-    lista_general = sorted(pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist())
+    # 2. Motor de filtrado
+    def filtrar_equipos(liga_seleccionada):
+        if liga_seleccionada == "Todas / Otras Ligas":
+            return equipos_db
+        # Cruza los nombres de tu base de datos con las palabras clave de la liga elegida
+        filtrados = [eq for eq in equipos_db if any(k.lower() in eq.lower() for k in keywords_ligas[liga_seleccionada])]
+        # Si por alguna razón no encuentra equipos (error de escritura), devuelve todos por seguridad
+        return sorted(filtrados) if filtrados else equipos_db
 
+    lista_a = filtrar_equipos(liga_a)
+    lista_b = filtrar_equipos(liga_b)
+
+    # 3. Selectores de Equipos (Ahora sí, filtrados)
     col_e1, col_e2 = st.columns(2)
     with col_e1:
-        equipo_a = st.selectbox("Selecciona Equipo A", lista_general, key="eq_a")
+        equipo_a = st.selectbox("Selecciona Equipo A", lista_a, key="eq_a")
     with col_e2:
-        equipo_b = st.selectbox("Selecciona Equipo B", lista_general, key="eq_b")
+        equipo_b = st.selectbox("Selecciona Equipo B", lista_b, key="eq_b")
 
+    # --- RENDERIZADO DE LAS STATS ---
     if equipo_a and equipo_b:
         st.divider()
         stats_a = obtener_stats_totales(equipo_a, conn)
@@ -482,6 +499,8 @@ elif menu == "Comparador H2H":
                 equipo_b: [stats_b[m[1]] for m in metricas]
             }).set_index('Métrica')
             st.bar_chart(df_grafico)
+        else:
+            st.info("Faltan datos históricos para uno o ambos equipos seleccionados.")
 
 
 conn.close()
