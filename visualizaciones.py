@@ -209,7 +209,7 @@ elif menu == "Auditoría (Resultados)":
                 sh = get_recent_stats(r['HomeTeam'], conn)
                 sa = get_recent_stats(r['AwayTeam'], conn)
                 
-                if sh and sa:
+                if sh is not None and sa is not None and len(sh) > 0 and len(sa) > 0:
                     # Lo que la IA habría proyectado:
                     proj_goles = (sh['FTHG'] + sh['FTAG'] + sa['FTHG'] + sa['FTAG']) / 2
                     proj_corners = sh['HC'] + sa['AC']
