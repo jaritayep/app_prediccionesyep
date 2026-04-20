@@ -171,111 +171,126 @@ if menu == "Análisis del Día":
         st.error(f"Error al cargar dashboard: {e}")
 
 elif menu == "Auditoría (Resultados)":
-    st.title("🎯 Auditoría de Precisión")
+    st.title("🎯 Auditoría de Precisión (Flexible)")
+    st.markdown("Audita las proyecciones de la IA incluyendo márgenes de error (⚠️) para resultados cercanos.")
     
-    # --- 1. SELECTOR DE FECHA (El "Toggle") ---
     col_f1, col_f2 = st.columns([2, 1])
     with col_f1:
-        # Selector de fecha (Ayer por defecto)
         fecha_audit = st.date_input("Selecciona fecha para auditar:", 
                                     datetime.now() - timedelta(days=1))
     
     fecha_str = fecha_audit.strftime('%Y-%m-%d')
 
-    # --- 2. CARGA DE DATOS (Filtro Flexible) ---
-    # Usamos LIKE para capturar fechas aunque tengan horas (ej: 2026-04-13 00:00:00)
     query = "SELECT * FROM historial_multiliga_ml WHERE Date LIKE ?"
     df_reales = pd.read_sql(query, conn, params=(f"{fecha_str}%",))
 
     if df_reales.empty:
-        st.warning(f"⚠️ No hay resultados registrados en el historial para el {fecha_audit.strftime('%d/%m/%Y')}.")
-        
-        # DEBUG: Si no hay nada, veamos qué fechas existen realmente para orientarte
-        st.info("Buscando fechas disponibles en la base de datos...")
-        ultimas = pd.read_sql("SELECT DISTINCT Date FROM historial_multiliga_ml ORDER BY Date DESC LIMIT 3", conn)
-        if not ultimas.empty:
-            st.write("Últimas fechas con datos en el historial:", ultimas['Date'].tolist())
+        st.warning(f"⚠️ No hay resultados en la base de datos para el {fecha_audit.strftime('%d/%m/%Y')}.")
     else:
         st.subheader(f"📊 Resumen de Jornada: {fecha_audit.strftime('%d/%m/%Y')}")
 
+        # --- FUNCIÓN DE TOLERANCIA INTELIGENTE ---
+        def evaluar_precision(real, proyectado, margen):
+            """Devuelve el ícono y color basado en el acierto o la cercanía"""
+            if real >= proyectado:
+                return "✅", "#27ae60"  # Verde (Cumplido)
+            elif (proyectado - real) <= margen:
+                return "⚠️", "#f39c12"  # Amarillo (Dentro del margen de error)
+            else:
+                return "❌", "#c0392b"  # Rojo (Fallado)
+
         total_predicciones = 0
         cumplidas = 0
+        casi_cumplidas = 0
         resultados_procesados = []
 
-        # Barra de progreso para el cálculo
         with st.spinner('Calculando precisión contra proyecciones IA...'):
             for _, r in df_reales.iterrows():
-                # Obtenemos stats históricas de ambos equipos para recrear la proyección de la IA
                 sh = get_recent_stats(r['HomeTeam'], conn)
                 sa = get_recent_stats(r['AwayTeam'], conn)
                 
                 if sh is not None and sa is not None and len(sh) > 0 and len(sa) > 0:
-                    # Lo que la IA habría proyectado:
-                    proj_goles = (sh['FTHG'] + sh['FTAG'] + sa['FTHG'] + sa['FTAG']) / 2
+                    # 1. Proyecciones (Ahora incluyendo equipos por separado)
+                    proj_goles_total = (sh['FTHG'] + sh['FTAG'] + sa['FTHG'] + sa['FTAG']) / 2
+                    
+                    # Lógica H2H: Ataque Local vs Defensa Visita / Ataque Visita vs Defensa Local
+                    proj_goles_home = (sh['FTHG'] + sa['FTAG']) / 2 
+                    proj_goles_away = (sa['FTHG'] + sh['FTAG']) / 2 
+                    
                     proj_corners = sh['HC'] + sa['AC']
+                    proj_tiros = sh['HST'] + sa['AST']
+                    proj_amarillas = sh['HY'] + sa['AY']
                     
-                    # Lo que pasó en realidad:
-                    real_goles = r['FTHG'] + r['FTAG']
+                    # 2. Resultados Reales
+                    real_goles_home = r['FTHG']
+                    real_goles_away = r['FTAG']
+                    real_goles_total = real_goles_home + real_goles_away
                     real_corners = r['HC'] + r['AC']
+                    real_tiros = r['HST'] + r['AST']
+                    real_amarillas = r['HY'] + r['AY']
                     
-                    # Verificación de aciertos
-                    goles_ok = real_goles >= proj_goles
-                    corners_ok = real_corners >= proj_corners
+                    # 3. Verificación Global Superior (Solo medimos goles totales y corners para el resumen)
+                    if real_goles_total >= proj_goles_total: cumplidas += 1
+                    elif (proj_goles_total - real_goles_total) <= 0.5: casi_cumplidas += 1
                     
-                    if goles_ok: cumplidas += 1
-                    if corners_ok: cumplidas += 1
+                    if real_corners >= proj_corners: cumplidas += 1
+                    elif (proj_corners - real_corners) <= 1.5: casi_cumplidas += 1
+                    
                     total_predicciones += 2
                     
+                    # Guardamos todas las métricas con su respectivo "Margen de Error"
                     resultados_procesados.append({
                         'fila': r,
-                        'sh': sh, 'sa': sa,
-                        'proj_goles': proj_goles, 'proj_corners': proj_corners,
-                        'goles_ok': goles_ok, 'corners_ok': corners_ok
+                        'stats': [
+                            # Formato: (Nombre, Proyectado, Real, Margen de Tolerancia)
+                            ("Goles Total", proj_goles_total, real_goles_total, 0.5), 
+                            (f"Goles {r['HomeTeam']}", proj_goles_home, real_goles_home, 0.5),
+                            (f"Goles {r['AwayTeam']}", proj_goles_away, real_goles_away, 0.5),
+                            ("Córners Total", proj_corners, real_corners, 1.5), 
+                            ("Tiros al Arco", proj_tiros, real_tiros, 1.5),
+                            ("Amarillas", proj_amarillas, real_amarillas, 1.0)
+                        ]
                     })
 
-        # --- 3. MÉTRICAS SUPERIORES ---
+        # --- MÉTRICAS SUPERIORES ---
         if total_predicciones > 0:
-            tasa_total = cumplidas / total_predicciones
-            st.metric("Tasa de Cumplimiento Global", f"{tasa_total:.1%}", 
-                      delta=f"{cumplidas}/{total_predicciones} Mercados Logrados")
+            tasa_exacta = cumplidas / total_predicciones
+            tasa_flexible = (cumplidas + casi_cumplidas) / total_predicciones
+            
+            col_m1, col_m2, col_m3 = st.columns(3)
+            with col_m1:
+                st.metric("Tasa Verde (Exacta)", f"{tasa_exacta:.1%}", f"{cumplidas} de {total_predicciones}")
+            with col_m2:
+                st.metric("Tasa Amarilla (Casi)", f"{(casi_cumplidas / total_predicciones):.1%}", f"{casi_cumplidas} en el margen", delta_color="off")
+            with col_m3:
+                st.metric("Eficacia Flexible", f"{tasa_flexible:.1%}", "Verdes + Amarillos")
             
             st.divider()
 
-            # --- 4. ACORDEONES POR PARTIDO ---
+            # --- ACORDEONES POR PARTIDO ---
             for res in resultados_procesados:
                 r = res['fila']
-                sh, sa = res['sh'], res['sa']
-                
-                # Formato del título del acordeón con el marcador real
                 titulo = f"🏟️ {r['HomeTeam']} {int(r['FTHG'])} - {int(r['FTAG'])} {r['AwayTeam']}"
                 
                 with st.expander(titulo):
-                    # Definimos las métricas a mostrar
-                    metrica_data = [
-                        ("Goles Total", res['proj_goles'], r['FTHG'] + r['FTAG']),
-                        ("Córners", res['proj_corners'], r['HC'] + r['AC']),
-                        ("Tiros Arco", sh['HST'] + sa['AST'], r['HST'] + r['AST']),
-                        ("Amarillas", sh['HY'] + sa['AY'], r['HY'] + r['AY'])
-                    ]
-
-                    # Generamos el HTML para las cajas de resultados
                     cols = st.columns(2)
-                    for i, (label, p, re) in enumerate(metrica_data):
+                    for i, (label, p, re, margen) in enumerate(res['stats']):
                         real_val = re if pd.notnull(re) else 0
-                        check = "✅" if real_val >= p else "❌"
-                        color = "#27ae60" if real_val >= p else "#c0392b"
                         
-                        # Alternamos entre columna 0 y 1
+                        # Llamamos a nuestra nueva función de colores
+                        check, color = evaluar_precision(real_val, p, margen)
+                        
+                        # Alternamos columnas
                         with cols[i % 2]:
                             st.markdown(f"""
                             <div style="border-left: 5px solid {color}; padding: 8px; margin-bottom: 10px; background-color: #1e2129; border-radius: 5px;">
                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                     <span style="color: #888; font-size: 0.75rem; font-weight: bold;">{label.upper()}</span>
-                                    <span>{check}</span>
+                                    <span style="font-size: 1.2rem;">{check}</span>
                                 </div>
                                 <div style="margin-top: 5px;">
                                     <span style="font-size: 0.9rem; color: #bbb;">IA:</span> 
-                                    <span style="font-size: 1rem; font-weight: bold;">{p:.1f}</span>
+                                    <span style="font-size: 1rem; font-weight: bold; color: {color};">{p:.1f}</span>
                                     <span style="color: #555; margin: 0 5px;">|</span>
                                     <span style="font-size: 0.9rem; color: #bbb;">Real:</span> 
                                     <span style="font-size: 1rem; font-weight: bold;">{int(real_val)}</span>
@@ -283,7 +298,7 @@ elif menu == "Auditoría (Resultados)":
                             </div>
                             """, unsafe_allow_html=True)
         else:
-            st.info("No se pudieron calcular proyecciones para los partidos de esta fecha (Faltan datos históricos de los equipos).")
+            st.info("No se pudieron calcular proyecciones (Faltan datos históricos de los equipos).")
 elif menu == "BetBuilder Simulator":
     st.title("🛠️ BetBuilder Simulator")
     
