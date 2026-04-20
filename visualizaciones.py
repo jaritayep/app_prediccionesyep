@@ -5,8 +5,9 @@ import joblib
 import plotly.express as px
 import numpy as np
 import os
-from thefuzz import process, fuzz 
+from thefuzz import process, fuzz
 import math
+from datetime import datetime, timedelta
 
 def poisson_prob(lamba_val, k):
     """Calcula la probabilidad de que ocurran exactamente k eventos"""
@@ -21,7 +22,7 @@ def prob_over(promedio, umbral):
     for k in range(int(umbral) + 1):
         prob_acumulada += poisson_prob(promedio, k)
     return 1 - prob_acumulada
-    
+ 
 # --- CONFIGURACIÓN ---
 st.set_page_config(layout="wide", page_title="AI Betting Lab Pro", page_icon="⚽")
 DB_NAME = 'database_partidos.db'
@@ -29,11 +30,18 @@ MODEL_PATH = "modelo_ia.pkl"
 
 st.markdown("""
     <style>
+    /* 1. Tus estilos actuales */
     [data-testid="stHeader"] { background-color: rgba(0,0,0,0); color: white; }
     footer {visibility: hidden;}
     .block-container { padding-top: 1.5rem; padding-bottom: 1.5rem; }
     [data-testid="stMetricValue"] { font-size: 1.8rem !important; }
     .stMetric { background-color: #1e2129; padding: 10px; border-radius: 10px; }
+
+    /* 2. El truco para evitar el teclado en el celular */
+    .stSelectbox div[role='combobox'] input {
+        caret-color: transparent;
+        cursor: default;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -57,42 +65,44 @@ def get_recent_stats(equipo, conn):
 conn = sqlite3.connect(DB_NAME)
 
 st.sidebar.title("⚽ Menú Principal")
-menu = st.sidebar.radio("Ir a:", ["Análisis del Día", "Auditoría (Resultados)", "BetBuilder Simulator"])
+menu = st.sidebar.radio("Ir a:", ["Análisis del Día", "Auditoría (Resultados)", "BetBuilder Simulator", "Comparador H2H"])
 st.sidebar.markdown("---")
 
 if menu == "Análisis del Día":
     try:
+        # Carga de datos inicial
         equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
         df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
-        
+ 
         # 1. Normalizar fechas y filtrar para mostrar solo HOY y el FUTURO
         df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
-        
-        # Obtenemos la fecha actual (puedes usar pd.Timestamp.now() o date.today())
+ 
+        # Obtenemos la fecha actual
         hoy = pd.Timestamp.now().normalize()
         df_jornada = df_jornada[df_jornada['Date'] >= hoy]
 
         if not df_jornada.empty:
             df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m')
-            
-            # 2. Lista de fechas única y limpia (solo días que no han pasado)
+ 
+            # 2. Selección de fecha y partido en la sidebar
             opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
             dia_sel_str = st.sidebar.selectbox("📅 Seleccionar Día:", opciones_fecha)
-            
-            # 3. Filtrar partidos del día seleccionado
+ 
+            # Filtrar partidos del día seleccionado
             partidos_dia = df_jornada[df_jornada['Fecha_Display'] == dia_sel_str]
             partido_texto = st.sidebar.selectbox("🏟️ Partido:", partidos_dia['Local'] + " vs " + partidos_dia['Visita'])
-            
+ 
+            # Separar y corregir nombres
             home_raw, away_raw = partido_texto.split(" vs ")
             home_team = corregir_nombre_equipo(home_raw, equipos_db)
             away_team = corregir_nombre_equipo(away_raw, equipos_db)
 
-            # --- AQUÍ EMPIEZA EL DASHBOARD ---
+            # --- RENDERIZADO DEL DASHBOARD ---
             st.title(f"{home_team} vs {away_team}")
             st.caption(f"📅 {dia_sel_str}")
 
             col1, col2 = st.columns([1.1, 1])
-            
+ 
             with col1:
                 st.subheader("📊 Historial H2H")
                 q_h2h = f'SELECT Date, HomeTeam as L, AwayTeam as V, FTHG as [GL], FTAG as [GV], FTR as R FROM historial_multiliga_ml WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
@@ -100,7 +110,7 @@ if menu == "Análisis del Día":
                 if not df_h2h.empty:
                     df_h2h['Date'] = pd.to_datetime(df_h2h['Date']).dt.strftime('%d/%m/%y')
                     st.dataframe(df_h2h, use_container_width=True, hide_index=True)
-                
+ 
                 st.subheader("📈 Tendencia de Goles")
                 q_trend = f'SELECT FTHG as [Local], FTAG as [Visita] FROM historial_multiliga_ml WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" ORDER BY Date DESC LIMIT 10'
                 st.line_chart(pd.read_sql(q_trend, conn).iloc[::-1])
@@ -110,19 +120,34 @@ if menu == "Análisis del Día":
                 model = cargar_modelo()
                 if model:
                     stats_h, stats_a = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
+ 
+                    # Preparación de datos para el modelo
                     input_data = [[stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], stats_h['HY'], stats_h['AY']]]
                     prob_ia = model.predict_proba(input_data)[0]
-                    
+ 
+                    # Gráfico de Torta (Probabilidades)
                     fig_pie = px.pie(values=[prob_ia[2], prob_ia[1], prob_ia[0]], names=['Local', 'Empate', 'Visita'], color=['Local', 'Empate', 'Visita'], color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'}, hole=0.45)
                     fig_pie.update_layout(dragmode=False, margin=dict(t=0, b=0, l=0, r=0))
                     st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
-                    
-                    promedio_goles = (stats_h['FTHG'] + stats_h['FTAG'] + stats_a['FTHG'] + stats_a['FTAG']) / 2
+ 
+                    # --- LÓGICA DE PREDICCIÓN DE GOLES ---
+                    pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
+                    pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+                    promedio_goles = pred_home + pred_away
                     prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
+
+                    # Métricas de Goles
                     c1, c2 = st.columns(2)
-                    c1.metric("Goles Exp.", f"{promedio_goles:.2f}")
+                    c1.metric("Goles Exp. (Total)", f"{promedio_goles:.2f}")
                     c2.metric("Prob. Over 2.5", f"{prob_over:.1%}")
                     st.progress(prob_over)
+
+                    # Predicción Individual por Equipo
+                    st.markdown("---")
+                    cp_g1, cp_g2 = st.columns(2)
+                    cp_g1.metric(f"Goles {home_team[:10]}", f"{pred_home:.2f}")
+                    cp_g2.metric(f"Goles {away_team[:10]}", f"{pred_away:.2f}")
+                    st.markdown("---")
 
                     st.markdown("#### **Tiros y Córners**")
                     cp1, cp2 = st.columns(2)
@@ -132,15 +157,13 @@ if menu == "Análisis del Día":
             st.divider()
             st.subheader("🟨 Disciplina y Tarjetas")
             cd1, cd2 = st.columns(2)
-            
-            # Recalculamos stats por si acaso para la sección de tarjetas
-            stats_h, stats_a = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
-            
+ 
             with cd1:
                 st.markdown("#### **Media Amarillas**")
                 m1, m2 = st.columns(2)
                 m1.metric(f"{home_team[:12]}", f"{stats_h['HY']:.1f}")
                 m2.metric(f"{away_team[:12]}", f"{stats_a['AY']:.1f}")
+ 
             with cd2:
                 q_cards = f'SELECT Date, (HY + AY) as Total FROM historial_multiliga_ml WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
                 df_cards = pd.read_sql(q_cards, conn)
@@ -149,205 +172,362 @@ if menu == "Análisis del Día":
                     fig_cards.update_layout(dragmode=False, xaxis={'fixedrange': True}, yaxis={'fixedrange': True})
                     st.plotly_chart(fig_cards, use_container_width=True, config=CONFIG_FIJA)
         else:
-            st.info("No hay partidos programados para hoy o los próximos días. Revisa la sección de Auditoría para ver resultados pasados.")
+            st.info("No hay partidos programados para hoy o los próximos días.")
 
     except Exception as e:
         st.error(f"Error al cargar dashboard: {e}")
 
 elif menu == "Auditoría (Resultados)":
-    st.title("Auditoría de Precisión")
-    
-    # 1. Cargar datos
-    df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
-    # Traemos resultados reales
-    df_reales = pd.read_sql("SELECT * FROM historial_multiliga_ml ORDER BY Date DESC", conn)
+    st.title("🎯 Auditoría de Precisión (Flexible)")
+    st.markdown("Audita las proyecciones de la IA incluyendo márgenes de error (⚠️) para resultados cercanos.")
+ 
+    col_f1, col_f2 = st.columns([2, 1])
+    with col_f1:
+        fecha_audit = st.date_input("Selecciona fecha para auditar:",
+                                    datetime.now() - timedelta(days=1))
+ 
+    fecha_str = fecha_audit.strftime('%Y-%m-%d')
 
-    # --- LIMPIEZA CRÍTICA DE FECHAS (Parche para evitar error de comparación) ---
-    df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
-    df_reales['Date'] = pd.to_datetime(df_reales['Date']).dt.tz_localize(None).dt.normalize()
-    # ----------------------------------------------------------------------------
+    query = "SELECT * FROM historial_multiliga_ml WHERE Date LIKE ?"
+    df_reales = pd.read_sql(query, conn, params=(f"{fecha_str}%",))
 
-    if not df_reales.empty:
-        # Buscamos la última fecha que tiene resultados cargados
-        ultima_fecha_real = df_reales['Date'].max()
-        st.subheader(f"📊 Resumen Jornada: {ultima_fecha_real.strftime('%d/%m/%Y')}")
+    if df_reales.empty:
+        st.warning(f"⚠️ No hay resultados en la base de datos para el {fecha_audit.strftime('%d/%m/%Y')}.")
+    else:
+        st.subheader(f"📊 Resumen de Jornada: {fecha_audit.strftime('%d/%m/%Y')}")
 
-        # Filtrar partidos de esa jornada que estaban en nuestras predicciones
-        partidos_auditar = df_jornada[df_jornada['Date'] == ultima_fecha_real]
-        
-        # --- CÁLCULO DE TASA DE CUMPLIMIENTO TOTAL ---
+        # --- FUNCIÓN DE TOLERANCIA INTELIGENTE ---
+        def evaluar_precision(real, proyectado, margen):
+            """Devuelve el ícono y color basado en el acierto o la cercanía"""
+            if real >= proyectado:
+                return "✅", "#27ae60"  # Verde (Cumplido)
+            elif (proyectado - real) <= margen:
+                return "⚠️", "#f39c12"  # Amarillo (Dentro del margen de error)
+            else:
+                return "❌", "#c0392b"  # Rojo (Fallado)
+
         total_predicciones = 0
         cumplidas = 0
+        casi_cumplidas = 0
+        resultados_procesados = []
 
-        # Primero recorremos para calcular la métrica global
-        for _, fila in partidos_auditar.iterrows():
-            # Buscamos coincidencia por equipo local y fecha exacta
-            match_r = df_reales[(df_reales['HomeTeam'] == fila['Local']) & (df_reales['Date'] == ultima_fecha_real)].head(1)
-            if not match_r.empty:
-                r = match_r.iloc[0]
-                sh, sa = get_recent_stats(fila['Local'], conn), get_recent_stats(fila['Visita'], conn)
-                
-                # Definimos qué cuenta como "acierto" (usamos Goles y Córners como base)
-                # Si el promedio IA se cumplió o superó en la realidad
-                if (r['FTHG'] + r['FTAG']) >= ((sh['FTHG']+sh['FTAG']+sa['FTHG']+sa['FTAG'])/2): cumplidas += 1
-                if (r['HC'] + r['AC']) >= (sh['HC'] + sa['AC']): cumplidas += 1
-                total_predicciones += 2 
-
-        # Mostrar Métrica Superior
-        if total_predicciones > 0:
-            tasa_total = cumplidas / total_predicciones
-            st.metric("Tasa de Cumplimiento Global", f"{tasa_total:.1%}", 
-                      delta=f"{cumplidas}/{total_predicciones} Predicciones Logradas",
-                      help="Porcentaje de mercados (Goles y Córners) donde el resultado real igualó o superó la proyección de la IA.")
-        
-        st.divider()
-
-        # --- LISTADO DE PARTIDOS ---
-        if partidos_auditar.empty:
-            st.warning("No se encontraron predicciones guardadas para la última fecha con resultados.")
-        else:
-            for _, fila in partidos_auditar.iterrows():
-                match_real = df_reales[(df_reales['HomeTeam'] == fila['Local']) & (df_reales['Date'] == ultima_fecha_real)].head(1)
-                
-                with st.expander(f"🏟️ {fila['Local']} vs {fila['Visita']}"):
-                    if not match_real.empty:
-                        r = match_real.iloc[0]
-                        sh, sa = get_recent_stats(fila['Local'], conn), get_recent_stats(fila['Visita'], conn)
-                        
-                        metrica_data = [
-                            ("Goles", (sh['FTHG']+sh['FTAG']+sa['FTHG']+sa['FTAG'])/2, r['FTHG']+r['FTAG']),
-                            ("Tiros Arco", sh['HST'] + sa['AST'], r['HST'] + r['AST']),
-                            ("Córners", sh['HC'] + sa['AC'], r['HC'] + r['AC']),
-                            ("Amarillas", sh['HY'] + sa['AY'], r['HY'] + r['AY'])
+        with st.spinner('Calculando precisión contra proyecciones IA...'):
+            for _, r in df_reales.iterrows():
+                sh = get_recent_stats(r['HomeTeam'], conn)
+                sa = get_recent_stats(r['AwayTeam'], conn)
+ 
+                if sh is not None and sa is not None and len(sh) > 0 and len(sa) > 0:
+                    # 1. Proyecciones (Ahora incluyendo equipos por separado)
+                    proj_goles_total = (sh['FTHG'] + sh['FTAG'] + sa['FTHG'] + sa['FTAG']) / 2
+ 
+                    # Lógica H2H: Ataque Local vs Defensa Visita / Ataque Visita vs Defensa Local
+                    proj_goles_home = (sh['FTHG'] + sa['FTAG']) / 2
+                    proj_goles_away = (sa['FTHG'] + sh['FTAG']) / 2
+ 
+                    proj_corners = sh['HC'] + sa['AC']
+                    proj_tiros = sh['HST'] + sa['AST']
+                    proj_amarillas = sh['HY'] + sa['AY']
+ 
+                    # 2. Resultados Reales
+                    real_goles_home = r['FTHG']
+                    real_goles_away = r['FTAG']
+                    real_goles_total = real_goles_home + real_goles_away
+                    real_corners = r['HC'] + r['AC']
+                    real_tiros = r['HST'] + r['AST']
+                    real_amarillas = r['HY'] + r['AY']
+ 
+                    # 3. Verificación Global Superior (Solo medimos goles totales y corners para el resumen)
+                    if real_goles_total >= proj_goles_total: cumplidas += 1
+                    elif (proj_goles_total - real_goles_total) <= 0.5: casi_cumplidas += 1
+ 
+                    if real_corners >= proj_corners: cumplidas += 1
+                    elif (proj_corners - real_corners) <= 1.5: casi_cumplidas += 1
+ 
+                    total_predicciones += 2
+ 
+                    # Guardamos todas las métricas con su respectivo "Margen de Error"
+                    resultados_procesados.append({
+                        'fila': r,
+                        'stats': [
+                            # Formato: (Nombre, Proyectado, Real, Margen de Tolerancia)
+                            ("Goles Total", proj_goles_total, real_goles_total, 0.5),
+                            (f"Goles {r['HomeTeam']}", proj_goles_home, real_goles_home, 0.5),
+                            (f"Goles {r['AwayTeam']}", proj_goles_away, real_goles_away, 0.5),
+                            ("Córners Total", proj_corners, real_corners, 1.5),
+                            ("Tiros al Arco", proj_tiros, real_tiros, 1.5),
+                            ("Amarillas", proj_amarillas, real_amarillas, 1.0)
                         ]
+                    })
 
-                        for label, p, re in metrica_data:
-                            # Evitamos errores si el dato real es None/Null
-                            real_val = re if pd.notnull(re) else 0
-                            check = "✅" if real_val >= p else "❌"
-                            color = "#27ae60" if real_val >= p else "#c0392b"
-                            
+        # --- MÉTRICAS SUPERIORES ---
+        if total_predicciones > 0:
+            tasa_exacta = cumplidas / total_predicciones
+            tasa_flexible = (cumplidas + casi_cumplidas) / total_predicciones
+ 
+            col_m1, col_m2, col_m3 = st.columns(3)
+            with col_m1:
+                st.metric("Tasa Verde (Exacta)", f"{tasa_exacta:.1%}", f"{cumplidas} de {total_predicciones}")
+            with col_m2:
+                st.metric("Tasa Amarilla (Casi)", f"{(casi_cumplidas / total_predicciones):.1%}", f"{casi_cumplidas} en el margen", delta_color="off")
+            with col_m3:
+                st.metric("Eficacia Flexible", f"{tasa_flexible:.1%}", "Verdes + Amarillos")
+ 
+            st.divider()
+
+            # --- ACORDEONES POR PARTIDO ---
+            for res in resultados_procesados:
+                r = res['fila']
+                titulo = f"🏟️ {r['HomeTeam']} {int(r['FTHG'])} - {int(r['FTAG'])} {r['AwayTeam']}"
+ 
+                with st.expander(titulo):
+                    cols = st.columns(2)
+                    for i, (label, p, re, margen) in enumerate(res['stats']):
+                        real_val = re if pd.notnull(re) else 0
+ 
+                        # Llamamos a nuestra nueva función de colores
+                        check, color = evaluar_precision(real_val, p, margen)
+ 
+                        # Alternamos columnas
+                        with cols[i % 2]:
                             st.markdown(f"""
-                            <div style="border-left: 5px solid {color}; padding: 10px; margin-bottom: 8px; background-color: #1e2129; border-radius: 5px;">
-                                <div style="display: flex; justify-content: space-between;">
-                                    <span style="color: gray; font-size: 0.8rem;">{label.upper()}</span>
-                                    <span>{check}</span>
+                            <div style="border-left: 5px solid {color}; padding: 8px; margin-bottom: 10px; background-color: #1e2129; border-radius: 5px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span style="color: #888; font-size: 0.75rem; font-weight: bold;">{label.upper()}</span>
+                                    <span style="font-size: 1.2rem;">{check}</span>
                                 </div>
-                                <span style="font-size: 1.1rem;">IA: <b>{p:.1f}</b> | Real: <b>{real_val}</b></span>
+                                <div style="margin-top: 5px;">
+                                    <span style="font-size: 0.9rem; color: #bbb;">IA:</span>
+                                    <span style="font-size: 1rem; font-weight: bold; color: {color};">{p:.1f}</span>
+                                    <span style="color: #555; margin: 0 5px;">|</span>
+                                    <span style="font-size: 0.9rem; color: #bbb;">Real:</span>
+                                    <span style="font-size: 1rem; font-weight: bold;">{int(real_val)}</span>
+                                </div>
                             </div>
                             """, unsafe_allow_html=True)
-                    else:
-                        st.info("Resultado no disponible para este partido específico.")
-    else:
-        st.info("No hay datos históricos para auditar. Ejecuta el actualizador de base de datos.")
-
+        else:
+            st.info("No se pudieron calcular proyecciones (Faltan datos históricos de los equipos).")
 elif menu == "BetBuilder Simulator":
-    st.title("🛠️ AI BetBuilder Pro")
-    st.markdown("Construye tu combinada seleccionando partidos reales de la jornada.")
+    st.title("🛠️ BetBuilder Simulator")
+ 
+    try:
+        # 1. Cargar y normalizar datos de la jornada
+        equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
+        df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
+        df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
+ 
+        # Filtrar solo HOY y FUTURO
+        hoy = pd.Timestamp.now().normalize()
+        df_jornada = df_jornada[df_jornada['Date'] >= hoy]
 
-    # Cargar datos para los selectores
-    df_j = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
-    df_j['Date'] = pd.to_datetime(df_j['Date']).dt.normalize()
-    
-    # Mantener los picks en la sesión
-    if 'mi_combinada' not in st.session_state:
-        st.session_state.mi_combinada = []
-
-    col_izq, col_der = st.columns([1.2, 1])
-
-    with col_izq:
-        st.subheader("➕ Añadir Pick")
-        fechas_bb = sorted(df_j['Date'].unique())
-        f_display = [d.strftime('%A %d/%m') for d in pd.to_datetime(fechas_bb)]
-        f_sel = st.selectbox("📅 Día", f_display, key="fecha_bb")
-        
-        # Filtrar partidos por la fecha seleccionada
-        partidos_f = df_j[df_j['Date'].dt.strftime('%A %d/%m') == f_sel]
-        
-        if not partidos_f.empty:
-            partido_sel = st.selectbox("🏟️ Seleccionar Partido", 
-                                       partidos_f['Local'] + " vs " + partidos_f['Visita'], 
-                                       key="partido_bb")
-            
-            h_team, v_team = partido_sel.split(" vs ")
-            s_h = get_recent_stats(h_team, conn)
-            s_v = get_recent_stats(v_team, conn)
-            
-            mercado = st.selectbox("🎯 Mercado", [
-                "Goles: Más de 1.5", "Goles: Más de 2.5", 
-                "Córners: Más de 8.5", "Córners: Más de 10.5",
-                "Tarjetas: Más de 3.5"
-            ])
-
-            # --- LÓGICA DE PROBABILIDADES AJUSTADA ---
-            prob_pick = 0.5
-            
-            if "Goles" in mercado:
-                promedio = (s_h['FTHG'] + s_h['FTAG'] + s_v['FTHG'] + s_v['FTAG']) / 2
-                umbral = 2.5 if "2.5" in mercado else 1.5
-                # Sigmoide con suavizado 1.2
-                prob_pick = 1 / (1 + np.exp(-(promedio - umbral) / 1.2))
-
-            elif "Córners" in mercado:
-                promedio = s_h['HC'] + s_v['AC']
-                umbral = 10.5 if "10.5" in mercado else 8.5
-                # Sigmoide con suavizado 2.0 para estabilidad
-                prob_pick = 1 / (1 + np.exp(-(promedio - umbral) / 2.0))
-
-            elif "Tarjetas" in mercado:
-                promedio = s_h['HY'] + s_v['AY']
-                # Factor de Tensión: Evita que baje de un suelo realista para ligas competitivas
-                promedio_ajustado = max(promedio, 3.2) 
-                prob_pick = 1 / (1 + np.exp(-(promedio_ajustado - 3.5) / 1.0))
-
-            # Ajuste de realismo: margen de casa y límites (15% - 88%)
-            prob_pick = max(0.15, min(0.88, prob_pick * 0.95))
-
-            if st.button("Añadir a la Combinada"):
-                st.session_state.mi_combinada.append({
-                    "partido": partido_sel, 
-                    "mercado": mercado, 
-                    "prob": prob_pick
-                })
-                st.rerun()
+        if df_jornada.empty:
+            st.info("📅 No hay partidos programados para los próximos días.")
         else:
-            st.warning("No hay partidos programados para este día.")
+            # --- PASO 1: SELECCIONAR EL DÍA ---
+            df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m')
+            opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
+ 
+            c_sel1, c_sel2 = st.columns(2)
+            with c_sel1:
+                dia_sel_str = st.selectbox("📅 Seleccionar Día:", opciones_fecha)
+ 
+            # --- PASO 2: SELECCIONAR EL PARTIDO (Filtrado por el día elegido) ---
+            partidos_del_dia = df_jornada[df_jornada['Fecha_Display'] == dia_sel_str]
+            with c_sel2:
+                partido_sel = st.selectbox(
+                    "🏟️ Seleccionar Partido:",
+                    partidos_del_dia['Local'] + " vs " + partidos_del_dia['Visita']
+                )
 
-    with col_der:
-        st.subheader("📝 Tu Cupón")
-        if st.session_state.mi_combinada:
-            prob_total = 1.0
-            for i, p in enumerate(st.session_state.mi_combinada):
-                # Estilo tipo ticket de apuestas
-                st.markdown(f"""
-                <div style="background-color: #1e2129; padding: 10px; border-radius: 5px; margin-bottom: 5px; border-left: 4px solid #f1c40f;">
-                    <small style="color: gray;">{p['partido']}</small><br>
-                    <b>{p['mercado']}</b><br>
-                    <span style="color: #27ae60;">IA: {p['prob']:.1%}</span>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                prob_total *= p['prob']
-                
-                if st.button(f"Remover", key=f"btn_del_{i}"):
-                    st.session_state.mi_combinada.pop(i)
-                    st.rerun()
-            
+            # Extraer y corregir nombres para la base de datos
+            home_raw, away_raw = partido_sel.split(" vs ")
+            home_team = corregir_nombre_equipo(home_raw, equipos_db)
+            away_team = corregir_nombre_equipo(away_raw, equipos_db)
+
+            # 3. CARGAR ESTADÍSTICAS Y CÁLCULOS DE GOLES
+            stats_h = get_recent_stats(home_team, conn)
+            stats_a = get_recent_stats(away_team, conn)
+
+            # Predicción individual (Ataque propio vs Defensa rival)
+            pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
+            pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+
             st.divider()
-            c1, c2 = st.columns(2)
-            c1.metric("Prob. Total", f"{prob_total:.1%}")
-            
-            cuota_val = 1/prob_total if prob_total > 0 else 0
-            c2.metric("Cuota Justa", f"{cuota_val:.2f}")
-            
-            if st.button("Limpiar Todo", type="primary"):
-                st.session_state.mi_combinada = []
-                st.rerun()
+            col_config, col_ticket = st.columns([1.2, 1])
+
+            with col_config:
+                st.subheader("🎯 Configurar Mercados")
+ 
+                mercado = st.selectbox("Seleccionar Mercado:", [
+                    "Goles Totales", "Goles por Equipo", "Córners Totales", "Doble Oportunidad", "Tiros a Puerta"
+                ])
+
+                with st.container(border=True):
+                    if mercado == "Goles Totales":
+                        l_g = st.selectbox("Línea:", [0.5, 1.5, 2.5, 3.5, 4.5], index=2)
+                        t_g = st.radio("Predicción:", ["Over", "Under"], horizontal=True)
+                        prom = pred_home + pred_away
+                        prob = 1 / (1 + np.exp(-(prom - l_g))) if t_g == "Over" else 1 - (1 / (1 + np.exp(-(prom - l_g))))
+                        desc_pick = f"{t_g} {l_g} Goles Totales"
+
+                    elif mercado == "Goles por Equipo":
+                        eq_sel = st.radio("Equipo:", [home_team, away_team], horizontal=True)
+                        l_ge = st.selectbox("Línea de Goles:", [0.5, 1.5, 2.5], index=0)
+                        t_ge = st.radio("Predicción:", ["Over", "Under"], horizontal=True, key="ge_t_bb")
+                        val_p = pred_home if eq_sel == home_team else pred_away
+                        prob = 1 / (1 + np.exp(-(val_p - l_ge))) if t_ge == "Over" else 1 - (1 / (1 + np.exp(-(val_p - l_ge))))
+                        desc_pick = f"{eq_sel[:10]} {t_ge} {l_ge} Goles"
+
+                    elif mercado == "Córners Totales":
+                        l_c = st.slider("Línea Córners:", 5.5, 14.5, 8.5, 0.5)
+                        t_c = st.radio("Predicción:", ["Over", "Under"], horizontal=True)
+                        prom_c = stats_h['HC'] + stats_a['AC']
+                        prob = 1 / (1 + np.exp(-(prom_c - l_c))) if t_c == "Over" else 1 - (1 / (1 + np.exp(-(prom_c - l_c))))
+                        desc_pick = f"{t_c} {l_c} Córners"
+
+                    elif mercado == "Doble Oportunidad":
+                        opts = st.multiselect("Opciones:", ["Local", "Empate", "Visita"], default=["Local", "Empate"])
+                        prob = len(opts) * 0.32 # Probabilidad estimada
+                        desc_pick = " o ".join(opts)
+
+                    elif mercado == "Tiros a Puerta":
+                        l_t = st.number_input("Mínimo Tiros Totales:", 4, 20, 8)
+                        prom_t = stats_h['HST'] + stats_a['AST']
+                        prob = 1 / (1 + np.exp(-(prom_t - l_t)))
+                        desc_pick = f"Más de {l_t} Tiros a Puerta"
+
+                # Lógica del Ticket
+                if "ticket" not in st.session_state: st.session_state.ticket = []
+ 
+                if st.button("➕ Añadir al Ticket"):
+                    st.session_state.ticket.append({"desc": desc_pick, "prob": prob})
+                    st.toast(f"Añadido: {desc_pick}")
+
+            with col_ticket:
+                st.subheader("📋 Tu Apuesta Combinada")
+ 
+                if not st.session_state.ticket:
+                    st.info("Añade mercados para ver la cuota final.")
+                else:
+                    p_final = 1.0
+                    for i, item in enumerate(st.session_state.ticket):
+                        c1, c2 = st.columns([3, 1])
+                        c1.write(f"🔹 {item['desc']}")
+                        c2.write(f"**{item['prob']:.0%}**")
+                        p_final *= item['prob']
+ 
+                    st.divider()
+                    cuota = 1 / p_final if p_final > 0 else 100
+                    st.metric("Probabilidad Total", f"{p_final:.1%}")
+                    st.metric("Cuota Justa", f"{cuota:.2f}")
+
+                    if st.button("🗑️ Limpiar Ticket"):
+                        st.session_state.ticket = []
+                        st.rerun()
+
+    except Exception as e:
+        st.error(f"Error en el Simulador: {e}")
+elif menu == "Comparador H2H":
+    st.title("⚖️ Comparador H2H Inteligente")
+    st.markdown("Ajusta el análisis según el factor campo para obtener proyecciones más precisas.")
+
+    # --- FUNCIÓN DE CÁLCULO AJUSTADA ---
+    def obtener_stats_personalizadas(equipo, conn_db, modo, limite=10):
+        """
+        Calcula stats filtrando por: 'Local', 'Visitante' o 'Todas (Últimos 10)'
+        """
+        # Query para Local
+        query_h = "SELECT FTHG as GF, FTAG as GC, HC as CF, AC as CC, HST as TF, AST as TC FROM historial_multiliga_ml WHERE HomeTeam = ? ORDER BY Date DESC LIMIT ?"
+        # Query para Visita
+        query_a = "SELECT FTAG as GF, FTHG as GC, AC as CF, HC as CC, AST as TF, HST as TC FROM historial_multiliga_ml WHERE AwayTeam = ? ORDER BY Date DESC LIMIT ?"
+ 
+        if modo == "Solo Local":
+            df = pd.read_sql(query_h, conn_db, params=(equipo, limite))
+        elif modo == "Solo Visitante":
+            df = pd.read_sql(query_a, conn_db, params=(equipo, limite))
         else:
-            st.caption("Añade picks para ver la probabilidad acumulada.")
+            df_h = pd.read_sql(query_h, conn_db, params=(equipo, limite))
+            df_a = pd.read_sql(query_a, conn_db, params=(equipo, limite))
+            df = pd.concat([df_h, df_a]).sort_index(ascending=False).head(limite)
+
+        if df.empty: return None
+        return {
+            'Goles a Favor': df['GF'].mean(),
+            'Goles en Contra': df['GC'].mean(),
+            'Córners a Favor': df['CF'].mean(),
+            'Córners en Contra': df['CC'].mean(),
+            'Tiros al Arco': df['TF'].mean()
+        }
+
+    # --- DICCIONARIO DE LIGAS (El mismo que ya tienes) ---
+    query_todos = "SELECT DISTINCT HomeTeam FROM historial_multiliga_ml"
+    equipos_db = sorted(pd.read_sql(query_todos, conn)['HomeTeam'].dropna().tolist())
+    keywords_ligas = {
+        "Premier League": ["Arsenal", "Aston", "Bournemouth", "Brentford", "Brighton", "Chelsea", "Crystal", "Everton", "Fulham", "Ipswich", "Leicester", "Liverpool", "Man", "Newcastle", "Nott", "Southampton", "Tottenham", "West Ham", "Wolves"],
+        "La Liga": ["Alaves", "Athletic", "Atletico", "Barcelona", "Betis", "Celta", "Espanyol", "Getafe", "Girona", "Palmas", "Leganes", "Mallorca", "Osasuna", "Rayo", "Real Madrid", "Real Sociedad", "Sevilla", "Valencia", "Valladolid", "Villarreal"],
+        "Serie A": ["Atalanta", "Bologna", "Cagliari", "Como", "Empoli", "Fiorentina", "Genoa", "Verona", "Inter", "Juventus", "Lazio", "Lecce", "Milan", "Monza", "Napoli", "Parma", "Roma", "Torino", "Udinese", "Venezia"],
+        "Bundesliga": ["Augsburg", "Bayer", "Bayern", "Bochum", "Dortmund", "Frankfurt", "Freiburg", "Heidenheim", "Hoffenheim", "Kiel", "Leipzig", "Mainz", "Monchengladbach", "Pauli", "Stuttgart", "Union", "Werder", "Wolfsburg"],
+        "Ligue 1": ["Angers", "Auxerre", "Brest", "Havre", "Lens", "Lille", "Lyon", "Marseille", "Monaco", "Montpellier", "Nantes", "Nice", "Paris", "PSG", "Reims", "Rennes", "Etienne", "Strasbourg", "Toulouse"]
+    }
+    ligas_opciones = list(keywords_ligas.keys()) + ["Todas / Otras Ligas"]
+
+    # --- UI: FILTROS DE LIGA Y EQUIPO ---
+    col_a, col_b = st.columns(2)
+ 
+    with col_a:
+        l_a = st.selectbox("Liga A", ligas_opciones, key="la")
+        filt_a = [eq for eq in equipos_db if any(k.lower() in eq.lower() for k in keywords_ligas.get(l_a, []))] or equipos_db
+        eq_a = st.selectbox("Equipo A", sorted(filt_a), key="ea")
+        # EL NUEVO SELECTOR DE LOCALÍA
+        modo_a = st.radio("Ver rendimiento de:", ["Juntas", "Solo Local", "Solo Visitante"], key="ma", horizontal=True)
+
+    with col_b:
+        l_b = st.selectbox("Liga B", ligas_opciones, key="lb", index=1)
+        filt_b = [eq for eq in equipos_db if any(k.lower() in eq.lower() for k in keywords_ligas.get(l_b, []))] or equipos_db
+        eq_b = st.selectbox("Equipo B", sorted(filt_b), key="eb")
+        # EL NUEVO SELECTOR DE LOCALÍA
+        modo_b = st.radio("Ver rendimiento de:", ["Juntas", "Solo Visitante", "Solo Local"], key="mb", horizontal=True)
+
+    # --- RENDERIZADO DE RESULTADOS ---
+    if eq_a and eq_b:
+        st.divider()
+        stats_a = obtener_stats_personalizadas(eq_a, conn, modo_a)
+        stats_b = obtener_stats_personalizadas(eq_b, conn, modo_b)
+
+        if stats_a and stats_b:
+            st.markdown(f"<h3 style='text-align: center;'>{eq_a} ({modo_a}) vs {eq_b} ({modo_b})</h3>", unsafe_allow_html=True)
+ 
+            metricas = [
+                ("⚽ Goles a Favor", 'Goles a Favor'),
+                ("🛡️ Goles en Contra", 'Goles en Contra'),
+                ("🚩 Córners a Favor", 'Córners a Favor'),
+                ("🎯 Tiros al Arco", 'Tiros al Arco')
+            ]
+
+            for icono, clave in metricas:
+                val_a, val_b = stats_a[clave], stats_b[clave]
+                diff_a, diff_b = val_a - val_b, val_b - val_a
+                delta_color = "inverse" if clave == 'Goles en Contra' else "normal"
+
+                c1, c2, c3 = st.columns([1, 2, 1])
+                with c1: st.metric(label="", value=f"{val_a:.1f}", delta=f"{diff_a:.1f}", delta_color=delta_color)
+                with c2: st.markdown(f"<div style='text-align: center; padding-top: 15px; font-weight: bold; color: #888;'>{icono}</div>", unsafe_allow_html=True)
+                with c3: st.metric(label="", value=f"{val_b:.1f}", delta=f"{diff_b:.1f}", delta_color=delta_color)
+
+            st.divider()
+            st.subheader("Gráfico Comparativo Ajustado")
+            df_grafico = pd.DataFrame({
+                'Métrica': [m[1] for m in metricas],
+                f"{eq_a} ({modo_a})": [stats_a[m[1]] for m in metricas],
+                f"{eq_b} ({modo_b})": [stats_b[m[1]] for m in metricas]
+            }).set_index('Métrica')
+            st.bar_chart(df_grafico)
+        else:
+            st.info("Datos insuficientes para este filtro de localía.")
+
+
 
 conn.close()
-# ABRIR CMD Y "cd C:\Users\sealj\OneDrive\Escritorio\proyecto_app" 
+# ABRIR CMD Y "cd C:\Users\sealj\OneDrive\Escritorio\proyecto_app"
 # luego ejecutar py -m streamlit run visualizaciones.py
 # ABRIR CMD Y "cd C:\Users\sealj\OneDrive\Escritorio\proyecto_app" 
 # luego ejecutar py -m streamlit run visualizaciones.py
