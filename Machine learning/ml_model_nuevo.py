@@ -7,61 +7,76 @@ import numpy as np
 
 def entrenar_ia_super_pro():
     conn = sqlite3.connect('database_partidos.db')
-    # Traemos también la fecha para calcular la antigüedad
+    # Nota: Asegúrate de que 'dataset_entrenamiento_ia' tenga las columnas de xG
     df = pd.read_sql("SELECT * FROM dataset_entrenamiento_ia", conn)
+    
+    # --- INGENIERÍA DE VARIABLES (xG) ---
+    # Creamos métricas de eficiencia: ¿El equipo aprovecha sus chances?
+    # Usamos un pequeño valor (0.01) para evitar división por cero
+    df['Home_Efficiency'] = df['Home_FTHG'] / (df['xG_home'] + 0.01)
+    df['Away_Efficiency'] = df['Home_FTAG'] / (df['xG_away'] + 0.01)
     
     # --- VARIABLES ACTUALIZADAS ---
     features = [
-        'Home_FTHG', 'Home_FTAG', 'Home_HS', 'Home_AS', 
-        'Home_HST', 'Home_AST', 'Home_HC', 'Home_AC', 'Home_HY', 'Home_AY'
+        'Home_FTHG', 'Home_FTAG', 
+        'Home_HS', 'Home_AS', 
+        'Home_HST', 'Home_AST', 
+        'Home_HC', 'Home_AC', 
+        'Home_HY', 'Home_AY',
+        'xG_home', 'xG_away',        # Agregamos xG directo
+        'Home_Efficiency',           # Agregamos Eficiencia
+        'Away_Efficiency'
     ]
     
     df['Target'] = df['FTR'].map({'H': 2, 'D': 1, 'A': 0})
     
-    # --- LÓGICA DE TIME DECAY (PESO POR ANTIGÜEDAD) ---
+    # --- LÓGICA DE TIME DECAY ---
     df['Date'] = pd.to_datetime(df['Date'])
     fecha_reciente = df['Date'].max()
-    
-    # Calculamos días de diferencia
     df['dias_antiguedad'] = (fecha_reciente - df['Date']).dt.days
     
-    # Función de peso: np.exp(-dias / factor)
-    # Factor 400 significa que un partido de hace ~1 año (365 días) 
-    # tiene la mitad de importancia que uno de hoy.
+    # Mantengo tu factor 400 que es muy sólido
     df['peso_temporal'] = np.exp(-df['dias_antiguedad'] / 400)
     
+    # Limpiamos filas con NaNs en las nuevas variables
     df_ml = df[features + ['Target', 'peso_temporal']].dropna()
     
     X = df_ml[features]
     y = df_ml['Target']
     weights = df_ml['peso_temporal']
 
-    # Separamos manteniendo los índices para los pesos
+    # Separación
     indices = np.arange(len(X))
     X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split(
         X, y, indices, test_size=0.2, random_state=42
     )
 
-    # El peso de los datos de entrenamiento
     weights_train = weights.iloc[idx_train]
 
-    # Modelo balanceado
+    # Ajuste de hiperparámetros para las nuevas variables
     model = RandomForestClassifier(
-        n_estimators=250, # Subimos un poco para captar el peso temporal
-        max_depth=10,     # Reducimos profundidad para evitar que memorice el pasado (overfitting)
+        n_estimators=300,        # Subimos un poco por la mayor complejidad
+        max_depth=12,            # Aumentamos ligeramente para que entienda la relación xG vs Goles
+        min_samples_leaf=5,      # Evita que el modelo sea demasiado "ruidoso"
         random_state=42,
-        class_weight='balanced' # Ayuda si hay pocos empates en los datos
+        class_weight='balanced'
     )
     
-    # --- ENTRENAMIENTO CON PESOS ---
+    # --- ENTRENAMIENTO ---
     model.fit(X_train, y_train, sample_weight=weights_train)
 
     score = model.score(X_test, y_test)
-    print(f"🔥 SCORE CON PESO TEMPORAL: {score:.2%}")
+    print(f"🔥 SCORE CON xG Y PESO TEMPORAL: {score:.2%}")
+
+    # --- IMPORTANCIA DE VARIABLES ---
+    # Esto te dirá qué tanto está pesando el xG en tus predicciones
+    importancias = pd.DataFrame({'feature': features, 'importance': model.feature_importances_})
+    print("\n📊 Top Variables:")
+    print(importancias.sort_values(by='importance', ascending=False).head(5))
 
     joblib.dump(model, './modelo_ia.pkl')
     conn.close()
-    print("✅ Modelo guardado con éxito como 'modelo_ia.pkl'")
+    print("\n✅ Modelo guardado con éxito como 'modelo_ia.pkl'")
 
 if __name__ == "__main__":
     entrenar_ia_super_pro()
