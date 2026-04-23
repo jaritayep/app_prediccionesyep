@@ -50,7 +50,7 @@ CONFIG_FIJA = {'staticPlot': False, 'scrollZoom': False, 'doubleClick': 'reset',
 def corregir_nombre_equipo(nombre_api, lista_db):
     if not lista_db: return nombre_api
     mejor_match, score = process.extractOne(nombre_api.strip(), lista_db, scorer=fuzz.token_set_ratio)
-    return mejor_match if score > 65 else nombre_api
+    return mejor_match if score >75 else nombre_api
 
 def cargar_modelo():
     return joblib.load(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
