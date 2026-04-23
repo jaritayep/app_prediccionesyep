@@ -404,7 +404,6 @@ elif menu == "BetBuilder Simulator":
 
             with col_ticket:
                 st.subheader("📋 Tu Apuesta Combinada")
- 
                 if not st.session_state.ticket:
                     st.info("Añade mercados para ver la cuota final.")
                 else:
