@@ -1,18 +1,28 @@
 import sqlite3
 
-# Conectar a tu base de datos
 conn = sqlite3.connect('database_partidos.db')
 cursor = conn.cursor()
 
-# Ejecutar la orden de aniquilación de partidos sin tiros
-cursor.execute("""
-    DELETE FROM historial_multiliga_ml 
-    WHERE HST IS NULL OR HST = 0 OR HS IS NULL OR HS = 0
-""")
+# Mapa de traducciones manuales para limpiar la base de datos actual
+mapeo = {
+    "Nott'm Forest": "Nottingham Forest",
+    "Ath Bilbao": "Athletic Club",
+    "Athletic Bilbao": "Athletic Club",
+    "Atl Madrid": "Atletico Madrid",
+    "Barca": "Barcelona",
+    "Barça": "Barcelona",
+    "Paris SG": "PSG",
+    "M'gladbach": "Borussia Monchengladbach"
+}
 
-# Ver cuántos borramos
-filas_borradas = cursor.rowcount
+for sucio, limpio in mapeo.items():
+    # Limpiar en el historial
+    cursor.execute("UPDATE historial_multiliga_ml SET HomeTeam = ? WHERE HomeTeam = ?", (limpio, sucio))
+    cursor.execute("UPDATE historial_multiliga_ml SET AwayTeam = ? WHERE AwayTeam = ?", (limpio, sucio))
+    # Limpiar en las predicciones por si acaso
+    cursor.execute("UPDATE tabla_predicciones_limpia SET Local = ? WHERE Local = ?", (limpio, sucio))
+    cursor.execute("UPDATE tabla_predicciones_limpia SET Visita = ? WHERE Visita = ?", (limpio, sucio))
+
 conn.commit()
 conn.close()
-
-print(f"🧹 Limpieza exitosa: Se eliminaron {filas_borradas} partidos 'zombies' sin estadísticas.")
+print("✅ Nombres estandarizados en toda la base de datos.")
