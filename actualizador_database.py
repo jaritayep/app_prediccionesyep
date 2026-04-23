@@ -4,6 +4,40 @@ from datetime import datetime, timedelta
 import warnings
 
 warnings.filterwarnings('ignore')
+def normalizar_nombre(nombre):
+    # Diccionario de correcciones manuales (El "Traductor")
+    mapeo_especifico = {
+        # Premier League (Los que ya arreglamos)
+        "Nott'm Forest": "Nottingham Forest",
+        "Man Utd": "Manchester United",
+        "Man City": "Manchester City",
+        
+        # La Liga (Ajustes de Bilbao, Madrid y Barça)
+        "Ath Bilbao": "Athletic Club",
+        "Athletic Bilbao": "Athletic Club",
+        "Atl Madrid": "Atletico Madrid",
+        "Ath Madrid": "Atletico Madrid",
+        "Atleti": "Atletico Madrid",
+        "Barca": "Barcelona",
+        "Barça": "Barcelona",
+        "FC Barcelona": "Barcelona",
+        
+        # Bundesliga
+        "M'gladbach": "Borussia Monchengladbach",
+        "M'Gladbach": "Borussia Monchengladbach",
+        "Gladbach": "Borussia Monchengladbach",
+        
+        # Ligue 1
+        "Paris SG": "PSG",
+        "Paris Saint Germain": "PSG",
+        "Paris SG": "PSG"
+    }
+    
+    nombre_sucio = nombre.strip()
+    
+    # Si el nombre está en nuestra lista de "rebeldes", lo cambiamos directo
+    # Si no está, devolvemos el original para que pase a thefuzz
+    return mapeo_especifico.get(nombre_sucio, nombre_sucio)
 
 def auditoria_directa_csv():
     conn = sqlite3.connect('database_partidos.db')
