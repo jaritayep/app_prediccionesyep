@@ -73,25 +73,25 @@ if menu == "Análisis del Día":
         # Carga de datos inicial
         equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
         df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
- 
+
         # 1. Normalizar fechas y filtrar para mostrar solo HOY y el FUTURO
         df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
- 
+
         # Obtenemos la fecha actual
         hoy = pd.Timestamp.now().normalize()
         df_jornada = df_jornada[df_jornada['Date'] >= hoy]
 
         if not df_jornada.empty:
             df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m')
- 
+
             # 2. Selección de fecha y partido en la sidebar
             opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
             dia_sel_str = st.sidebar.selectbox("📅 Seleccionar Día:", opciones_fecha)
- 
+
             # Filtrar partidos del día seleccionado
             partidos_dia = df_jornada[df_jornada['Fecha_Display'] == dia_sel_str]
             partido_texto = st.sidebar.selectbox("🏟️ Partido:", partidos_dia['Local'] + " vs " + partidos_dia['Visita'])
- 
+
             # Separar y corregir nombres
             home_raw, away_raw = partido_texto.split(" vs ")
             home_team = corregir_nombre_equipo(home_raw, equipos_db)
@@ -102,7 +102,7 @@ if menu == "Análisis del Día":
             st.caption(f"📅 {dia_sel_str}")
 
             col1, col2 = st.columns([1.1, 1])
- 
+
             with col1:
                 st.subheader("📊 Historial H2H")
                 q_h2h = f'SELECT Date, HomeTeam as L, AwayTeam as V, FTHG as [GL], FTAG as [GV], FTR as R FROM historial_multiliga_ml WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
@@ -110,7 +110,7 @@ if menu == "Análisis del Día":
                 if not df_h2h.empty:
                     df_h2h['Date'] = pd.to_datetime(df_h2h['Date']).dt.strftime('%d/%m/%y')
                     st.dataframe(df_h2h, use_container_width=True, hide_index=True)
- 
+
                 st.subheader("📈 Tendencia de Goles")
                 q_trend = f'SELECT FTHG as [Local], FTAG as [Visita] FROM historial_multiliga_ml WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" ORDER BY Date DESC LIMIT 10'
                 st.line_chart(pd.read_sql(q_trend, conn).iloc[::-1])
@@ -120,25 +120,46 @@ if menu == "Análisis del Día":
                 model = cargar_modelo()
                 if model:
                     stats_h, stats_a = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
- 
-                    # Preparación de datos para el modelo
-                    input_data = [[stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], stats_h['HY'], stats_h['AY']]]
+
+                    # --- NUEVA PREPARACIÓN DE DATOS PARA LA IA (14 Variables) ---
+                    # 1. Extraer xG (Uso .get() para evitar caídas si la DB devuelve nulo)
+                    xg_h = stats_h.get('xG_home', 1.0) 
+                    xg_a = stats_a.get('xG_away', 1.0)
+                    
+                    # 2. Calcular Eficiencia
+                    eff_h = stats_h['FTHG'] / (xg_h + 0.01)
+                    eff_a = stats_a['FTAG'] / (xg_a + 0.01)
+
+                    # 3. Construir el array con el orden EXACTO de las 14 variables
+                    input_data = [[
+                        stats_h['FTHG'], stats_h['FTAG'], 
+                        stats_h['HS'], stats_h['AS'], 
+                        stats_h['HST'], stats_h['AST'], 
+                        stats_h['HC'], stats_h['AC'], 
+                        stats_h['HY'], stats_h['AY'],
+                        xg_h,            # Variable 11
+                        xg_a,            # Variable 12
+                        eff_h,           # Variable 13
+                        eff_a            # Variable 14
+                    ]]
+                    
+                    # Generar predicción
                     prob_ia = model.predict_proba(input_data)[0]
- 
+
                     # Gráfico de Torta (Probabilidades)
                     fig_pie = px.pie(values=[prob_ia[2], prob_ia[1], prob_ia[0]], names=['Local', 'Empate', 'Visita'], color=['Local', 'Empate', 'Visita'], color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'}, hole=0.45)
                     fig_pie.update_layout(dragmode=False, margin=dict(t=0, b=0, l=0, r=0))
                     st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
- 
+
                     # --- LÓGICA DE PREDICCIÓN DE GOLES ---
                     pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
                     pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
                     promedio_goles = pred_home + pred_away
                     prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
 
-                    # Métricas de Goles
+                    # Métricas de Goles Actualizadas
                     c1, c2 = st.columns(2)
-                    c1.metric("Goles Exp. (Total)", f"{promedio_goles:.2f}")
+                    c1.metric("Goles Exp. (xG Total)", f"{(xg_h + xg_a):.2f}")
                     c2.metric("Prob. Over 2.5", f"{prob_over:.1%}")
                     st.progress(prob_over)
 
@@ -157,13 +178,13 @@ if menu == "Análisis del Día":
             st.divider()
             st.subheader("🟨 Disciplina y Tarjetas")
             cd1, cd2 = st.columns(2)
- 
+
             with cd1:
                 st.markdown("#### **Media Amarillas**")
                 m1, m2 = st.columns(2)
                 m1.metric(f"{home_team[:12]}", f"{stats_h['HY']:.1f}")
                 m2.metric(f"{away_team[:12]}", f"{stats_a['AY']:.1f}")
- 
+
             with cd2:
                 q_cards = f'SELECT Date, (HY + AY) as Total FROM historial_multiliga_ml WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
                 df_cards = pd.read_sql(q_cards, conn)
@@ -171,6 +192,7 @@ if menu == "Análisis del Día":
                     fig_cards = px.bar(df_cards, x='Date', y='Total', color_discrete_sequence=['#f1c40f'])
                     fig_cards.update_layout(dragmode=False, xaxis={'fixedrange': True}, yaxis={'fixedrange': True})
                     st.plotly_chart(fig_cards, use_container_width=True, config=CONFIG_FIJA)
+                    
         else:
             st.info("No hay partidos programados para hoy o los próximos días.")
 
