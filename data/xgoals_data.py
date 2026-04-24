@@ -1,91 +1,73 @@
-from understatapi import UnderstatClient
-import pandas as pd
 import sqlite3
+import pandas as pd
+from understatapi import UnderstatClient
+from thefuzz import process
 import time
 
-def normalizar_nombre(nombre):
-    # Diccionario maestro para que Understat coincida con tu DB
-    mapeo_especifico = {
-        # Premier League
-        "Nott'm Forest": "Nottingham Forest",
-        "Nottingham Forest": "Nottingham Forest",
-        "Man Utd": "Manchester United",
-        "Manchester United": "Manchester United",
-        "Man City": "Manchester City",
-        "Manchester City": "Manchester City",
-        
-        # La Liga
-        "Ath Bilbao": "Athletic Club",
-        "Athletic Club": "Athletic Club",
-        "Athletic Bilbao": "Athletic Club",
-        "Atl Madrid": "Atletico Madrid",
-        "Atletico Madrid": "Atletico Madrid",
-        "Ath Madrid": "Atletico Madrid",
-        "Barca": "Barcelona",
-        "Barça": "Barcelona",
-        "FC Barcelona": "Barcelona",
-        "Barcelona": "Barcelona",
-        
-        # Bundesliga
-        "M'gladbach": "Borussia Monchengladbach",
-        "M'Gladbach": "Borussia Monchengladbach",
-        "Gladbach": "Borussia Monchengladbach",
-        "Borussia M.Gladbach": "Borussia Monchengladbach",
-        
-        # Ligue 1
-        "Paris SG": "PSG",
-        "PSG": "PSG",
-        "Paris Saint Germain": "PSG",
-        "Paris Saint-Germain": "PSG"
-    }
-    
-    nombre_sucio = nombre.strip()
-    return mapeo_especifico.get(nombre_sucio, nombre_sucio)
-
-def sincronizacion_total_xg(year=2025):
-    understat = UnderstatClient()
+def sincronizacion_masiva():
     conn = sqlite3.connect('database_partidos.db')
     cursor = conn.cursor()
     
-    ligas_understat = ['EPL', 'La_Liga', 'Serie_A', 'Bundesliga', 'Ligue_1']
+    # 1. Obtenemos nuestros equipos para la IA de thefuzz
+    cursor.execute("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml")
+    equipos_db = [row[0] for row in cursor.fetchall()]
 
-    for league in ligas_understat:
-        print(f"📥 Sincronizando {league}...")
-        try:
-            matches = understat.league(league=league).get_match_data(season=year)
-            df_xg = pd.DataFrame(matches)
-            df_xg = df_xg[df_xg['isResult'] == True]
-            
-            actualizados = 0
-            for _, match in df_xg.iterrows():
-                home = normalizar_nombre(match['h']['title'])
-                away = normalizar_nombre(match['a']['title'])
-                xg_h = float(match['xG']['h'])
-                xg_a = float(match['xG']['a'])
+    understat = UnderstatClient()
+    ligas_understat = ['EPL', 'La_Liga', 'Serie_A', 'Bundesliga', 'Ligue_1']
+    
+    # 2. LAS TEMPORADAS FALTANTES
+    temporadas = [2023, 2024, 2025] 
+    traductor_automatico = {}
+
+    print("🤖 Iniciando Descarga Histórica Masiva...")
+
+    for year in temporadas:
+        print(f"\n🚀 --- PROCESANDO TEMPORADA {year}/{year+1} ---")
+        for league in ligas_understat:
+            print(f"📥 Descargando {league}...")
+            try:
+                matches = understat.league(league=league).get_match_data(season=year)
+                df_xg = pd.DataFrame(matches)
+                df_xg = df_xg[df_xg['isResult'] == True] # Solo terminados
                 
-                # BUSQUEDA FLEXIBLE:
-                # Buscamos el partido por equipos. Si hay varios (ej. ida y vuelta), 
-                # el 'ORDER BY Date DESC' asegura que miremos el más reciente.
-                cursor.execute("""
-                    UPDATE historial_multiliga_ml 
-                    SET xG_home = ?, xG_away = ?
-                    WHERE HomeTeam = ? AND AwayTeam = ? 
-                    AND (xG_home IS NULL OR xG_home = 0)
-                """, (xg_h, xg_a, home, away))
+                actualizados = 0
+                for _, match in df_xg.iterrows():
+                    u_home = match['h']['title']
+                    u_away = match['a']['title']
+                    
+                    # Cortamos la fecha para quedarnos solo con YYYY-MM-DD
+                    fecha_corta = match['datetime'][:10] 
+                    
+                    # Traducción automática de equipos
+                    if u_home not in traductor_automatico:
+                        traductor_automatico[u_home] = process.extractOne(u_home, equipos_db)[0]
+                    if u_away not in traductor_automatico:
+                        traductor_automatico[u_away] = process.extractOne(u_away, equipos_db)[0]
+                    
+                    db_home = traductor_automatico[u_home]
+                    db_away = traductor_automatico[u_away]
+                    xg_h = float(match['xG']['h'])
+                    xg_a = float(match['xG']['a'])
+                    
+                    # 3. El truco del LIKE: Busca la fecha ignorando el 00:00:00
+                    cursor.execute("""
+                        UPDATE historial_multiliga_ml 
+                        SET xG_home = ?, xG_away = ?
+                        WHERE HomeTeam = ? AND AwayTeam = ? AND Date LIKE ?
+                    """, (xg_h, xg_a, db_home, db_away, f"{fecha_corta}%"))
+                    
+                    if cursor.rowcount > 0:
+                        actualizados += 1
                 
-                if cursor.rowcount > 0:
-                    actualizados += 1
-            
-            print(f"✅ {league}: {actualizados} nuevos partidos recibieron xG.")
-            
-        except Exception as e:
-            print(f"❌ Error en {league}: {e}")
-        
-        time.sleep(1)
+                print(f"✅ {league}: {actualizados} partidos guardados.")
+                time.sleep(1) # Cuidamos el servidor de Understat
+                
+            except Exception as e:
+                print(f"❌ Error en {league}: {e}")
 
     conn.commit()
     conn.close()
-    print("\n🏁 ¡Sincronización terminada!")
+    print("\n🏁 ¡HISTORIAL COMPLETO SINCRONIZADO! Vuelve a correr tu Auditoría.")
 
 if __name__ == "__main__":
-    sincronizacion_total_xg()
+    sincronizacion_masiva()

@@ -56,10 +56,21 @@ def cargar_modelo():
     return joblib.load(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
 
 def get_recent_stats(equipo, conn):
-    q = f'SELECT "FTHG", "FTAG", "HS", "AS", "HST", "AST", "HC", "AC", "HY", "AY" FROM historial_multiliga_ml WHERE HomeTeam="{equipo}" OR AwayTeam="{equipo}" ORDER BY Date DESC LIMIT 5'
+    # 1. Coma eliminada y columnas de xG añadidas
+    q = f'SELECT "FTHG", "FTAG", "HS", "AS", "HST", "AST", "HC", "AC", "HY", "AY", "xG_home", "xG_away" FROM historial_multiliga_ml WHERE HomeTeam="{equipo}" OR AwayTeam="{equipo}" ORDER BY Date DESC LIMIT 5'
     res = pd.read_sql(q, conn)
-    if res.empty: return pd.Series(0, index=['FTHG','FTAG','HS','AS','HST','AST','HC','AC','HY','AY'])
+    
+    if res.empty: 
+        return pd.Series(
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.0, 1.0], 
+            index=['FTHG','FTAG','HS','AS','HST','AST','HC','AC','HY','AY', 'xG_home', 'xG_away']
+        )
+        
     pesos = np.array([5, 4, 3, 2, 1])[:len(res)]
+    
+    # 3. Limpieza preventiva: Si por algún motivo hay un hueco sin xG, lo rellenamos con 1.0 para que np.average no falle
+    res = res.fillna(1.0)
+    
     return pd.Series({col: np.average(res[col], weights=pesos/pesos.sum()) for col in res.columns})
 
 conn = sqlite3.connect(DB_NAME)
