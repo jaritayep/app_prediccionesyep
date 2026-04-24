@@ -72,6 +72,27 @@ def get_recent_stats(equipo, conn):
     res = res.fillna(1.0)
     
     return pd.Series({col: np.average(res[col], weights=pesos/pesos.sum()) for col in res.columns})
+def obtener_puntos_temporada(equipo, conn):
+    # Calcula la jerarquía del equipo
+    query = f"SELECT FTR, HomeTeam, AwayTeam FROM historial_multiliga_ml WHERE (HomeTeam='{equipo}' OR AwayTeam='{equipo}') AND Date >= date('now', '-9 months')"
+    df = pd.read_sql(query, conn)
+    pts = 0
+    for _, row in df.iterrows():
+        if row['HomeTeam'] == equipo and row['FTR'] == 'H': pts += 3
+        elif row['AwayTeam'] == equipo and row['FTR'] == 'A': pts += 3
+        elif row['FTR'] == 'D': pts += 1
+    return pts
+
+def obtener_dias_descanso(equipo, conn):
+    # Calcula cuántos días pasaron desde su último partido
+    q = f"SELECT Date FROM historial_multiliga_ml WHERE HomeTeam='{equipo}' OR AwayTeam='{equipo}' ORDER BY Date DESC LIMIT 1"
+    res = pd.read_sql(q, conn)
+    if not res.empty:
+        ultima_fecha = pd.to_datetime(res.iloc[0]['Date'][:10])
+        hoy = pd.Timestamp.now().normalize()
+        dias = (hoy - ultima_fecha).days
+        return min(max(dias, 3), 14) # Mantenemos los límites lógicos
+    return 7
 
 conn = sqlite3.connect(DB_NAME)
 
@@ -136,6 +157,13 @@ if menu == "Análisis del Día":
                     # 1. Extraer xG (Uso .get() para evitar caídas si la DB devuelve nulo)
                     xg_h = stats_h.get('xG_home', 1.0) 
                     xg_a = stats_a.get('xG_away', 1.0)
+                    xg_diff = xg_h - xg_a
+                    pts_h = obtener_puntos_temporada(home_team, conn)
+                    pts_a = obtener_puntos_temporada(away_team, conn)
+                    dif_tabla = pts_h - pts_a
+                    descanso_h = obtener_dias_descanso(home_team, conn)
+                    descanso_a = obtener_dias_descanso(away_team, conn)
+                    ventaja_fisica = descanso_h - descanso_a
                     
                     # 2. Calcular Eficiencia
                     eff_h = stats_h['FTHG'] / (xg_h + 0.01)
@@ -148,10 +176,12 @@ if menu == "Análisis del Día":
                         stats_h['HST'], stats_h['AST'], 
                         stats_h['HC'], stats_h['AC'], 
                         stats_h['HY'], stats_h['AY'],
-                        xg_h,            # Variable 11
-                        xg_a,            # Variable 12
-                        eff_h,           # Variable 13
-                        eff_a            # Variable 14
+                        xg_h,            # Variable 11 (xG Local)
+                        xg_a,            # Variable 12 (xG Visita)
+                        eff_h,           # Variable 13 (Eficiencia)
+                        xg_diff,         # Variable 14 (Dominio)
+                        dif_tabla,       # Variable 15 (Tabla)
+                        ventaja_fisica   # Variable 16 (Fatiga)
                     ]]
                     
                     # Generar predicción
