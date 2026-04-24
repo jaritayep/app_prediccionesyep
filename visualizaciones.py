@@ -371,13 +371,13 @@ elif menu == "Auditoría (Resultados)":
             st.info("No se pudieron calcular proyecciones (Faltan datos históricos de los equipos).")
 elif menu == "BetBuilder Simulator":
     st.title("🛠️ BetBuilder Simulator")
- 
+
     try:
         # 1. Cargar y normalizar datos de la jornada
         equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
         df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
         df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
- 
+
         # Filtrar solo HOY y FUTURO
         hoy = pd.Timestamp.now().normalize()
         df_jornada = df_jornada[df_jornada['Date'] >= hoy]
@@ -388,11 +388,11 @@ elif menu == "BetBuilder Simulator":
             # --- PASO 1: SELECCIONAR EL DÍA ---
             df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m')
             opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
- 
+
             c_sel1, c_sel2 = st.columns(2)
             with c_sel1:
                 dia_sel_str = st.selectbox("📅 Seleccionar Día:", opciones_fecha)
- 
+
             # --- PASO 2: SELECCIONAR EL PARTIDO (Filtrado por el día elegido) ---
             partidos_del_dia = df_jornada[df_jornada['Fecha_Display'] == dia_sel_str]
             with c_sel2:
@@ -406,25 +406,32 @@ elif menu == "BetBuilder Simulator":
             home_team = corregir_nombre_equipo(home_raw, equipos_db)
             away_team = corregir_nombre_equipo(away_raw, equipos_db)
 
-            # 3. CARGAR ESTADÍSTICAS Y CÁLCULOS DE GOLES
+            # 3. CARGAR ESTADÍSTICAS Y CÁLCULOS
             stats_h = get_recent_stats(home_team, conn)
             stats_a = get_recent_stats(away_team, conn)
 
-            # Predicción individual (Ataque propio vs Defensa rival)
+            # Predicción tradicional y extracción de xG (premium)
             pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
             pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+            
+            xg_h = stats_h.get('xG_home', pred_home)
+            xg_a = stats_a.get('xG_away', pred_away)
 
             st.divider()
             col_config, col_ticket = st.columns([1.2, 1])
 
             with col_config:
                 st.subheader("🎯 Configurar Mercados")
- 
+
+                # --- NUEVA LISTA DE MERCADOS EXPANDIDA ---
                 mercado = st.selectbox("Seleccionar Mercado:", [
-                    "Goles Totales", "Goles por Equipo", "Córners Totales", "Doble Oportunidad", "Tiros a Puerta"
+                    "Goles Totales", "Goles por Equipo", "BTTS (Ambos Anotan)", 
+                    "Hándicap Asiático", "Córners Totales", "Córners por Equipo", 
+                    "Tiros a Puerta Totales", "Tiros a Puerta por Equipo", "Doble Oportunidad"
                 ])
 
                 with st.container(border=True):
+                    
                     if mercado == "Goles Totales":
                         l_g = st.selectbox("Línea:", [0.5, 1.5, 2.5, 3.5, 4.5], index=2)
                         t_g = st.radio("Predicción:", ["Over", "Under"], horizontal=True)
@@ -439,28 +446,59 @@ elif menu == "BetBuilder Simulator":
                         val_p = pred_home if eq_sel == home_team else pred_away
                         prob = 1 / (1 + np.exp(-(val_p - l_ge))) if t_ge == "Over" else 1 - (1 / (1 + np.exp(-(val_p - l_ge))))
                         desc_pick = f"{eq_sel[:10]} {t_ge} {l_ge} Goles"
+                        
+                    elif mercado == "BTTS (Ambos Anotan)":
+                        t_btts = st.radio("Predicción:", ["Sí", "No"], horizontal=True)
+                        # Probabilidad Poisson de que marquen > 0 goles
+                        prob_yes = (1 - np.exp(-xg_h)) * (1 - np.exp(-xg_a))
+                        prob = prob_yes if t_btts == "Sí" else (1 - prob_yes)
+                        desc_pick = f"Ambos Anotan: {t_btts}"
+                        
+                    elif mercado == "Hándicap Asiático":
+                        eq_sel = st.radio("Equipo con Ventaja:", [home_team, away_team], horizontal=True)
+                        l_hc = st.selectbox("Línea de Hándicap:", ["+1.5", "+2.5"])
+                        # Calculamos la diferencia de dominio y le sumamos la ventaja virtual
+                        dif_esperada = (xg_h - xg_a) if eq_sel == home_team else (xg_a - xg_h)
+                        valor_hc = float(l_hc)
+                        prob = 1 / (1 + np.exp(-(dif_esperada + valor_hc)))
+                        desc_pick = f"Hándicap Asiático {eq_sel[:10]} {l_hc}"
 
                     elif mercado == "Córners Totales":
-                        l_c = st.slider("Línea Córners:", 5.5, 14.5, 8.5, 0.5)
+                        l_c = st.slider("Línea Córners Totales:", 5.5, 14.5, 8.5, 1.0)
                         t_c = st.radio("Predicción:", ["Over", "Under"], horizontal=True)
                         prom_c = stats_h['HC'] + stats_a['AC']
                         prob = 1 / (1 + np.exp(-(prom_c - l_c))) if t_c == "Over" else 1 - (1 / (1 + np.exp(-(prom_c - l_c))))
-                        desc_pick = f"{t_c} {l_c} Córners"
+                        desc_pick = f"{t_c} {l_c} Córners Totales"
+                        
+                    elif mercado == "Córners por Equipo":
+                        eq_sel = st.radio("Equipo:", [home_team, away_team], horizontal=True)
+                        l_ce = st.slider("Línea Córners Equipo:", 2.5, 9.5, 4.5, 1.0)
+                        t_ce = st.radio("Predicción:", ["Over", "Under"], horizontal=True)
+                        prom_ce = stats_h['HC'] if eq_sel == home_team else stats_a['AC']
+                        prob = 1 / (1 + np.exp(-(prom_ce - l_ce))) if t_ce == "Over" else 1 - (1 / (1 + np.exp(-(prom_ce - l_ce))))
+                        desc_pick = f"{eq_sel[:10]} {t_ce} {l_ce} Córners"
 
                     elif mercado == "Doble Oportunidad":
                         opts = st.multiselect("Opciones:", ["Local", "Empate", "Visita"], default=["Local", "Empate"])
-                        prob = len(opts) * 0.32 # Probabilidad estimada
+                        prob = len(opts) * 0.32 # Probabilidad base estimada
                         desc_pick = " o ".join(opts)
 
-                    elif mercado == "Tiros a Puerta":
+                    elif mercado == "Tiros a Puerta Totales":
                         l_t = st.number_input("Mínimo Tiros Totales:", 4, 20, 8)
                         prom_t = stats_h['HST'] + stats_a['AST']
                         prob = 1 / (1 + np.exp(-(prom_t - l_t)))
-                        desc_pick = f"Más de {l_t} Tiros a Puerta"
+                        desc_pick = f"Más de {l_t} Tiros a Puerta Totales"
+                        
+                    elif mercado == "Tiros a Puerta por Equipo":
+                        eq_sel = st.radio("Equipo:", [home_team, away_team], horizontal=True)
+                        l_te = st.slider("Mínimo Tiros a Puerta:", 1, 10, 4)
+                        prom_te = stats_h['HST'] if eq_sel == home_team else stats_a['AST']
+                        prob = 1 / (1 + np.exp(-(prom_te - l_te)))
+                        desc_pick = f"{eq_sel[:10]} Más de {l_te} Tiros a Puerta"
 
                 # Lógica del Ticket
                 if "ticket" not in st.session_state: st.session_state.ticket = []
- 
+
                 if st.button("➕ Añadir al Ticket"):
                     st.session_state.ticket.append({"desc": desc_pick, "prob": prob})
                     st.toast(f"Añadido: {desc_pick}")
@@ -476,11 +514,11 @@ elif menu == "BetBuilder Simulator":
                         c1.write(f"🔹 {item['desc']}")
                         c2.write(f"**{item['prob']:.0%}**")
                         p_final *= item['prob']
- 
+
                     st.divider()
                     cuota = 1 / p_final if p_final > 0 else 100
                     st.metric("Probabilidad Total", f"{p_final:.1%}")
-                    st.metric("Cuota Justa", f"{cuota:.2f}")
+                    st.metric("Cuota Justa Calculada", f"{cuota:.2f}")
 
                     if st.button("🗑️ Limpiar Ticket"):
                         st.session_state.ticket = []
