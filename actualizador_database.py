@@ -44,7 +44,7 @@ def auditoria_directa_csv():
     cursor = conn.cursor()
     
     hoy = datetime.now()
-    hace_7_dias = hoy - timedelta(days=7)
+    hace_7_dias = hoy - timedelta(days=15)
     
     codigos_ligas = ['E0', 'SP1', 'I1', 'D1', 'F1']
     
