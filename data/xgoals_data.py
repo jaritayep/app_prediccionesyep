@@ -16,7 +16,7 @@ def sincronizacion_masiva():
     ligas_understat = ['EPL', 'La_Liga', 'Serie_A', 'Bundesliga', 'Ligue_1']
     
     # 2. LAS TEMPORADAS FALTANTES
-    temporadas = [2023, 2024, 2025] 
+    temporadas = [2025] 
     traductor_automatico = {}
 
     print("🤖 Iniciando Descarga Histórica Masiva...")
