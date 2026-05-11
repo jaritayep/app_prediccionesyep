@@ -8,6 +8,7 @@ import os
 from thefuzz import process, fuzz
 import math
 from datetime import datetime, timedelta
+import requests
 
 def poisson_prob(lamba_val, k):
     """Calcula la probabilidad de que ocurran exactamente k eventos"""
@@ -526,108 +527,194 @@ elif menu == "BetBuilder Simulator":
 
     except Exception as e:
         st.error(f"Error en el Simulador: {e}")
-elif menu == "Comparador H2H":
-    st.title("⚖️ Comparador H2H Inteligente")
-    st.markdown("Ajusta el análisis según el factor campo para obtener proyecciones más precisas.")
+elif menu == "Portafolio de Picks":
+    st.title("📈 Portafolio de Inversión (Flat Staking)")
+    
+    API_KEY = "3ec28dbd498ab9985e9792b3f50a8902" # <--- Tu llave
+    
+    # 1. Crear tabla de historial si no existe
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS portafolio_historico (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            Date TEXT,
+            HomeTeam TEXT,
+            AwayTeam TEXT,
+            Mercado TEXT,
+            Cuota REAL,
+            Prob_IA REAL,
+            Edge REAL,
+            Stake REAL,
+            Estado TEXT DEFAULT 'Pendiente',
+            Beneficio_Neto REAL DEFAULT 0
+        )
+    """)
+    conn.commit()
 
-    # --- FUNCIÓN DE CÁLCULO AJUSTADA ---
-    def obtener_stats_personalizadas(equipo, conn_db, modo, limite=10):
-        """
-        Calcula stats filtrando por: 'Local', 'Visitante' o 'Todas (Últimos 10)'
-        """
-        # Query para Local
-        query_h = "SELECT FTHG as GF, FTAG as GC, HC as CF, AC as CC, HST as TF, AST as TC FROM historial_multiliga_ml WHERE HomeTeam = ? ORDER BY Date DESC LIMIT ?"
-        # Query para Visita
-        query_a = "SELECT FTAG as GF, FTHG as GC, AC as CF, HC as CC, AST as TF, HST as TC FROM historial_multiliga_ml WHERE AwayTeam = ? ORDER BY Date DESC LIMIT ?"
- 
-        if modo == "Solo Local":
-            df = pd.read_sql(query_h, conn_db, params=(equipo, limite))
-        elif modo == "Solo Visitante":
-            df = pd.read_sql(query_a, conn_db, params=(equipo, limite))
-        else:
-            df_h = pd.read_sql(query_h, conn_db, params=(equipo, limite))
-            df_a = pd.read_sql(query_a, conn_db, params=(equipo, limite))
-            df = pd.concat([df_h, df_a]).sort_index(ascending=False).head(limite)
+    # Tabs para organizar la UI
+    tab1, tab2 = st.tabs(["🔍 Escáner en Vivo", "📊 Rendimiento Histórico"])
 
-        if df.empty: return None
-        return {
-            'Goles a Favor': df['GF'].mean(),
-            'Goles en Contra': df['GC'].mean(),
-            'Córners a Favor': df['CF'].mean(),
-            'Córners en Contra': df['CC'].mean(),
-            'Tiros al Arco': df['TF'].mean()
+    with tab1:
+        st.markdown("Cruzando probabilidades IA contra cuotas reales para guardar los 10 mejores picks.")
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=1000, value=5000, step=1000)
+        
+        ligas_api = {
+            'EPL': 'soccer_epl', 'LaLiga': 'soccer_spain_la_liga',
+            'SerieA': 'soccer_italy_serie_a', 'Bundesliga': 'soccer_germany_bundesliga',
+            'Ligue1': 'soccer_france_ligue_one'
         }
 
-    # --- DICCIONARIO DE LIGAS (El mismo que ya tienes) ---
-    query_todos = "SELECT DISTINCT HomeTeam FROM historial_multiliga_ml"
-    equipos_db = sorted(pd.read_sql(query_todos, conn)['HomeTeam'].dropna().tolist())
-    keywords_ligas = {
-        "Premier League": ["Arsenal", "Aston", "Bournemouth", "Brentford", "Brighton", "Chelsea", "Crystal", "Everton", "Fulham", "Ipswich", "Leicester", "Liverpool", "Man", "Newcastle", "Nott", "Southampton", "Tottenham", "West Ham", "Wolves"],
-        "La Liga": ["Alaves", "Athletic", "Atletico", "Barcelona", "Betis", "Celta", "Espanyol", "Getafe", "Girona", "Palmas", "Leganes", "Mallorca", "Osasuna", "Rayo", "Real Madrid", "Real Sociedad", "Sevilla", "Valencia", "Valladolid", "Villarreal"],
-        "Serie A": ["Atalanta", "Bologna", "Cagliari", "Como", "Empoli", "Fiorentina", "Genoa", "Verona", "Inter", "Juventus", "Lazio", "Lecce", "Milan", "Monza", "Napoli", "Parma", "Roma", "Torino", "Udinese", "Venezia"],
-        "Bundesliga": ["Augsburg", "Bayer", "Bayern", "Bochum", "Dortmund", "Frankfurt", "Freiburg", "Heidenheim", "Hoffenheim", "Kiel", "Leipzig", "Mainz", "Monchengladbach", "Pauli", "Stuttgart", "Union", "Werder", "Wolfsburg"],
-        "Ligue 1": ["Angers", "Auxerre", "Brest", "Havre", "Lens", "Lille", "Lyon", "Marseille", "Monaco", "Montpellier", "Nantes", "Nice", "Paris", "PSG", "Reims", "Rennes", "Etienne", "Strasbourg", "Toulouse"]
-    }
-    ligas_opciones = list(keywords_ligas.keys()) + ["Todas / Otras Ligas"]
+        try:
+            equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
+            df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
+            df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
+            hoy = pd.Timestamp.now().normalize()
+            df_jornada = df_jornada[df_jornada['Date'] == hoy]
 
-    # --- UI: FILTROS DE LIGA Y EQUIPO ---
-    col_a, col_b = st.columns(2)
- 
-    with col_a:
-        l_a = st.selectbox("Liga A", ligas_opciones, key="la")
-        filt_a = [eq for eq in equipos_db if any(k.lower() in eq.lower() for k in keywords_ligas.get(l_a, []))] or equipos_db
-        eq_a = st.selectbox("Equipo A", sorted(filt_a), key="ea")
-        # EL NUEVO SELECTOR DE LOCALÍA
-        modo_a = st.radio("Ver rendimiento de:", ["Juntas", "Solo Local", "Solo Visitante"], key="ma", horizontal=True)
+            if st.button("🔍 Escanear Mercado en Vivo", type="primary"):
+                if df_jornada.empty:
+                    st.info("📅 No hay partidos en la base de datos para hoy.")
+                else:
+                    with st.spinner("Buscando ineficiencias de mercado..."):
+                        oportunidades = []
+                        ligas_hoy = df_jornada['League'].unique()
 
-    with col_b:
-        l_b = st.selectbox("Liga B", ligas_opciones, key="lb", index=1)
-        filt_b = [eq for eq in equipos_db if any(k.lower() in eq.lower() for k in keywords_ligas.get(l_b, []))] or equipos_db
-        eq_b = st.selectbox("Equipo B", sorted(filt_b), key="eb")
-        # EL NUEVO SELECTOR DE LOCALÍA
-        modo_b = st.radio("Ver rendimiento de:", ["Juntas", "Solo Visitante", "Solo Local"], key="mb", horizontal=True)
+                        for liga in ligas_hoy:
+                            if liga not in ligas_api: continue
+                            sport_key = ligas_api[liga]
+                            
+                            url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={API_KEY}&regions=eu,uk&markets=h2h,totals&oddsFormat=decimal"
+                            response = requests.get(url)
+                            if response.status_code != 200: continue
+                                
+                            datos_api = response.json()
+                            partidos_liga_hoy = df_jornada[df_jornada['League'] == liga]
 
-    # --- RENDERIZADO DE RESULTADOS ---
-    if eq_a and eq_b:
-        st.divider()
-        stats_a = obtener_stats_personalizadas(eq_a, conn, modo_a)
-        stats_b = obtener_stats_personalizadas(eq_b, conn, modo_b)
+                            for partido_api in datos_api:
+                                h_api, a_api = partido_api['home_team'], partido_api['away_team']
+                                h_db = process.extractOne(h_api, equipos_db)[0]
+                                a_db = process.extractOne(a_api, equipos_db)[0]
+                                
+                                if not ((partidos_liga_hoy['Local'] == h_db) & (partidos_liga_hoy['Visita'] == a_db)).any(): continue
+                                if not partido_api['bookmakers']: continue
+                                bookie = partido_api['bookmakers'][0] 
+                                
+                                cuota_h = cuota_a = cuota_o25 = 0
+                                
+                                for market in bookie['markets']:
+                                    if market['key'] == 'h2h':
+                                        for out in market['outcomes']:
+                                            if out['name'] == h_api: cuota_h = out['price']
+                                            elif out['name'] == a_api: cuota_a = out['price']
+                                    elif market['key'] == 'totals':
+                                        for out in market['outcomes']:
+                                            if out['name'] == 'Over' and out.get('point') == 2.5: cuota_o25 = out['price']
 
-        if stats_a and stats_b:
-            st.markdown(f"<h3 style='text-align: center;'>{eq_a} ({modo_a}) vs {eq_b} ({modo_b})</h3>", unsafe_allow_html=True)
- 
-            metricas = [
-                ("⚽ Goles a Favor", 'Goles a Favor'),
-                ("🛡️ Goles en Contra", 'Goles en Contra'),
-                ("🚩 Córners a Favor", 'Córners a Favor'),
-                ("🎯 Tiros al Arco", 'Tiros al Arco')
-            ]
+                                stats_h = get_recent_stats(h_db, conn)
+                                stats_a = get_recent_stats(a_db, conn)
+                                xg_h = stats_h.get('xG_home', 1.0)
+                                xg_a = stats_a.get('xG_away', 1.0)
+                                pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
+                                pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
 
-            for icono, clave in metricas:
-                val_a, val_b = stats_a[clave], stats_b[clave]
-                diff_a, diff_b = val_a - val_b, val_b - val_a
-                delta_color = "inverse" if clave == 'Goles en Contra' else "normal"
+                                # Cruzar IA vs Mercado
+                                if cuota_h > 0:
+                                    prob_ia = 1 / (1 + np.exp(-(xg_h - xg_a)))
+                                    oportunidades.append((hoy.strftime('%Y-%m-%d'), h_db, a_db, 'Local', cuota_h, prob_ia, prob_ia - (1/cuota_h)))
+                                if cuota_a > 0:
+                                    prob_ia = 1 / (1 + np.exp(-(xg_a - xg_h)))
+                                    oportunidades.append((hoy.strftime('%Y-%m-%d'), h_db, a_db, 'Visita', cuota_a, prob_ia, prob_ia - (1/cuota_a)))
+                                if cuota_o25 > 0:
+                                    prob_ia = 1 / (1 + np.exp(-((pred_home + pred_away) - 2.5)))
+                                    oportunidades.append((hoy.strftime('%Y-%m-%d'), h_db, a_db, '+2.5 Goles', cuota_o25, prob_ia, prob_ia - (1/cuota_o25)))
 
-                c1, c2, c3 = st.columns([1, 2, 1])
-                with c1: st.metric(label="", value=f"{val_a:.1f}", delta=f"{diff_a:.1f}", delta_color=delta_color)
-                with c2: st.markdown(f"<div style='text-align: center; padding-top: 15px; font-weight: bold; color: #888;'>{icono}</div>", unsafe_allow_html=True)
-                with c3: st.metric(label="", value=f"{val_b:.1f}", delta=f"{diff_b:.1f}", delta_color=delta_color)
+                        if oportunidades:
+                            df_ops = pd.DataFrame(oportunidades, columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob IA', 'Edge'])
+                            # Filtro estricto: Edge entre 3% y 15%
+                            df_validas = df_ops[(df_ops['Edge'] > 0.03) & (df_ops['Edge'] < 0.15)].copy()
+                            df_portfolio = df_validas.sort_values(by='Edge', ascending=False).groupby('Home').head(1).head(10).reset_index(drop=True)
+                            
+                            if df_portfolio.empty:
+                                st.warning("El mercado es eficiente hoy. No hay Edge de valor.")
+                            else:
+                                st.success(f"Se encontraron {len(df_portfolio)} picks.")
+                                df_display = df_portfolio.copy()
+                                df_display['Partido'] = df_display['Home'] + " vs " + df_display['Away']
+                                df_display['Edge'] = (df_display['Edge'] * 100).round(2).astype(str) + "%"
+                                df_display['Prob IA'] = (df_display['Prob IA'] * 100).round(1).astype(str) + "%"
+                                
+                                st.dataframe(df_display[['Partido', 'Mercado', 'Cuota', 'Prob IA', 'Edge']], hide_index=True)
 
+                                # Guardar en BD
+                                if st.button("💾 Guardar Portafolio de Hoy"):
+                                    for _, row in df_portfolio.iterrows():
+                                        cursor.execute("""
+                                            INSERT INTO portafolio_historico 
+                                            (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
+                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                        """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob IA'], row['Edge'], stake_fijo))
+                                    conn.commit()
+                                    st.toast("¡Portafolio guardado! Revisar en la pestaña Rendimiento.")
+
+        except Exception as e:
+            st.error(f"Error procesando: {e}")
+
+    with tab2:
+        st.subheader("🏦 Rendimiento Acumulado")
+        
+        # 1. BOTÓN MÁGICO: Liquidar apuestas pendientes (Cruza con tu actualización de 3 días)
+        if st.button("⚖️ Liquidar Apuestas Pendientes", type="primary"):
+            df_pendientes = pd.read_sql("SELECT * FROM portafolio_historico WHERE Estado = 'Pendiente'", conn)
+            liquidadas = 0
+            
+            for _, pick in df_pendientes.iterrows():
+                # Buscar resultado real en el historial
+                q_res = f"SELECT FTHG, FTAG, FTR FROM historial_multiliga_ml WHERE Date = '{pick['Date']}' AND HomeTeam = '{pick['HomeTeam']}'"
+                res_real = pd.read_sql(q_res, conn)
+                
+                if not res_real.empty:
+                    hg, ag, ftr = res_real.iloc[0]['FTHG'], res_real.iloc[0]['FTAG'], res_real.iloc[0]['FTR']
+                    ganada = False
+                    
+                    if pick['Mercado'] == 'Local' and ftr == 'H': ganada = True
+                    elif pick['Mercado'] == 'Visita' and ftr == 'A': ganada = True
+                    elif pick['Mercado'] == '+2.5 Goles' and (hg + ag) > 2.5: ganada = True
+                    
+                    estado = 'Ganada' if ganada else 'Perdida'
+                    beneficio = (pick['Stake'] * pick['Cuota']) - pick['Stake'] if ganada else -pick['Stake']
+                    
+                    cursor.execute("UPDATE portafolio_historico SET Estado = ?, Beneficio_Neto = ? WHERE id = ?", (estado, beneficio, pick['id']))
+                    liquidadas += 1
+            
+            conn.commit()
+            if liquidadas > 0: st.success(f"¡Se liquidaron {liquidadas} partidos finalizados!")
+            else: st.info("No hay partidos nuevos terminados para liquidar.")
+
+        # 2. Mostrar Resultados Globales
+        df_hist = pd.read_sql("SELECT * FROM portafolio_historico", conn)
+        
+        if not df_hist.empty:
+            df_cerradas = df_hist[df_hist['Estado'] != 'Pendiente']
+            
+            c_res1, c_res2, c_res3 = st.columns(3)
+            with c_res1:
+                st.metric("Picks Cerrados", len(df_cerradas))
+            with c_res2:
+                ganadas = len(df_cerradas[df_cerradas['Estado'] == 'Ganada'])
+                win_rate = (ganadas / len(df_cerradas) * 100) if len(df_cerradas) > 0 else 0
+                st.metric("Win Rate", f"{win_rate:.1f}%")
+            with c_res3:
+                beneficio_total = df_cerradas['Beneficio_Neto'].sum()
+                st.metric("Ganancia Neta Global", f"${beneficio_total:,.0f}")
+                
             st.divider()
-            st.subheader("Gráfico Comparativo Ajustado")
-            df_grafico = pd.DataFrame({
-                'Métrica': [m[1] for m in metricas],
-                f"{eq_a} ({modo_a})": [stats_a[m[1]] for m in metricas],
-                f"{eq_b} ({modo_b})": [stats_b[m[1]] for m in metricas]
-            }).set_index('Métrica')
-            st.bar_chart(df_grafico)
-        else:
-            st.info("Datos insuficientes para este filtro de localía.")
-
+            st.write("📋 **Historial de Picks**")
+            # Damos formato para mostrar
+            df_mostrar = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto']].sort_values(by='Date', ascending=False)
+            st.dataframe(df_mostrar, hide_index=True, use_container_width=True)
 
 
 conn.close()
-# ABRIR CMD Y "cd C:\Users\sealj\OneDrive\Escritorio\proyecto_app"
-# luego ejecutar py -m streamlit run visualizaciones.py
-# ABRIR CMD Y "cd C:\Users\sealj\OneDrive\Escritorio\proyecto_app" 
-# luego ejecutar py -m streamlit run visualizaciones.py
