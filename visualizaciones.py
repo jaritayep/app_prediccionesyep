@@ -557,10 +557,6 @@ elif menu == "Portafolio de Picks":
     with tab1:
         st.markdown("Cruzando probabilidades IA contra cuotas reales para guardar los 10 mejores picks.")
         
-        c1, c2 = st.columns(2)
-        with c1:
-            stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=500, value=5000, step=1000)
-        
         ligas_api = {
             'EPL': 'soccer_epl', 'LaLiga': 'soccer_spain_la_liga',
             'SerieA': 'soccer_italy_serie_a', 'Bundesliga': 'soccer_germany_bundesliga',
@@ -571,16 +567,33 @@ elif menu == "Portafolio de Picks":
             equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
             df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
             df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
+            
+            # 1. Filtramos ESTRICTAMENTE para HOY y MAÑANA
             hoy = pd.Timestamp.now().normalize()
-            df_jornada = df_jornada[df_jornada['Date'] == hoy]
+            manana = hoy + pd.Timedelta(days=1)
+            df_jornada = df_jornada[(df_jornada['Date'] >= hoy) & (df_jornada['Date'] <= manana)]
 
-            if st.button("🔍 Escanear Mercado en Vivo", type="primary"):
-                if df_jornada.empty:
-                    st.info("📅 No hay partidos en la base de datos para hoy.")
-                else:
-                    with st.spinner("Buscando ineficiencias de mercado..."):
+            if df_jornada.empty:
+                st.info("📅 No hay partidos programados para hoy ni mañana en la base de datos.")
+            else:
+                # 2. Creamos las opciones de fecha para el selector
+                df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m/%Y')
+                opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=1000, value=5000, step=1000)
+                with c2:
+                    dia_seleccionado_str = st.selectbox("📅 Seleccionar Día a Escanear:", opciones_fecha)
+
+                # 3. Filtramos el DataFrame EXACTAMENTE para el día seleccionado
+                df_jornada_dia = df_jornada[df_jornada['Fecha_Display'] == dia_seleccionado_str]
+                fecha_para_guardar = df_jornada_dia.iloc[0]['Date'].strftime('%Y-%m-%d') # Para la BD
+
+                if st.button("🔍 Escanear Mercado en Vivo", type="primary"):
+                    with st.spinner(f"Buscando ineficiencias de mercado para el {dia_seleccionado_str}..."):
                         oportunidades = []
-                        ligas_hoy = df_jornada['League'].unique()
+                        ligas_hoy = df_jornada_dia['League'].unique()
 
                         for liga in ligas_hoy:
                             if liga not in ligas_api: continue
@@ -591,7 +604,7 @@ elif menu == "Portafolio de Picks":
                             if response.status_code != 200: continue
                                 
                             datos_api = response.json()
-                            partidos_liga_hoy = df_jornada[df_jornada['League'] == liga]
+                            partidos_liga_hoy = df_jornada_dia[df_jornada_dia['League'] == liga]
 
                             for partido_api in datos_api:
                                 h_api, a_api = partido_api['home_team'], partido_api['away_team']
@@ -623,13 +636,13 @@ elif menu == "Portafolio de Picks":
                                 # Cruzar IA vs Mercado
                                 if cuota_h > 0:
                                     prob_ia = 1 / (1 + np.exp(-(xg_h - xg_a)))
-                                    oportunidades.append((hoy.strftime('%Y-%m-%d'), h_db, a_db, 'Local', cuota_h, prob_ia, prob_ia - (1/cuota_h)))
+                                    oportunidades.append((fecha_para_guardar, h_db, a_db, 'Local', cuota_h, prob_ia, prob_ia - (1/cuota_h)))
                                 if cuota_a > 0:
                                     prob_ia = 1 / (1 + np.exp(-(xg_a - xg_h)))
-                                    oportunidades.append((hoy.strftime('%Y-%m-%d'), h_db, a_db, 'Visita', cuota_a, prob_ia, prob_ia - (1/cuota_a)))
+                                    oportunidades.append((fecha_para_guardar, h_db, a_db, 'Visita', cuota_a, prob_ia, prob_ia - (1/cuota_a)))
                                 if cuota_o25 > 0:
                                     prob_ia = 1 / (1 + np.exp(-((pred_home + pred_away) - 2.5)))
-                                    oportunidades.append((hoy.strftime('%Y-%m-%d'), h_db, a_db, '+2.5 Goles', cuota_o25, prob_ia, prob_ia - (1/cuota_o25)))
+                                    oportunidades.append((fecha_para_guardar, h_db, a_db, '+2.5 Goles', cuota_o25, prob_ia, prob_ia - (1/cuota_o25)))
 
                         if oportunidades:
                             df_ops = pd.DataFrame(oportunidades, columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob IA', 'Edge'])
@@ -649,7 +662,7 @@ elif menu == "Portafolio de Picks":
                                 st.dataframe(df_display[['Partido', 'Mercado', 'Cuota', 'Prob IA', 'Edge']], hide_index=True)
 
                                 # Guardar en BD
-                                if st.button("💾 Guardar Portafolio de Hoy"):
+                                if st.button("💾 Guardar Portafolio Seleccionado"):
                                     for _, row in df_portfolio.iterrows():
                                         cursor.execute("""
                                             INSERT INTO portafolio_historico 
