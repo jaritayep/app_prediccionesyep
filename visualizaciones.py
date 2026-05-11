@@ -559,19 +559,20 @@ elif menu == "Portafolio de Picks":
         
         # Diccionario a prueba de balas para mapear tu BD con The Odds API
         ligas_api = {
-            # Inglaterra
-            'EPL': 'soccer_epl', 'E0': 'soccer_epl', 'Premier League': 'soccer_epl',
-            # España (Aquí está tu 'PD')
+            # Inglaterra (Añadido 'PL')
+            'EPL': 'soccer_epl', 'E0': 'soccer_epl', 'Premier League': 'soccer_epl', 'PL': 'soccer_epl',
+            # España
             'LaLiga': 'soccer_spain_la_liga', 'PD': 'soccer_spain_la_liga', 'SP1': 'soccer_spain_la_liga',
             # Italia
             'SerieA': 'soccer_italy_serie_a', 'I1': 'soccer_italy_serie_a',
             # Alemania
             'Bundesliga': 'soccer_germany_bundesliga', 'D1': 'soccer_germany_bundesliga',
-            # Francia
-            'Ligue1': 'soccer_france_ligue_one', 'F1': 'soccer_france_ligue_one',
-            # Competiciones Europeas (Por si tienes partidos de Champions guardados)
+            # Francia (Añadido 'FL1')
+            'Ligue1': 'soccer_france_ligue_one', 'F1': 'soccer_france_ligue_one', 'FL1': 'soccer_france_ligue_one',
+            # Competiciones Europeas
             'Champions': 'soccer_uefa_champs_league', 'Europa': 'soccer_uefa_europa_league'
         }
+        
         try:
             equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
             df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
