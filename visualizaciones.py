@@ -596,19 +596,27 @@ elif menu == "Portafolio de Picks":
                         log_debug = [] # Aquí guardaremos qué pasa con cada partido
 
                         for liga in ligas_hoy:
-                            if liga not in ligas_api: continue
-                            sport_key = ligas_api[liga]
+                            if liga not in ligas_api: 
+                                log_debug.append(f"⚠️ Liga {liga} no mapeada en la API.")
+                                continue
                             
-                            # Ampliamos regions a us,eu,uk para garantizar más casas de apuestas
-                            url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={API_KEY}&regions=us,eu,uk&markets=h2h,totals&oddsFormat=decimal"
+                            sport_key = ligas_api[liga]
+                            log_debug.append(f"🔎 Consultando cuotas para {liga} ({sport_key})...")
+                            
+                            # Filtro optimizado: Solo casas europeas (eu) para evitar bloqueos del plan gratis
+                            url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={API_KEY}&regions=eu&markets=h2h,totals&oddsFormat=decimal"
                             response = requests.get(url)
                             
                             if response.status_code != 200:
                                 errores_api += 1
                                 st.error(f"Error API ({liga}): {response.text}")
+                                log_debug.append(f"❌ Error HTTP {response.status_code}")
                                 continue
                                 
                             datos_api = response.json()
+                            # ¡AQUÍ ESTÁ LA CLAVE! Veremos cuántos partidos reales nos manda la API
+                            log_debug.append(f"📡 The Odds API devolvió {len(datos_api)} partidos publicados.")
+                            
                             partidos_liga_hoy = df_jornada_dia[df_jornada_dia['League'] == liga]
 
                             for partido_api in datos_api:
@@ -616,7 +624,6 @@ elif menu == "Portafolio de Picks":
                                 h_db = process.extractOne(h_api, equipos_db)[0]
                                 a_db = process.extractOne(a_api, equipos_db)[0]
                                 
-                                # FLEXIBILIDAD: Ignoramos mayúsculas y espacios extra
                                 match_encontrado = False
                                 for _, row_p in partidos_liga_hoy.iterrows():
                                     if h_db.strip().lower() in row_p['Local'].strip().lower() and a_db.strip().lower() in row_p['Visita'].strip().lower():
@@ -624,15 +631,17 @@ elif menu == "Portafolio de Picks":
                                         break
                                 
                                 if not match_encontrado: 
-                                    log_debug.append(f"⏭️ Saltado (No está agendado hoy): {h_api} vs {a_api}")
+                                    # Lo comentamos para no llenar el log de "basura", ya sabemos que funciona
+                                    # log_debug.append(f"⏭️ Saltado (No es el partido que buscamos): {h_api} vs {a_api}")
                                     continue
                                     
                                 if not partido_api.get('bookmakers'): 
-                                    log_debug.append(f"⚠️ Sin cuotas publicadas aún: {h_api} vs {a_api}")
+                                    log_debug.append(f"⚠️ {h_api} vs {a_api} encontrado, pero SIN cuotas activas.")
                                     continue
                                 
-                                # BÚSQUEDA PROFUNDA: Revisamos TODAS las casas hasta hallar cuotas
                                 cuota_h = cuota_a = cuota_o25 = 0
+                                casa_usada = "Ninguna"
+                                
                                 for bookie in partido_api['bookmakers']:
                                     for market in bookie['markets']:
                                         if market['key'] == 'h2h':
@@ -643,12 +652,11 @@ elif menu == "Portafolio de Picks":
                                             for out in market['outcomes']:
                                                 if out['name'] == 'Over' and out.get('point') == 2.5: cuota_o25 = out['price']
                                     
-                                    # Si esta casa sí tenía cuotas, anotamos el éxito y pasamos al siguiente partido
-                                    if cuota_h > 0: 
-                                        log_debug.append(f"✅ Cuotas leídas de {bookie['title']} para: {h_api} vs {a_api}")
+                                    if cuota_h > 0 or cuota_o25 > 0: 
+                                        casa_usada = bookie['title']
+                                        log_debug.append(f"✅ ¡MATCH! Cuotas leídas de {casa_usada} para: {h_api} vs {a_api}")
                                         break
 
-                                # Si encontramos cuotas, cruzamos con nuestra IA
                                 if cuota_h > 0 or cuota_a > 0 or cuota_o25 > 0:
                                     stats_h = get_recent_stats(h_db, conn)
                                     stats_a = get_recent_stats(a_db, conn)
@@ -666,7 +674,6 @@ elif menu == "Portafolio de Picks":
                                     if cuota_o25 > 0:
                                         prob_ia = 1 / (1 + np.exp(-((pred_home + pred_away) - 2.5)))
                                         oportunidades.append((fecha_para_guardar, h_db, a_db, '+2.5 Goles', cuota_o25, prob_ia, prob_ia - (1/cuota_o25)))
-
                         # --- MOSTRAR RESULTADOS Y DIAGNÓSTICO ---
                         with st.expander("🛠️ Ver Log de Diagnóstico del Robot"):
                             for log in log_debug:
