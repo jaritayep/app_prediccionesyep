@@ -98,7 +98,7 @@ def obtener_dias_descanso(equipo, conn):
 conn = sqlite3.connect(DB_NAME)
 
 st.sidebar.title("⚽ Menú Principal")
-menu = st.sidebar.radio("Ir a:", ["Análisis del Día", "Auditoría (Resultados)", "BetBuilder Simulator", "Comparador H2H"])
+menu = st.sidebar.radio("Ir a:", ["Análisis del Día", "Auditoría (Resultados)", "BetBuilder Simulator", "Portafolio de Picks"])
 st.sidebar.markdown("---")
 
 if menu == "Análisis del Día":
