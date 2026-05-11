@@ -568,7 +568,6 @@ elif menu == "Portafolio de Picks":
             df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
             df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
             
-            # 1. Filtramos ESTRICTAMENTE para HOY y MAÑANA
             hoy = pd.Timestamp.now().normalize()
             manana = hoy + pd.Timedelta(days=1)
             df_jornada = df_jornada[(df_jornada['Date'] >= hoy) & (df_jornada['Date'] <= manana)]
@@ -576,7 +575,6 @@ elif menu == "Portafolio de Picks":
             if df_jornada.empty:
                 st.info("📅 No hay partidos programados para hoy ni mañana en la base de datos.")
             else:
-                # 2. Creamos las opciones de fecha para el selector
                 df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m/%Y')
                 opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
 
@@ -586,14 +584,15 @@ elif menu == "Portafolio de Picks":
                 with c2:
                     dia_seleccionado_str = st.selectbox("📅 Seleccionar Día a Escanear:", opciones_fecha)
 
-                # 3. Filtramos el DataFrame EXACTAMENTE para el día seleccionado
                 df_jornada_dia = df_jornada[df_jornada['Fecha_Display'] == dia_seleccionado_str]
-                fecha_para_guardar = df_jornada_dia.iloc[0]['Date'].strftime('%Y-%m-%d') # Para la BD
+                fecha_para_guardar = df_jornada_dia.iloc[0]['Date'].strftime('%Y-%m-%d')
 
+                # --- BOTÓN DE ESCANEO ---
                 if st.button("🔍 Escanear Mercado en Vivo", type="primary"):
                     with st.spinner(f"Buscando ineficiencias de mercado para el {dia_seleccionado_str}..."):
                         oportunidades = []
                         ligas_hoy = df_jornada_dia['League'].unique()
+                        errores_api = 0
 
                         for liga in ligas_hoy:
                             if liga not in ligas_api: continue
@@ -601,7 +600,12 @@ elif menu == "Portafolio de Picks":
                             
                             url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={API_KEY}&regions=eu,uk&markets=h2h,totals&oddsFormat=decimal"
                             response = requests.get(url)
-                            if response.status_code != 200: continue
+                            
+                            # AVISO DE ERROR SI LA API FALLA
+                            if response.status_code != 200:
+                                errores_api += 1
+                                st.error(f"Error en la API con la liga {liga}: {response.text}")
+                                continue
                                 
                             datos_api = response.json()
                             partidos_liga_hoy = df_jornada_dia[df_jornada_dia['League'] == liga]
@@ -633,7 +637,6 @@ elif menu == "Portafolio de Picks":
                                 pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
                                 pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
 
-                                # Cruzar IA vs Mercado
                                 if cuota_h > 0:
                                     prob_ia = 1 / (1 + np.exp(-(xg_h - xg_a)))
                                     oportunidades.append((fecha_para_guardar, h_db, a_db, 'Local', cuota_h, prob_ia, prob_ia - (1/cuota_h)))
@@ -644,33 +647,42 @@ elif menu == "Portafolio de Picks":
                                     prob_ia = 1 / (1 + np.exp(-((pred_home + pred_away) - 2.5)))
                                     oportunidades.append((fecha_para_guardar, h_db, a_db, '+2.5 Goles', cuota_o25, prob_ia, prob_ia - (1/cuota_o25)))
 
+                        # SI TODO SALIÓ BIEN, GUARDAMOS EN LA MEMORIA DE STREAMLIT
                         if oportunidades:
                             df_ops = pd.DataFrame(oportunidades, columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob IA', 'Edge'])
-                            # Filtro estricto: Edge entre 3% y 15%
                             df_validas = df_ops[(df_ops['Edge'] > 0.03) & (df_ops['Edge'] < 0.15)].copy()
-                            df_portfolio = df_validas.sort_values(by='Edge', ascending=False).groupby('Home').head(1).head(10).reset_index(drop=True)
-                            
-                            if df_portfolio.empty:
-                                st.warning("El mercado es eficiente hoy. No hay Edge de valor.")
-                            else:
-                                st.success(f"Se encontraron {len(df_portfolio)} picks.")
-                                df_display = df_portfolio.copy()
-                                df_display['Partido'] = df_display['Home'] + " vs " + df_display['Away']
-                                df_display['Edge'] = (df_display['Edge'] * 100).round(2).astype(str) + "%"
-                                df_display['Prob IA'] = (df_display['Prob IA'] * 100).round(1).astype(str) + "%"
-                                
-                                st.dataframe(df_display[['Partido', 'Mercado', 'Cuota', 'Prob IA', 'Edge']], hide_index=True)
+                            st.session_state['portafolio_escaneado'] = df_validas.sort_values(by='Edge', ascending=False).groupby('Home').head(1).head(10).reset_index(drop=True)
+                        elif errores_api == 0:
+                            st.warning("No se encontraron cuotas para los partidos seleccionados o el mercado ya cerró.")
 
-                                # Guardar en BD
-                                if st.button("💾 Guardar Portafolio Seleccionado"):
-                                    for _, row in df_portfolio.iterrows():
-                                        cursor.execute("""
-                                            INSERT INTO portafolio_historico 
-                                            (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
-                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                        """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob IA'], row['Edge'], stake_fijo))
-                                    conn.commit()
-                                    st.toast("¡Portafolio guardado! Revisar en la pestaña Rendimiento.")
+                # --- MOSTRAR RESULTADOS Y BOTÓN DE GUARDAR (FUERA DEL BOTÓN DE ESCANEO) ---
+                if 'portafolio_escaneado' in st.session_state:
+                    df_portfolio = st.session_state['portafolio_escaneado']
+                    
+                    if df_portfolio.empty:
+                        st.info("El mercado es eficiente hoy. No hay Edge de valor entre 3% y 15%.")
+                    else:
+                        st.success(f"Se encontraron {len(df_portfolio)} picks.")
+                        df_display = df_portfolio.copy()
+                        df_display['Partido'] = df_display['Home'] + " vs " + df_display['Away']
+                        df_display['Edge'] = (df_display['Edge'] * 100).round(2).astype(str) + "%"
+                        df_display['Prob IA'] = (df_display['Prob IA'] * 100).round(1).astype(str) + "%"
+                        
+                        st.dataframe(df_display[['Partido', 'Mercado', 'Cuota', 'Prob IA', 'Edge']], hide_index=True)
+
+                        if st.button("💾 Guardar Portafolio Seleccionado", type="primary"):
+                            for _, row in df_portfolio.iterrows():
+                                cursor.execute("""
+                                    INSERT INTO portafolio_historico 
+                                    (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob IA'], row['Edge'], stake_fijo))
+                            conn.commit()
+                            st.toast("¡Portafolio guardado! Revisar en la pestaña Rendimiento.")
+                            
+                            # Limpiamos la memoria para evitar guardarlo dos veces
+                            del st.session_state['portafolio_escaneado']
+                            st.rerun()
 
         except Exception as e:
             st.error(f"Error procesando: {e}")
