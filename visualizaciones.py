@@ -559,7 +559,7 @@ elif menu == "Portafolio de Picks":
         
         c1, c2 = st.columns(2)
         with c1:
-            stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=1000, value=5000, step=1000)
+            stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=500, value=5000, step=1000)
         
         ligas_api = {
             'EPL': 'soccer_epl', 'LaLiga': 'soccer_spain_la_liga',
