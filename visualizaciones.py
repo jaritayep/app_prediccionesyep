@@ -587,24 +587,25 @@ elif menu == "Portafolio de Picks":
                 df_jornada_dia = df_jornada[df_jornada['Fecha_Display'] == dia_seleccionado_str]
                 fecha_para_guardar = df_jornada_dia.iloc[0]['Date'].strftime('%Y-%m-%d')
 
-                # --- BOTÓN DE ESCANEO ---
+                # --- BOTÓN DE ESCANEO REFORZADO ---
                 if st.button("🔍 Escanear Mercado en Vivo", type="primary"):
                     with st.spinner(f"Buscando ineficiencias de mercado para el {dia_seleccionado_str}..."):
                         oportunidades = []
                         ligas_hoy = df_jornada_dia['League'].unique()
                         errores_api = 0
+                        log_debug = [] # Aquí guardaremos qué pasa con cada partido
 
                         for liga in ligas_hoy:
                             if liga not in ligas_api: continue
                             sport_key = ligas_api[liga]
                             
-                            url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={API_KEY}&regions=eu,uk&markets=h2h,totals&oddsFormat=decimal"
+                            # Ampliamos regions a us,eu,uk para garantizar más casas de apuestas
+                            url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={API_KEY}&regions=us,eu,uk&markets=h2h,totals&oddsFormat=decimal"
                             response = requests.get(url)
                             
-                            # AVISO DE ERROR SI LA API FALLA
                             if response.status_code != 200:
                                 errores_api += 1
-                                st.error(f"Error en la API con la liga {liga}: {response.text}")
+                                st.error(f"Error API ({liga}): {response.text}")
                                 continue
                                 
                             datos_api = response.json()
@@ -615,74 +616,97 @@ elif menu == "Portafolio de Picks":
                                 h_db = process.extractOne(h_api, equipos_db)[0]
                                 a_db = process.extractOne(a_api, equipos_db)[0]
                                 
-                                if not ((partidos_liga_hoy['Local'] == h_db) & (partidos_liga_hoy['Visita'] == a_db)).any(): continue
-                                if not partido_api['bookmakers']: continue
-                                bookie = partido_api['bookmakers'][0] 
+                                # FLEXIBILIDAD: Ignoramos mayúsculas y espacios extra
+                                match_encontrado = False
+                                for _, row_p in partidos_liga_hoy.iterrows():
+                                    if h_db.strip().lower() in row_p['Local'].strip().lower() and a_db.strip().lower() in row_p['Visita'].strip().lower():
+                                        match_encontrado = True
+                                        break
                                 
+                                if not match_encontrado: 
+                                    log_debug.append(f"⏭️ Saltado (No está agendado hoy): {h_api} vs {a_api}")
+                                    continue
+                                    
+                                if not partido_api.get('bookmakers'): 
+                                    log_debug.append(f"⚠️ Sin cuotas publicadas aún: {h_api} vs {a_api}")
+                                    continue
+                                
+                                # BÚSQUEDA PROFUNDA: Revisamos TODAS las casas hasta hallar cuotas
                                 cuota_h = cuota_a = cuota_o25 = 0
-                                
-                                for market in bookie['markets']:
-                                    if market['key'] == 'h2h':
-                                        for out in market['outcomes']:
-                                            if out['name'] == h_api: cuota_h = out['price']
-                                            elif out['name'] == a_api: cuota_a = out['price']
-                                    elif market['key'] == 'totals':
-                                        for out in market['outcomes']:
-                                            if out['name'] == 'Over' and out.get('point') == 2.5: cuota_o25 = out['price']
+                                for bookie in partido_api['bookmakers']:
+                                    for market in bookie['markets']:
+                                        if market['key'] == 'h2h':
+                                            for out in market['outcomes']:
+                                                if out['name'] == h_api: cuota_h = out['price']
+                                                elif out['name'] == a_api: cuota_a = out['price']
+                                        elif market['key'] == 'totals':
+                                            for out in market['outcomes']:
+                                                if out['name'] == 'Over' and out.get('point') == 2.5: cuota_o25 = out['price']
+                                    
+                                    # Si esta casa sí tenía cuotas, anotamos el éxito y pasamos al siguiente partido
+                                    if cuota_h > 0: 
+                                        log_debug.append(f"✅ Cuotas leídas de {bookie['title']} para: {h_api} vs {a_api}")
+                                        break
 
-                                stats_h = get_recent_stats(h_db, conn)
-                                stats_a = get_recent_stats(a_db, conn)
-                                xg_h = stats_h.get('xG_home', 1.0)
-                                xg_a = stats_a.get('xG_away', 1.0)
-                                pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
-                                pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+                                # Si encontramos cuotas, cruzamos con nuestra IA
+                                if cuota_h > 0 or cuota_a > 0 or cuota_o25 > 0:
+                                    stats_h = get_recent_stats(h_db, conn)
+                                    stats_a = get_recent_stats(a_db, conn)
+                                    xg_h = stats_h.get('xG_home', 1.0)
+                                    xg_a = stats_a.get('xG_away', 1.0)
+                                    pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
+                                    pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
 
-                                if cuota_h > 0:
-                                    prob_ia = 1 / (1 + np.exp(-(xg_h - xg_a)))
-                                    oportunidades.append((fecha_para_guardar, h_db, a_db, 'Local', cuota_h, prob_ia, prob_ia - (1/cuota_h)))
-                                if cuota_a > 0:
-                                    prob_ia = 1 / (1 + np.exp(-(xg_a - xg_h)))
-                                    oportunidades.append((fecha_para_guardar, h_db, a_db, 'Visita', cuota_a, prob_ia, prob_ia - (1/cuota_a)))
-                                if cuota_o25 > 0:
-                                    prob_ia = 1 / (1 + np.exp(-((pred_home + pred_away) - 2.5)))
-                                    oportunidades.append((fecha_para_guardar, h_db, a_db, '+2.5 Goles', cuota_o25, prob_ia, prob_ia - (1/cuota_o25)))
+                                    if cuota_h > 0:
+                                        prob_ia = 1 / (1 + np.exp(-(xg_h - xg_a)))
+                                        oportunidades.append((fecha_para_guardar, h_db, a_db, 'Local', cuota_h, prob_ia, prob_ia - (1/cuota_h)))
+                                    if cuota_a > 0:
+                                        prob_ia = 1 / (1 + np.exp(-(xg_a - xg_h)))
+                                        oportunidades.append((fecha_para_guardar, h_db, a_db, 'Visita', cuota_a, prob_ia, prob_ia - (1/cuota_a)))
+                                    if cuota_o25 > 0:
+                                        prob_ia = 1 / (1 + np.exp(-((pred_home + pred_away) - 2.5)))
+                                        oportunidades.append((fecha_para_guardar, h_db, a_db, '+2.5 Goles', cuota_o25, prob_ia, prob_ia - (1/cuota_o25)))
 
-                        # SI TODO SALIÓ BIEN, GUARDAMOS EN LA MEMORIA DE STREAMLIT
+                        # --- MOSTRAR RESULTADOS Y DIAGNÓSTICO ---
+                        with st.expander("🛠️ Ver Log de Diagnóstico del Robot"):
+                            for log in log_debug:
+                                st.text(log)
+
                         if oportunidades:
                             df_ops = pd.DataFrame(oportunidades, columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob IA', 'Edge'])
+                            # Filtro estricto: Solo inversiones rentables
                             df_validas = df_ops[(df_ops['Edge'] > 0.03) & (df_ops['Edge'] < 0.15)].copy()
-                            st.session_state['portafolio_escaneado'] = df_validas.sort_values(by='Edge', ascending=False).groupby('Home').head(1).head(10).reset_index(drop=True)
+                            
+                            if df_validas.empty:
+                                st.info(f"📊 Se escanearon {len(df_ops)} mercados, pero ninguno cumple el estándar de calidad (Edge entre 3% y 15%). Las cuotas están demasiado justas.")
+                            else:
+                                st.session_state['portafolio_escaneado'] = df_validas.sort_values(by='Edge', ascending=False).groupby('Home').head(1).head(10).reset_index(drop=True)
                         elif errores_api == 0:
-                            st.warning("No se encontraron cuotas para los partidos seleccionados o el mercado ya cerró.")
+                            st.warning("No se lograron extraer cuotas. Revisa el log de diagnóstico arriba para ver qué ocurrió.")
 
-                # --- MOSTRAR RESULTADOS Y BOTÓN DE GUARDAR (FUERA DEL BOTÓN DE ESCANEO) ---
+                # --- RENDERIZAR TABLA (SI EXISTE EN MEMORIA) ---
                 if 'portafolio_escaneado' in st.session_state:
                     df_portfolio = st.session_state['portafolio_escaneado']
+                    st.success(f"Se encontraron {len(df_portfolio)} picks de alto valor.")
                     
-                    if df_portfolio.empty:
-                        st.info("El mercado es eficiente hoy. No hay Edge de valor entre 3% y 15%.")
-                    else:
-                        st.success(f"Se encontraron {len(df_portfolio)} picks.")
-                        df_display = df_portfolio.copy()
-                        df_display['Partido'] = df_display['Home'] + " vs " + df_display['Away']
-                        df_display['Edge'] = (df_display['Edge'] * 100).round(2).astype(str) + "%"
-                        df_display['Prob IA'] = (df_display['Prob IA'] * 100).round(1).astype(str) + "%"
-                        
-                        st.dataframe(df_display[['Partido', 'Mercado', 'Cuota', 'Prob IA', 'Edge']], hide_index=True)
+                    df_display = df_portfolio.copy()
+                    df_display['Partido'] = df_display['Home'] + " vs " + df_display['Away']
+                    df_display['Edge'] = (df_display['Edge'] * 100).round(2).astype(str) + "%"
+                    df_display['Prob IA'] = (df_display['Prob IA'] * 100).round(1).astype(str) + "%"
+                    
+                    st.dataframe(df_display[['Partido', 'Mercado', 'Cuota', 'Prob IA', 'Edge']], hide_index=True)
 
-                        if st.button("💾 Guardar Portafolio Seleccionado", type="primary"):
-                            for _, row in df_portfolio.iterrows():
-                                cursor.execute("""
-                                    INSERT INTO portafolio_historico 
-                                    (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob IA'], row['Edge'], stake_fijo))
-                            conn.commit()
-                            st.toast("¡Portafolio guardado! Revisar en la pestaña Rendimiento.")
-                            
-                            # Limpiamos la memoria para evitar guardarlo dos veces
-                            del st.session_state['portafolio_escaneado']
-                            st.rerun()
+                    if st.button("💾 Guardar Portafolio Seleccionado", type="primary"):
+                        for _, row in df_portfolio.iterrows():
+                            cursor.execute("""
+                                INSERT INTO portafolio_historico 
+                                (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob IA'], row['Edge'], stake_fijo))
+                        conn.commit()
+                        st.toast("¡Portafolio guardado! Revisar en la pestaña Rendimiento.")
+                        del st.session_state['portafolio_escaneado']
+                        st.rerun()
 
         except Exception as e:
             st.error(f"Error procesando: {e}")
