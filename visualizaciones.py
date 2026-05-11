@@ -578,7 +578,7 @@ elif menu == "Portafolio de Picks":
             df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
             
             hoy = pd.Timestamp.now().normalize()
-            manana = hoy + pd.Timedelta(days=1)
+            manana = hoy + pd.Timedelta(days=2)
             df_jornada = df_jornada[(df_jornada['Date'] >= hoy) & (df_jornada['Date'] <= manana)]
 
             if df_jornada.empty:
