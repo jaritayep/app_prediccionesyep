@@ -703,10 +703,25 @@ elif menu == "Portafolio de Picks":
                                                 prob = prob_over(prom_goles_total, umbral)
                                                 evaluar_pick_dinamico(f"Goles (+{umbral})", prob, partes[i+1])
                                                 
-                                            # CÓRNERS
+                                            # CÓRNERS (Separando por Total o por Equipo)
                                             elif "córner" in linea_l or "esquina" in linea_l or "corner" in linea_l:
-                                                prob = prob_over(prom_corners_total, umbral)
-                                                evaluar_pick_dinamico(f"Córners (+{umbral})", prob, partes[i+1])
+                                                # Evitamos los del 1er tiempo porque la IA evalúa el partido completo
+                                                if "1er tiempo" not in linea_l and "mitad" not in linea_l and "1st half" not in linea_l:
+                                                    
+                                                    if h_scrap.lower() in linea_l:
+                                                        # Córners SOLO del Local
+                                                        prob = prob_over(stats_h['HC'], umbral)
+                                                        evaluar_pick_dinamico(f"Córners {h_scrap[:10]} (+{umbral})", prob, partes[i+1])
+                                                        
+                                                    elif a_scrap.lower() in linea_l:
+                                                        # Córners SOLO de la Visita
+                                                        prob = prob_over(stats_a['AC'], umbral)
+                                                        evaluar_pick_dinamico(f"Córners {a_scrap[:10]} (+{umbral})", prob, partes[i+1])
+                                                        
+                                                    else:
+                                                        # Córners TOTALES del Partido
+                                                        prob = prob_over(prom_corners_total, umbral)
+                                                        evaluar_pick_dinamico(f"Córners Totales (+{umbral})", prob, partes[i+1])
                                                 
                                             # TIROS A PUERTA / REMATES
                                             elif "remates" in linea_l or "tiros a puerta" in linea_l:
