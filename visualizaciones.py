@@ -656,6 +656,9 @@ elif menu == "Portafolio de Picks":
                             prom_goles_total = pred_home + pred_away
                             prom_corners_total = stats_h['HC'] + stats_a['AC']
                             prom_tiros_total = stats_h['HST'] + stats_a['AST']
+                            prob_local_anota = 1 - math.exp(-xg_h)
+                            prob_visita_anota = 1 - math.exp(-xg_a)
+                            prob_btts_si = prob_local_anota * prob_visita_anota
 
                             # --- EXTRACCIÓN Y EVALUACIÓN DE CUOTAS DINÁMICAS ---
                             mercados_json = partido_scrap.get("markets", {})
@@ -727,6 +730,11 @@ elif menu == "Portafolio de Picks":
                                             elif "remates" in linea_l or "tiros a puerta" in linea_l:
                                                 prob = prob_over(prom_tiros_total, umbral)
                                                 evaluar_pick_dinamico(f"Tiros a Puerta (+{umbral})", prob, partes[i+1])
+                                            # AMBOS ANOTAN (BTTS)
+                                            elif "ambos" in linea_l or "marcan" in linea_l or "btts" in linea_l:
+                                                if "sí" in p_lower or "si" in p_lower:
+                                                    if i+1 < len(partes):
+                                                        evaluar_pick_dinamico("Ambos Anotan (Sí)", prob_btts_si, partes[i+1])
 
                         with st.expander("🛠️ Ver Log de Diagnóstico del Robot"):
                             for log_msg in log_debug:
