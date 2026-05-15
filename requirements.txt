@@ -8,5 +8,3 @@ thefuzz
 pathlib 
 logging
 selenium
-selenium.webdriver.chrome.options
-selenium.webdriver.common.by
