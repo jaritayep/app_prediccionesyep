@@ -12,26 +12,59 @@ import logging
 import time
 import random
 from pathlib import Path
-
+import sqlite3
+import pandas as pd
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
-# --- 1. TU BASE DE DATOS ---
-PARTIDOS_DB = [
-    ("Premier League", "Aston Villa", "Liverpool"),
-    # Agrega aquí los de mañana, por ejemplo:
-    # ("Premier League", "Manchester City", "West Ham"),
-    # ("La Liga", "Real Madrid", "Real Betis")
-]
+# --- 1. TU BASE DE DATOS (AUTOMATIZADA) ---
+def obtener_partidos_automatizados():
+    """Se conecta a tu SQLite y extrae los partidos de hoy y mañana"""
+    try:
+        # IMPORTANTE: Cambia "tu_base.db" por el nombre real de tu archivo de base de datos
+        conn = sqlite3.connect("database_partidos.db") 
+        
+        hoy = datetime.now().strftime("%Y-%m-%d")
+        manana = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d") 
+        
+        # Leemos tu tabla exactamente con la misma lógica de tu Streamlit
+        query = f"""
+            SELECT League, Local, Visita 
+            FROM tabla_predicciones_limpia 
+            WHERE date(Date) >= '{hoy}' AND date(Date) <= '{manana}'
+        """
+        df = pd.read_sql(query, conn)
+        conn.close()
+        
+        # Convertimos el DataFrame a la lista de tuplas que necesita el scraper
+        partidos = list(df.itertuples(index=False, name=None))
+        return partidos
+        
+    except Exception as e:
+        log.error(f"Error leyendo la base de datos: {e}")
+        return []
 
+# El scraper ahora se alimenta solo
+PARTIDOS_DB = obtener_partidos_automatizados()
+
+# --- DICCIONARIO DE LIGAS A PRUEBA DE BALAS ---
+# Le agregué los códigos cortos (EPL, SP1, etc.) basándome en cómo los tienes 
+# en tu base de datos para que la URL se arme perfectamente siempre.
 RUTAS_LIGAS = {
     "Premier League": "inglaterra/premier-league",
+    "EPL": "inglaterra/premier-league",
     "La Liga": "espana/la-liga",
+    "LaLiga": "espana/la-liga",
+    "SP1": "espana/la-liga",
     "Bundesliga": "alemania/bundesliga",
+    "D1": "alemania/bundesliga",
     "Serie A": "italia/serie-a",
-    "Ligue 1": "francia/ligue-1"
+    "I1": "italia/serie-a",
+    "Ligue 1": "francia/ligue-1",
+    "F1": "francia/ligue-1"
 }
 
 OUTPUT_DIR = Path("odds_data")

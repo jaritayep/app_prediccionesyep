@@ -558,7 +558,8 @@ elif menu == "Portafolio de Picks":
     tab1, tab2 = st.tabs(["🔍 Escáner en Vivo", "📊 Rendimiento Histórico"])
 
     with tab1:
-        st.markdown("Cruzando probabilidades IA contra cuotas reales de nuestro Scraper.")
+        st.markdown("### 🔍 Escáner de Ineficiencias (Impulsado por ML)")
+        st.caption("Cruzando el modelo predictivo en vivo contra las cuotas extraídas de Oddschecker.")
         
         try:
             # 1. Cargamos tu Base de Datos
@@ -585,13 +586,16 @@ elif menu == "Portafolio de Picks":
                 df_jornada_dia = df_jornada[df_jornada['Fecha_Display'] == dia_seleccionado_str]
                 fecha_para_guardar = df_jornada_dia.iloc[0]['Date'].strftime('%Y-%m-%d')
 
-                # --- BOTÓN DE ESCANEO REFORZADO (CONECTADO AL JSON) ---
                 if st.button("🔍 Escanear Mercado con Scraper Local", type="primary"):
-                    with st.spinner(f"Cruzando predicciones de IA con cuotas extraídas..."):
+                    model = cargar_modelo()
+                    if not model:
+                        st.error("⚠️ No se encontró el archivo 'modelo_ia.pkl'. El escáner requiere el modelo para funcionar.")
+                        st.stop()
+
+                    with st.spinner(f"El modelo ML está evaluando cuotas y buscando ventajas..."):
                         oportunidades = []
                         log_debug = [] 
                         
-                        # Leemos el archivo JSON generado por tu scraper en lugar de usar la API
                         ruta_json = Path("odds_data/latest.json")
                         if not ruta_json.exists():
                             st.error("No se encontró 'latest.json'. ¡Debes correr el scraper de Python primero!")
@@ -600,14 +604,14 @@ elif menu == "Portafolio de Picks":
                         with open(ruta_json, "r", encoding="utf-8") as f:
                             datos_scraper = json.load(f)
                             
-                        log_debug.append(f"📡 El Scraper local aportó {len(datos_scraper)} partidos con cuotas.")
+                        log_debug.append(f"📡 Scraper: {len(datos_scraper)} partidos con cuotas disponibles.")
                         
                         for partido_scrap in datos_scraper:
                             h_scrap = partido_scrap.get('home', '')
                             a_scrap = partido_scrap.get('away', '')
                             if not h_scrap or not a_scrap: continue
                                 
-                            # Mapeo Fuzzy para cruzar los nombres del scraper con tu BD
+                            # Mapeo Fuzzy
                             h_db = process.extractOne(h_scrap, equipos_db)[0]
                             a_db = process.extractOne(a_scrap, equipos_db)[0]
                             
@@ -617,64 +621,103 @@ elif menu == "Portafolio de Picks":
                                     match_encontrado = True
                                     break
                             
-                            if not match_encontrado: 
-                                continue
-                                
-                            # Extractor Inteligente: Buscamos las cuotas 1X2 dentro del texto crudo (Ej: Aston Villa | 2.50)
-                            cuota_h = cuota_a = cuota_o25 = 0.0
-                            mercados = partido_scrap.get("markets", {})
+                            if not match_encontrado: continue
+
+                            # --- CÁLCULO DE PROBABILIDADES EN VIVO (Misma lógica que Análisis del Día) ---
+                            stats_h = get_recent_stats(h_db, conn)
+                            stats_a = get_recent_stats(a_db, conn)
                             
-                            if "Ganador" in mercados:
-                                crudos_ganador = mercados["Ganador"].get("datos_crudos", [])
-                                for linea in crudos_ganador:
+                            xg_h = stats_h.get('xG_home', 1.0) 
+                            xg_a = stats_a.get('xG_away', 1.0)
+                            xg_diff = xg_h - xg_a
+                            pts_h = obtener_puntos_temporada(h_db, conn)
+                            pts_a = obtener_puntos_temporada(a_db, conn)
+                            dif_tabla = pts_h - pts_a
+                            descanso_h = obtener_dias_descanso(h_db, conn)
+                            descanso_a = obtener_dias_descanso(a_db, conn)
+                            ventaja_fisica = descanso_h - descanso_a
+                            eff_h = stats_h['FTHG'] / (xg_h + 0.01)
+                            eff_a = stats_a['FTAG'] / (xg_a + 0.01)
+
+                            input_data = [[
+                                stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], 
+                                stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], 
+                                stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff, 
+                                dif_tabla, ventaja_fisica
+                            ]]
+                            
+                            pred_probs = model.predict_proba(input_data)[0]
+                            prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
+
+                            pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
+                            pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+                            prob_over25 = 1 / (1 + np.exp(-((pred_home + pred_away) - 2.5)))
+                            
+                            prom_c = stats_h['HC'] + stats_a['AC']
+                            prob_corners_o95 = 1 / (1 + np.exp(-(prom_c - 9.5)))
+
+                            probabilidades_calculadas = {
+                                "Local": prob_local,
+                                "Empate": prob_empate,
+                                "Visita": prob_visita,
+                                "Goles (+2.5)": prob_over25,
+                                "Córners (+9.5)": prob_corners_o95
+                            }
+
+                            # --- EXTRACCIÓN Y EVALUACIÓN DE CUOTAS ---
+                            mercados_json = partido_scrap.get("markets", {})
+                            
+                            def evaluar_pick(mercado_nombre, prob_ia, cuota_str):
+                                try:
+                                    cuota = float(cuota_str.replace(',', '.'))
+                                    if cuota > 1.0:
+                                        edge = prob_ia - (1/cuota)
+                                        if 0.03 < edge < 0.20: # Edge entre 3% y 20%
+                                            oportunidades.append((fecha_para_guardar, h_db, a_db, mercado_nombre, cuota, prob_ia, edge))
+                                            log_debug.append(f"🎯 Valor hallado: {h_db} - {mercado_nombre} | Cuota: {cuota} | IA: {prob_ia:.1%}")
+                                except: pass
+
+                            # Ganador del Partido
+                            if "Ganador" in mercados_json:
+                                for linea in mercados_json["Ganador"].get("datos_crudos", []):
                                     partes = [p.strip() for p in linea.split('|')]
                                     for i, p in enumerate(partes):
-                                        if h_scrap.lower() in p.lower() and i+1 < len(partes):
-                                            try: cuota_h = float(partes[i+1].replace(',', '.'))
-                                            except: pass
-                                        if a_scrap.lower() in p.lower() and i+1 < len(partes):
-                                            try: cuota_a = float(partes[i+1].replace(',', '.'))
-                                            except: pass
-                            
-                            if cuota_h > 0 or cuota_a > 0:
-                                log_debug.append(f"✅ ¡MATCH! Cuotas leídas para: {h_db} vs {a_db} (Local: {cuota_h}, Visita: {cuota_a})")
-                                
-                                # --- TU LÓGICA DE IA Y MATEMÁTICA INTACTA ---
-                                stats_h = get_recent_stats(h_db, conn)
-                                stats_a = get_recent_stats(a_db, conn)
-                                xg_h = stats_h.get('xG_home', 1.0)
-                                xg_a = stats_a.get('xG_away', 1.0)
-                                pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
-                                pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+                                        p_lower = p.lower()
+                                        if h_scrap.lower() in p_lower and i+1 < len(partes):
+                                            evaluar_pick("Local", probabilidades_calculadas["Local"], partes[i+1])
+                                        elif ("empate" in p_lower or "draw" in p_lower) and i+1 < len(partes):
+                                            evaluar_pick("Empate", probabilidades_calculadas["Empate"], partes[i+1])
+                                        elif a_scrap.lower() in p_lower and i+1 < len(partes):
+                                            evaluar_pick("Visita", probabilidades_calculadas["Visita"], partes[i+1])
 
-                                if cuota_h > 0:
-                                    prob_ia = 1 / (1 + np.exp(-(xg_h - xg_a)))
-                                    oportunidades.append((fecha_para_guardar, h_db, a_db, 'Local', cuota_h, prob_ia, prob_ia - (1/cuota_h)))
-                                if cuota_a > 0:
-                                    prob_ia = 1 / (1 + np.exp(-(xg_a - xg_h)))
-                                    oportunidades.append((fecha_para_guardar, h_db, a_db, 'Visita', cuota_a, prob_ia, prob_ia - (1/cuota_a)))
+                            # Mercados Secundarios
+                            if "Estadisticas" in mercados_json:
+                                for linea in mercados_json["Estadisticas"].get("datos_crudos", []):
+                                    linea_l = linea.lower()
+                                    partes = [p.strip() for p in linea.split('|')]
+                                    
+                                    if "más de 2.5" in linea_l and "goles" in linea_l and len(partes) > 1:
+                                        evaluar_pick("Goles (+2.5)", probabilidades_calculadas["Goles (+2.5)"], partes[1])
+                                        
+                                    if ("córners" in linea_l or "esquina" in linea_l) and "más de 9.5" in linea_l and len(partes) > 1:
+                                        evaluar_pick("Córners (+9.5)", probabilidades_calculadas["Córners (+9.5)"], partes[1])
 
-                        # --- MOSTRAR LOGS PARA DIAGNÓSTICO ---
+                        # --- MOSTRAR LOGS ---
                         with st.expander("🛠️ Ver Log de Diagnóstico del Robot"):
                             for log_msg in log_debug:
                                 st.text(log_msg)
 
                         if oportunidades:
                             df_ops = pd.DataFrame(oportunidades, columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob_IA', 'Edge'])
-                            # Filtro de calidad de inversión
-                            df_validas = df_ops[(df_ops['Edge'] > 0.03) & (df_ops['Edge'] < 0.15)].copy()
-                            
-                            if df_validas.empty:
-                                st.info(f"📊 Se escanearon {len(df_ops)} selecciones, pero ninguna cumple el Edge entre 3% y 15%.")
-                            else:
-                                st.session_state['portafolio_escaneado'] = df_validas.sort_values(by='Edge', ascending=False).groupby('Home').head(1).head(10).reset_index(drop=True)
+                            # Ordenamos por Edge y nos quedamos con los 10 mejores picks únicos
+                            st.session_state['portafolio_escaneado'] = df_ops.sort_values(by='Edge', ascending=False).drop_duplicates(subset=['Home', 'Mercado']).head(10).reset_index(drop=True)
                         else:
-                            st.warning("No se lograron detectar cuotas numéricas en el JSON. Revisa los textos crudos.")
+                            st.warning("📊 Se analizaron todas las cuotas, pero ninguna superó el margen de valor exigido por el modelo (Edge > 3%).")
 
-                # --- RENDERIZAR TABLA CON CHECKBOXES (EL CARRITO) ---
+                # --- RENDERIZAR TABLA CON CHECKBOXES ---
                 if 'portafolio_escaneado' in st.session_state:
                     df_portfolio = st.session_state['portafolio_escaneado']
-                    st.success(f"Se encontraron {len(df_portfolio)} picks de alto valor impulsados por IA.")
+                    st.success(f"Detección completada: {len(df_portfolio)} posiciones de inversión encontradas.")
                     
                     df_display = df_portfolio.copy()
                     df_display['Partido'] = df_display['Home'] + " vs " + df_display['Away']
@@ -682,14 +725,11 @@ elif menu == "Portafolio de Picks":
                     df_display['Prob_IA_Str'] = (df_display['Prob_IA'] * 100).round(1).astype(str) + "%"
                     
                     st.markdown("### 💼 Tu Portafolio Sugerido")
-                    st.markdown("Desmarca la casilla a la izquierda de los picks que **no** quieras incluir antes de guardar:")
                     
-                    # Preparamos la tabla seleccionable
                     columnas_mostrar = ['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']
                     df_seleccionable = df_display[columnas_mostrar].copy()
-                    df_seleccionable.insert(0, "✅ Añadir", True) # Todas seleccionadas por defecto
+                    df_seleccionable.insert(0, "✅ Añadir", True) 
                     
-                    # Mostramos la tabla interactiva
                     df_editado = st.data_editor(
                         df_seleccionable,
                         hide_index=True,
@@ -698,12 +738,11 @@ elif menu == "Portafolio de Picks":
                     )
 
                     if st.button("💾 Guardar Portafolio Seleccionado", type="primary"):
-                        # Filtramos las filas que mantuvieron el Checkbox en True
                         indices_seleccionados = df_editado[df_editado["✅ Añadir"] == True].index
                         df_final_a_guardar = df_portfolio.iloc[indices_seleccionados]
                         
                         if df_final_a_guardar.empty:
-                            st.warning("No seleccionaste ningún pick. El portafolio no se guardó.")
+                            st.warning("No seleccionaste ningún pick.")
                         else:
                             for _, row in df_final_a_guardar.iterrows():
                                 cursor.execute("""
