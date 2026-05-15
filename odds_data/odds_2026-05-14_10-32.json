@@ -1,0 +1,27 @@
+{
+    "Premier League": [
+        {
+            "url": "https://www.cuotasahora.com/football/england/premier-league/",
+            "home": "",
+            "away": "Premier",
+            "markets": {}
+        }
+    ],
+    "La Liga": [],
+    "Bundesliga": [
+        {
+            "url": "https://www.cuotasahora.com/football/germany/bundesliga/",
+            "home": "",
+            "away": "Bundesliga",
+            "markets": {}
+        }
+    ],
+    "Ligue 1": [
+        {
+            "url": "https://www.cuotasahora.com/football/france/ligue-1/",
+            "home": "",
+            "away": "Ligue",
+            "markets": {}
+        }
+    ]
+}
