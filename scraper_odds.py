@@ -177,7 +177,7 @@ def parsear_straight(matchup_id: int, odds_data: list) -> dict:
 
     return res
 
-def parsear_related(matchup_id: int) -> dict:
+def parsear_related(matchup_id: int, home_name: str, away_name: str) -> dict:
     resultado = {}
     related = get(f"/matchups/{matchup_id}/related") or []
     time.sleep(REQUEST_DELAY)
@@ -198,7 +198,19 @@ def parsear_related(matchup_id: int) -> dict:
         if not es_corner and not es_shot: continue
 
         n = nombre.lower()
-        subtipo = "home" if "home" in n else "away" if "away" in n else "total"
+        h_in = home_name.lower() in n
+        a_in = away_name.lower() in n
+
+        # Lógica perfecta para asignar local, visita o totales
+        if h_in and a_in:
+            subtipo = "total"
+        elif h_in:
+            subtipo = "home"
+        elif a_in:
+            subtipo = "away"
+        else:
+            subtipo = "total"
+
         clave = f"{'corners' if es_corner else 'shots'}_{subtipo}"
 
         entrada = {}
@@ -242,7 +254,8 @@ def scrapear_liga(nombre_liga: str, config: dict, locales_db: list, visitas_db: 
         straight = parsear_straight(mid, odds_straight_data)
         
         print(f"     → Buscando props (Córners/Tiros) para: {home_name} vs {away_name}...")
-        related = parsear_related(mid)
+        # 🎯 AQUÍ ESTÁ LA CORRECCIÓN: Le pasamos los 3 datos requeridos
+        related = parsear_related(mid, home_name, away_name)
 
         fecha_dt = datetime.fromisoformat(partido["inicio"].replace("Z", "+00:00"))
         fecha_local = fecha_dt.astimezone()
