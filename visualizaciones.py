@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import requests
 import json
 from pathlib import Path
+import re
 
 
 def poisson_prob(lamba_val, k):
@@ -649,28 +650,53 @@ elif menu == "Portafolio de Picks":
                         pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
                         prom_goles_total = pred_home + pred_away
 
-                        # --- MAPEO SEGURO CON ALTERNATIVAS DE TEXTO ---
+                        # --- MAPEO BASE (1X2) ---
                         mercados_a_evaluar = [
                             ("Ganador (Local)", buscar_cuota_segura(row, ['1x2_home']), prob_local),
                             ("Empate", buscar_cuota_segura(row, ['1x2_draw']), prob_empate),
-                            ("Ganador (Visita)", buscar_cuota_segura(row, ['1x2_away']), prob_visita),
-                            
-                            ("Goles (+1.5)", buscar_cuota_segura(row, ['goles_1.5_over', 'total_1.5_over']), prob_over(prom_goles_total, 1.5)),
-                            ("Goles (-1.5)", buscar_cuota_segura(row, ['goles_1.5_under', 'total_1.5_under']), prob_under(prom_goles_total, 1.5)),
-                            
-                            ("Goles (+2.5)", buscar_cuota_segura(row, ['goles_2.5_over', 'total_2.5_over']), prob_over(prom_goles_total, 2.5)),
-                            ("Goles (-2.5)", buscar_cuota_segura(row, ['goles_2.5_under', 'total_2.5_under']), prob_under(prom_goles_total, 2.5)),
-                            
-                            ("Goles (+3.5)", buscar_cuota_segura(row, ['goles_3.5_over', 'total_3.5_over']), prob_over(prom_goles_total, 3.5)),
-                            ("Goles (-3.5)", buscar_cuota_segura(row, ['goles_3.5_under', 'total_3.5_under']), prob_under(prom_goles_total, 3.5)),
-                            
-                            ("Goles Local (+1.5)", buscar_cuota_segura(row, ['goles_tt_home_1.5_over', 'tt_home_1.5_over']), prob_over(pred_home, 1.5)),
-                            ("Goles Visita (+1.5)", buscar_cuota_segura(row, ['goles_tt_away_1.5_over', 'tt_away_1.5_over']), prob_over(pred_away, 1.5))
+                            ("Ganador (Visita)", buscar_cuota_segura(row, ['1x2_away']), prob_visita)
                         ]
 
+                        # --- LECTURA DINÁMICA DE GOLES ---
+                        # Escaneamos SOLO las columnas que tienen datos reales para este partido específico
+                        for col_name, val in row.items():
+                            if pd.isna(val) or str(val).strip() == '' or float(val) <= 1.0:
+                                continue
+                                
+                            col_str = str(col_name).lower()
+                            
+                            # Filtramos con Inteligencia: Buscamos cualquier línea de goles que termine en ".5" (1.5, 2.5, 3.5, etc.)
+                            # Ignoramos líneas asiáticas (.25 o .75) porque cambian la matemática de Poisson
+                            match = re.search(r'_(\d+\.5)_', col_str)
+                            if not match:
+                                continue
+                                
+                            linea = float(match.group(1))
+                            
+                            # 1. Totales del Partido
+                            if ('goles_' in col_str or 'total_' in col_str) and 'tt_' not in col_str:
+                                if 'over' in col_str:
+                                    mercados_a_evaluar.append((f"Goles (+{linea})", val, prob_over(prom_goles_total, linea)))
+                                elif 'under' in col_str:
+                                    mercados_a_evaluar.append((f"Goles (-{linea})", val, prob_under(prom_goles_total, linea)))
+                                    
+                            # 2. Totales del Equipo Local
+                            elif 'tt_home' in col_str:
+                                if 'over' in col_str:
+                                    mercados_a_evaluar.append((f"Goles Local (+{linea})", val, prob_over(pred_home, linea)))
+                                elif 'under' in col_str:
+                                    mercados_a_evaluar.append((f"Goles Local (-{linea})", val, prob_under(pred_home, linea)))
+                                    
+                            # 3. Totales del Equipo Visita
+                            elif 'tt_away' in col_str:
+                                if 'over' in col_str:
+                                    mercados_a_evaluar.append((f"Goles Visita (+{linea})", val, prob_over(pred_away, linea)))
+                                elif 'under' in col_str:
+                                    mercados_a_evaluar.append((f"Goles Visita (-{linea})", val, prob_under(pred_away, linea)))
+
                         def evaluar_edge(mercado_nombre, prob_ia, cuota):
+                            # ... (Mantén tu función evaluar_edge exactamente como la tenías) ...
                             if cuota is None:
-                                log_debug.append(f"❌ {h_db} - {mercado_nombre} | No encontrado en las columnas del CSV")
                                 return
                                 
                             try:
@@ -678,21 +704,17 @@ elif menu == "Portafolio de Picks":
                                 if cuota_flt <= 1.0: return
                                 
                                 edge = prob_ia - (1 / cuota_flt)
-                                
-                                # Guardamos el rastro en el log de diagnóstico para auditar el comportamiento
                                 log_debug.append(f"📊 Evaluando: {h_db} - {mercado_nombre} | Cuota: {cuota_flt} | Prob IA: {prob_ia:.1%} | Edge: {edge:.2%}")
                                 
-                                # Filtro estricto para las recomendaciones del portafolio
                                 if 0.02 <= edge <= 0.14:
                                     oportunidades.append((fecha_partido, h_db, a_db, mercado_nombre, cuota_flt, prob_ia, edge))
                                     log_debug.append(f"   ✨ ¡AÑADIDO AL PORTAFOLIO! Edge válido: {edge:.2%}")
                             except Exception as e:
                                 log_debug.append(f"⚠️ Error numérico en {mercado_nombre}: {e}")
 
-                        # Escaneamos todos los mercados mapeados
+                        # Escaneamos todo lo que encontró
                         for nombre_mkt, cuota_val, prob_ia in mercados_a_evaluar:
                             evaluar_edge(nombre_mkt, prob_ia, cuota_val)
-
                     # --- RENDERIZADO DEL LOG ---
                     with st.expander("🛠️ Ver Diagnóstico Completo del Robot Evaluador"):
                         if log_debug:
