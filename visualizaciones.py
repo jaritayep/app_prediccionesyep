@@ -565,28 +565,23 @@ elif menu == "Portafolio de Picks":
             # 1. Cargamos tu Base de Datos de Equipos
             equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
             
-            # --- NUEVA LÓGICA: AUTOMATIZACIÓN DE CARPETA ---
+            # --- AUTOMATIZACIÓN DE CARPETA ---
             directorio_odds = Path("odds_data")
-            # Buscamos todos los archivos CSV de pinnacle
             archivos_disponibles = list(directorio_odds.glob("pinnacle_*.csv")) if directorio_odds.exists() else []
-            
-            # Ordenamos alfabéticamente al revés (como tienen formato YYYYMMDD, el más nuevo queda de primero)
             archivos_disponibles.sort(reverse=True)
             nombres_archivos = [archivo.name for archivo in archivos_disponibles]
 
             c1, c2 = st.columns(2)
             with c1:
-                stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=500, value=5000, step=100)
+                stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=500, value=5000, step=1000)
             with c2:
                 if nombres_archivos:
-                    # Selectbox inteligente: carga todos, pero deja el más nuevo seleccionado por defecto
                     archivo_seleccionado = st.selectbox("📂 Archivo de cuotas (Automático):", nombres_archivos)
                     ruta_csv = directorio_odds / archivo_seleccionado
                 else:
                     st.error("⚠️ No se encontraron archivos en la carpeta 'odds_data/'. ¡Corre el scraper primero!")
                     ruta_csv = None
 
-            # Bloqueamos el botón si no hay archivo
             boton_disabled = ruta_csv is None
 
             if st.button("🔍 Escanear Mercado", type="primary", disabled=boton_disabled):
@@ -600,7 +595,13 @@ elif menu == "Portafolio de Picks":
                     oportunidades = []
                     log_debug = []
                     
-                    # Función auxiliar para Under (Lo contrario de Over)
+                    # 🛠️ BUSCADOR SEGURO DE COLUMNAS (Evita falsos nulos de Pandas)
+                    def buscar_cuota_segura(row, posibles_columnas):
+                        for col in posibles_columnas:
+                            if col in row.index and pd.notna(row[col]) and str(row[col]).strip() != '':
+                                return row[col]
+                        return None
+
                     def prob_under(promedio, umbral):
                         return 1 - prob_over(promedio, umbral)
 
@@ -609,7 +610,6 @@ elif menu == "Portafolio de Picks":
                         a_csv = str(row['away'])
                         fecha_partido = str(row['inicio_local']).split()[0] if pd.notna(row['inicio_local']) else str(pd.Timestamp.now().date())
                         
-                        # Cruce de nombres inteligente
                         h_db_match = process.extractOne(h_csv, equipos_db)
                         a_db_match = process.extractOne(a_csv, equipos_db)
                         
@@ -619,7 +619,7 @@ elif menu == "Portafolio de Picks":
                         h_db = h_db_match[0]
                         a_db = a_db_match[0]
 
-                        # --- CÁLCULO DE PROBABILIDADES IA Y POISSON ---
+                        # --- CÁLCULO DE VARIABLES IA Y POISSON ---
                         stats_h = get_recent_stats(h_db, conn)
                         stats_a = get_recent_stats(a_db, conn)
                         
@@ -642,57 +642,72 @@ elif menu == "Portafolio de Picks":
                             dif_tabla, ventaja_fisica
                         ]]
                         
-                        # Predicciones ML
                         pred_probs = model.predict_proba(input_data)[0]
                         prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
 
-                        # Promedios Esperados (Goles)
                         pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
                         pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
                         prom_goles_total = pred_home + pred_away
 
-                        # --- MAPEO DE MERCADOS PINNACLE ---
-                        # Formato: (Nombre_Mercado, Columna_CSV, Probabilidad_Calculada)
+                        # --- MAPEO SEGURO CON ALTERNATIVAS DE TEXTO ---
                         mercados_a_evaluar = [
-                            ("Ganador (Local)", '1x2_home', prob_local),
-                            ("Empate", '1x2_draw', prob_empate),
-                            ("Ganador (Visita)", '1x2_away', prob_visita),
-                            ("Goles (+1.5)", 'total_1.5_over', prob_over(prom_goles_total, 1.5)),
-                            ("Goles (-1.5)", 'total_1.5_under', prob_under(prom_goles_total, 1.5)),
-                            ("Goles (+2.5)", 'total_2.5_over', prob_over(prom_goles_total, 2.5)),
-                            ("Goles (-2.5)", 'total_2.5_under', prob_under(prom_goles_total, 2.5)),
-                            ("Goles (+3.5)", 'total_3.5_over', prob_over(prom_goles_total, 3.5)),
-                            ("Goles (-3.5)", 'total_3.5_under', prob_under(prom_goles_total, 3.5)),
-                            ("Goles Local (+1.5)", 'tt_home_1.5_over', prob_over(pred_home, 1.5)),
-                            ("Goles Visita (+1.5)", 'tt_away_1.5_over', prob_over(pred_away, 1.5))
+                            ("Ganador (Local)", buscar_cuota_segura(row, ['1x2_home']), prob_local),
+                            ("Empate", buscar_cuota_segura(row, ['1x2_draw']), prob_empate),
+                            ("Ganador (Visita)", buscar_cuota_segura(row, ['1x2_away']), prob_visita),
+                            
+                            ("Goles (+1.5)", buscar_cuota_segura(row, ['goles_1.5_over', 'total_1.5_over']), prob_over(prom_goles_total, 1.5)),
+                            ("Goles (-1.5)", buscar_cuota_segura(row, ['goles_1.5_under', 'total_1.5_under']), prob_under(prom_goles_total, 1.5)),
+                            
+                            ("Goles (+2.5)", buscar_cuota_segura(row, ['goles_2.5_over', 'total_2.5_over']), prob_over(prom_goles_total, 2.5)),
+                            ("Goles (-2.5)", buscar_cuota_segura(row, ['goles_2.5_under', 'total_2.5_under']), prob_under(prom_goles_total, 2.5)),
+                            
+                            ("Goles (+3.5)", buscar_cuota_segura(row, ['goles_3.5_over', 'total_3.5_over']), prob_over(prom_goles_total, 3.5)),
+                            ("Goles (-3.5)", buscar_cuota_segura(row, ['goles_3.5_under', 'total_3.5_under']), prob_under(prom_goles_total, 3.5)),
+                            
+                            ("Goles Local (+1.5)", buscar_cuota_segura(row, ['goles_tt_home_1.5_over', 'tt_home_1.5_over']), prob_over(pred_home, 1.5)),
+                            ("Goles Visita (+1.5)", buscar_cuota_segura(row, ['goles_tt_away_1.5_over', 'tt_away_1.5_over']), prob_over(pred_away, 1.5))
                         ]
 
                         def evaluar_edge(mercado_nombre, prob_ia, cuota):
-                            if pd.notna(cuota) and float(cuota) > 1.0:
+                            if cuota is None:
+                                log_debug.append(f"❌ {h_db} - {mercado_nombre} | No encontrado en las columnas del CSV")
+                                return
+                                
+                            try:
                                 cuota_flt = float(cuota)
+                                if cuota_flt <= 1.0: return
+                                
                                 edge = prob_ia - (1 / cuota_flt)
-                                # 🚨 FILTRO ESTRICTO: Edge entre 2% (0.02) y 14% (0.14)
+                                
+                                # Guardamos el rastro en el log de diagnóstico para auditar el comportamiento
+                                log_debug.append(f"📊 Evaluando: {h_db} - {mercado_nombre} | Cuota: {cuota_flt} | Prob IA: {prob_ia:.1%} | Edge: {edge:.2%}")
+                                
+                                # Filtro estricto para las recomendaciones del portafolio
                                 if 0.02 <= edge <= 0.14:
                                     oportunidades.append((fecha_partido, h_db, a_db, mercado_nombre, cuota_flt, prob_ia, edge))
-                                    log_debug.append(f"✅ Pick: {h_db} - {mercado_nombre} | Cuota {cuota_flt} | Edge: {edge:.1%}")
+                                    log_debug.append(f"   ✨ ¡AÑADIDO AL PORTAFOLIO! Edge válido: {edge:.2%}")
+                            except Exception as e:
+                                log_debug.append(f"⚠️ Error numérico en {mercado_nombre}: {e}")
 
-                        # Escaneamos cada mercado definido
-                        for nombre_mkt, col_csv, prob_ia in mercados_a_evaluar:
-                            if col_csv in row:
-                                evaluar_edge(nombre_mkt, prob_ia, row[col_csv])
+                        # Escaneamos todos los mercados mapeados
+                        for nombre_mkt, cuota_val, prob_ia in mercados_a_evaluar:
+                            evaluar_edge(nombre_mkt, prob_ia, cuota_val)
 
-                    # --- RESULTADOS ---
-                    with st.expander("🛠️ Ver Log del Robot Evaluador"):
-                        for log_msg in log_debug:
-                            st.text(log_msg)
+                    # --- RENDERIZADO DEL LOG ---
+                    with st.expander("🛠️ Ver Diagnóstico Completo del Robot Evaluador"):
+                        if log_debug:
+                            for log_msg in log_debug:
+                                st.text(log_msg)
+                        else:
+                            st.text("No se procesó ningún partido. Revisa las coincidencias de nombres de equipos.")
 
                     if oportunidades:
                         df_ops = pd.DataFrame(oportunidades, columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob_IA', 'Edge'])
                         st.session_state['portafolio_escaneado'] = df_ops.sort_values(by='Edge', ascending=False).drop_duplicates(subset=['Home', 'Mercado']).reset_index(drop=True)
                     else:
-                        st.warning("📊 Se analizaron todas las líneas de Pinnacle, pero ninguna cumplió el filtro estricto (Edge entre 2% y 14%).")
+                        st.warning("📊 El robot escaneó las cuotas de goles exitosamente, pero ninguna se encuentra dentro del rango de ventaja configurado (Edge entre 2% y 14%).")
 
-            # --- RENDERIZAR TABLA CON CHECKBOXES ---
+            # --- TABLA INTERACTIVA DE INVERSIONES ---
             if 'portafolio_escaneado' in st.session_state:
                 df_portfolio = st.session_state['portafolio_escaneado']
                 st.success(f"Detección completada: {len(df_portfolio)} inversiones recomendadas encontradas.")
