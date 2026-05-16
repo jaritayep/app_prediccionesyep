@@ -177,13 +177,14 @@ def parsear_straight(matchup_id: int, odds_data: list) -> dict:
 
     return res
 
-def parsear_related(matchup_id: int, home_name: str, away_name: str) -> dict:
+def parsear_related(matchup_id: int) -> dict:
     resultado = {}
     related = get(f"/matchups/{matchup_id}/related") or []
     time.sleep(REQUEST_DELAY)
     if not related: return resultado
 
-    id_a_nombre = {r["id"]: r.get("name", "") for r in related if r.get("id")}
+    # Pinnacle usa "units" o "name" para identificar si es Córners o Tiros
+    id_a_nombre = {r["id"]: r.get("units", r.get("name", "")) for r in related if r.get("id")}
     odds_related = get(f"/matchups/{matchup_id}/markets/related/straight") or []
     time.sleep(REQUEST_DELAY)
 
@@ -193,34 +194,38 @@ def parsear_related(matchup_id: int, home_name: str, away_name: str) -> dict:
         if mid: odds_por_id.setdefault(mid, []).append(market)
 
     for sub_id, nombre in id_a_nombre.items():
+        if not nombre: continue
+        
         es_corner = contiene_keyword(nombre, KEYWORDS_CORNERS)
         es_shot = contiene_keyword(nombre, KEYWORDS_SHOTS)
         if not es_corner and not es_shot: continue
 
-        n = nombre.lower()
-        h_in = home_name.lower() in n
-        a_in = away_name.lower() in n
+        prefijo = "corners" if es_corner else "shots"
 
-        # Lógica perfecta para asignar local, visita o totales
-        if h_in and a_in:
-            subtipo = "total"
-        elif h_in:
-            subtipo = "home"
-        elif a_in:
-            subtipo = "away"
-        else:
-            subtipo = "total"
-
-        clave = f"{'corners' if es_corner else 'shots'}_{subtipo}"
-
-        entrada = {}
         for market in odds_por_id.get(sub_id, []):
-            if market.get("period") != PERIODO_PARTIDO or market.get("type", "").lower() != "total": continue
-            for p in market.get("prices", []):
-                entrada[p.get("designation", "").lower()] = a_decimal(p.get("price"))
-                entrada["linea"] = p.get("points")
+            if market.get("period") != PERIODO_PARTIDO: continue
+            if market.get("altLineId") is not None: continue # Solo tomamos la línea principal
+            
+            tipo = market.get("type", "").lower()
+            precios = market.get("prices", [])
 
-        if entrada: resultado[clave] = entrada
+            # 1. Córners / Tiros Totales del Partido
+            if tipo == "total":
+                entrada = {}
+                for p in precios:
+                    entrada[p.get("designation", "").lower()] = a_decimal(p.get("price"))
+                    entrada["linea"] = p.get("points")
+                if entrada: resultado[f"{prefijo}_total"] = entrada
+            
+            # 2. Córners / Tiros Exclusivos por Equipo (Local y Visita)
+            elif tipo == "team_total":
+                side = market.get("side", "").lower()
+                entrada = {}
+                for p in precios:
+                    entrada[p.get("designation", "").lower()] = a_decimal(p.get("price"))
+                    entrada["linea"] = p.get("points")
+                if entrada and side in ["home", "away"]:
+                    resultado[f"{prefijo}_{side}"] = entrada
 
     return resultado
 
@@ -254,8 +259,15 @@ def scrapear_liga(nombre_liga: str, config: dict, locales_db: list, visitas_db: 
         straight = parsear_straight(mid, odds_straight_data)
         
         print(f"     → Buscando props (Córners/Tiros) para: {home_name} vs {away_name}...")
-        # 🎯 AQUÍ ESTÁ LA CORRECCIÓN: Le pasamos los 3 datos requeridos
-        related = parsear_related(mid, home_name, away_name)
+        
+        # 🎯 AQUÍ ESTÁ LA NUEVA LLAMADA LIMPIA
+        related = parsear_related(mid)
+        
+        if related:
+            claves = list(related.keys())
+            print(f"       ✅ Props encontrados: {', '.join(claves)}")
+        else:
+            print(f"       ⚠ Sin props disponibles aún")
 
         fecha_dt = datetime.fromisoformat(partido["inicio"].replace("Z", "+00:00"))
         fecha_local = fecha_dt.astimezone()
@@ -267,11 +279,13 @@ def scrapear_liga(nombre_liga: str, config: dict, locales_db: list, visitas_db: 
             "inicio_local": fecha_local.strftime("%Y-%m-%d %H:%M"),
         }
 
+        # Guardando 1X2 y Hándicaps
         for k, v in straight["1x2"].items(): fila[f"1x2_{k}"] = v
 
         for h in [h for h in straight["handicap"] if not h["es_alt"]][:2]:
             fila[f"hdp_{h['lado']}_{h['handicap']}"] = h["odds"]
 
+        # Guardando Goles Totales y por Equipo
         for t in [t for t in straight["total_goles"] if not t["es_alt"]][:4]:
             fila[f"goles_{t['linea']}_{t['lado']}"] = t["odds"]
 
@@ -279,12 +293,14 @@ def scrapear_liga(nombre_liga: str, config: dict, locales_db: list, visitas_db: 
             for t in [t for t in straight[src] if not t["es_alt"]][:2]:
                 fila[f"goles_tt_{equipo}_{t['linea']}_{t['lado']}"] = t["odds"]
 
+        # Guardando Córners (Totales, Local, Visita)
         for subtipo in ("total", "home", "away"):
             datos = related.get(f"corners_{subtipo}", {})
             if datos:
                 for lado in ("over", "under"):
                     if lado in datos: fila[f"corners_{subtipo}_{datos.get('linea', '?')}_{lado}"] = datos[lado]
 
+        # Guardando Tiros (Totales, Local, Visita)
         for subtipo in ("total", "home", "away"):
             datos = related.get(f"shots_{subtipo}", {})
             if datos:
@@ -295,7 +311,6 @@ def scrapear_liga(nombre_liga: str, config: dict, locales_db: list, visitas_db: 
         print(f"     ✓ Partido completado")
 
     return resultados
-
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN Y EXPORTACIÓN A CARPETA
 # ─────────────────────────────────────────────────────────────────────────────
