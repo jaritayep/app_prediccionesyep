@@ -560,7 +560,7 @@ elif menu == "Portafolio de Picks":
 
     with tab1:
         st.markdown("### 🔍 Escáner de Ineficiencias vs Pinnacle")
-        st.caption("Cruzando modelo ML y Poisson contra las líneas de apertura de Pinnacle.")
+        st.caption("Cruzando modelo ML, Poisson (Goles, Córners, Tiros) contra líneas de Pinnacle. (Edge 2% - 15%)")
         
         try:
             # 1. Cargamos tu Base de Datos de Equipos
@@ -591,12 +591,11 @@ elif menu == "Portafolio de Picks":
                     st.error("⚠️ No se encontró el archivo 'modelo_ia.pkl'.")
                     st.stop()
 
-                with st.spinner(f"Analizando {archivo_seleccionado} con Machine Learning..."):
+                with st.spinner(f"Analizando {archivo_seleccionado} con Inteligencia Artificial..."):
                     df_pinnacle = pd.read_csv(ruta_csv)
                     oportunidades = []
                     log_debug = []
                     
-                    # 🛠️ BUSCADOR SEGURO DE COLUMNAS (Evita falsos nulos de Pandas)
                     def buscar_cuota_segura(row, posibles_columnas):
                         for col in posibles_columnas:
                             if col in row.index and pd.notna(row[col]) and str(row[col]).strip() != '':
@@ -605,6 +604,8 @@ elif menu == "Portafolio de Picks":
 
                     def prob_under(promedio, umbral):
                         return 1 - prob_over(promedio, umbral)
+
+                    import re
 
                     for index, row in df_pinnacle.iterrows():
                         h_csv = str(row['home'])
@@ -620,10 +621,11 @@ elif menu == "Portafolio de Picks":
                         h_db = h_db_match[0]
                         a_db = a_db_match[0]
 
-                        # --- CÁLCULO DE VARIABLES IA Y POISSON ---
+                        # --- CÁLCULO DE VARIABLES DESDE TU DB ---
                         stats_h = get_recent_stats(h_db, conn)
                         stats_a = get_recent_stats(a_db, conn)
                         
+                        # Promedios de Goles
                         xg_h = stats_h.get('xG_home', 1.0) 
                         xg_a = stats_a.get('xG_away', 1.0)
                         xg_diff = xg_h - xg_a
@@ -643,12 +645,17 @@ elif menu == "Portafolio de Picks":
                             dif_tabla, ventaja_fisica
                         ]]
                         
+                        # Probabilidades 1X2 del Modelo .pkl
                         pred_probs = model.predict_proba(input_data)[0]
                         prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
 
-                        pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
-                        pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
-                        prom_goles_total = pred_home + pred_away
+                        # Promedios Base para Poisson
+                        pred_goles_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
+                        pred_goles_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+                        prom_goles_total = pred_goles_home + pred_goles_away
+
+                        prom_corners_total = (stats_h['HC'] + stats_a['AC']) / 2
+                        prom_shots_total = (stats_h['HST'] + stats_a['AST']) / 2
 
                         # --- MAPEO BASE (1X2) ---
                         mercados_a_evaluar = [
@@ -657,82 +664,87 @@ elif menu == "Portafolio de Picks":
                             ("Ganador (Visita)", buscar_cuota_segura(row, ['1x2_away']), prob_visita)
                         ]
 
-                        # --- LECTURA DINÁMICA DE GOLES ---
-                        # Escaneamos SOLO las columnas que tienen datos reales para este partido específico
+                        # --- LECTURA DINÁMICA DE GOLES, CÓRNERS Y TIROS ---
                         for col_name, val in row.items():
-                            if pd.isna(val) or str(val).strip() == '' or float(val) <= 1.0:
+                            if pd.isna(val) or str(val).strip() == '':
                                 continue
-                                
+                            
                             col_str = str(col_name).lower()
                             
-                            # Filtramos con Inteligencia: Buscamos cualquier línea de goles que termine en ".5" (1.5, 2.5, 3.5, etc.)
-                            # Ignoramos líneas asiáticas (.25 o .75) porque cambian la matemática de Poisson
+                            # 1. Filtramos primero por el nombre de la columna (debe tener formato de línea como .5)
                             match = re.search(r'_(\d+\.5)_', col_str)
                             if not match:
                                 continue
                                 
+                            # 2. Intentamos convertir a número de forma segura (ignora textos como "Premier League")
+                            try:
+                                val_num = float(val)
+                                if val_num <= 1.0:
+                                    continue
+                            except ValueError:
+                                continue 
+                                
                             linea = float(match.group(1))
                             
-                            # 1. Totales del Partido
-                            if ('goles_' in col_str or 'total_' in col_str) and 'tt_' not in col_str:
+                            # A. Lógica de Goles
+                            if 'goles' in col_str and 'tt_' not in col_str:
                                 if 'over' in col_str:
-                                    mercados_a_evaluar.append((f"Goles (+{linea})", val, prob_over(prom_goles_total, linea)))
+                                    mercados_a_evaluar.append((f"Goles (+{linea})", val_num, prob_over(prom_goles_total, linea)))
                                 elif 'under' in col_str:
-                                    mercados_a_evaluar.append((f"Goles (-{linea})", val, prob_under(prom_goles_total, linea)))
-                                    
-                            # 2. Totales del Equipo Local
-                            elif 'tt_home' in col_str:
+                                    mercados_a_evaluar.append((f"Goles (-{linea})", val_num, prob_under(prom_goles_total, linea)))
+                            elif 'goles_tt_home' in col_str:
                                 if 'over' in col_str:
-                                    mercados_a_evaluar.append((f"Goles Local (+{linea})", val, prob_over(pred_home, linea)))
-                                elif 'under' in col_str:
-                                    mercados_a_evaluar.append((f"Goles Local (-{linea})", val, prob_under(pred_home, linea)))
-                                    
-                            # 3. Totales del Equipo Visita
-                            elif 'tt_away' in col_str:
+                                    mercados_a_evaluar.append((f"Goles Local (+{linea})", val_num, prob_over(pred_goles_home, linea)))
+                            elif 'goles_tt_away' in col_str:
                                 if 'over' in col_str:
-                                    mercados_a_evaluar.append((f"Goles Visita (+{linea})", val, prob_over(pred_away, linea)))
+                                    mercados_a_evaluar.append((f"Goles Visita (+{linea})", val_num, prob_over(pred_goles_away, linea)))
+
+                            # B. Lógica de Córners (Total)
+                            elif 'corners' in col_str and 'total' in col_str:
+                                if 'over' in col_str:
+                                    mercados_a_evaluar.append((f"Córners (+{linea})", val_num, prob_over(prom_corners_total, linea)))
                                 elif 'under' in col_str:
-                                    mercados_a_evaluar.append((f"Goles Visita (-{linea})", val, prob_under(pred_away, linea)))
+                                    mercados_a_evaluar.append((f"Córners (-{linea})", val_num, prob_under(prom_corners_total, linea)))
+
+                            # C. Lógica de Tiros a Puerta (Total)
+                            elif 'shots' in col_str and 'total' in col_str:
+                                if 'over' in col_str:
+                                    mercados_a_evaluar.append((f"Tiros a Puerta (+{linea})", val_num, prob_over(prom_shots_total, linea)))
+                                elif 'under' in col_str:
+                                    mercados_a_evaluar.append((f"Tiros a Puerta (-{linea})", val_num, prob_under(prom_shots_total, linea)))
 
                         def evaluar_edge(mercado_nombre, prob_ia, cuota):
-                            # ... (Mantén tu función evaluar_edge exactamente como la tenías) ...
-                            if cuota is None:
-                                return
-                                
+                            if cuota is None: return
                             try:
                                 cuota_flt = float(cuota)
-                                if cuota_flt <= 1.0: return
-                                
                                 edge = prob_ia - (1 / cuota_flt)
+                                
                                 log_debug.append(f"📊 Evaluando: {h_db} - {mercado_nombre} | Cuota: {cuota_flt} | Prob IA: {prob_ia:.1%} | Edge: {edge:.2%}")
                                 
-                                if 0.02 <= edge <= 0.14:
+                                # 🚨 FILTRO OPTIMIZADO: Edge entre 2% y 15%
+                                if 0.02 <= edge <= 0.15:
                                     oportunidades.append((fecha_partido, h_db, a_db, mercado_nombre, cuota_flt, prob_ia, edge))
                                     log_debug.append(f"   ✨ ¡AÑADIDO AL PORTAFOLIO! Edge válido: {edge:.2%}")
                             except Exception as e:
-                                log_debug.append(f"⚠️ Error numérico en {mercado_nombre}: {e}")
+                                pass
 
-                        # Escaneamos todo lo que encontró
                         for nombre_mkt, cuota_val, prob_ia in mercados_a_evaluar:
                             evaluar_edge(nombre_mkt, prob_ia, cuota_val)
-                    # --- RENDERIZADO DEL LOG ---
+
+                    # --- RENDERS ---
                     with st.expander("🛠️ Ver Diagnóstico Completo del Robot Evaluador"):
-                        if log_debug:
-                            for log_msg in log_debug:
-                                st.text(log_msg)
-                        else:
-                            st.text("No se procesó ningún partido. Revisa las coincidencias de nombres de equipos.")
+                        for log_msg in log_debug: st.text(log_msg)
 
                     if oportunidades:
                         df_ops = pd.DataFrame(oportunidades, columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob_IA', 'Edge'])
                         st.session_state['portafolio_escaneado'] = df_ops.sort_values(by='Edge', ascending=False).drop_duplicates(subset=['Home', 'Mercado']).reset_index(drop=True)
                     else:
-                        st.warning("📊 El robot escaneó las cuotas de goles exitosamente, pero ninguna se encuentra dentro del rango de ventaja configurado (Edge entre 2% y 14%).")
+                        st.warning("📊 No se encontraron ineficiencias dentro del rango rentable (2% a 15%).")
 
-            # --- TABLA INTERACTIVA DE INVERSIONES ---
+            # --- TABLA INTERACTIVA ---
             if 'portafolio_escaneado' in st.session_state:
                 df_portfolio = st.session_state['portafolio_escaneado']
-                st.success(f"Detección completada: {len(df_portfolio)} inversiones recomendadas encontradas.")
+                st.success(f"Detección completada: {len(df_portfolio)} inversiones recomendadas.")
                 
                 df_display = df_portfolio.copy()
                 df_display['Partido'] = df_display['Home'] + " vs " + df_display['Away']
@@ -740,7 +752,6 @@ elif menu == "Portafolio de Picks":
                 df_display['Prob_IA_Str'] = (df_display['Prob_IA'] * 100).round(1).astype(str) + "%"
                 
                 st.markdown("### 💼 Portafolio Recomendado Pinnacle")
-                
                 columnas_mostrar = ['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']
                 df_seleccionable = df_display[columnas_mostrar].copy()
                 df_seleccionable.insert(0, "✅ Añadir", True) 
@@ -761,12 +772,11 @@ elif menu == "Portafolio de Picks":
                     else:
                         for _, row in df_final_a_guardar.iterrows():
                             cursor.execute("""
-                                INSERT INTO portafolio_historico 
-                                (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
+                                INSERT INTO portafolio_historico (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob_IA'], row['Edge'], stake_fijo))
                         conn.commit()
-                        st.toast(f"¡{len(df_final_a_guardar)} picks guardados exitosamente!")
+                        st.toast("¡Picks guardados exitosamente!")
                         del st.session_state['portafolio_escaneado']
                         st.rerun()
 
