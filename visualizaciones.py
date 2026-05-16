@@ -567,9 +567,9 @@ elif menu == "Portafolio de Picks":
             
             c1, c2 = st.columns(2)
             with c1:
-                stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=500, value=5000, step=1000)
+                stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=500, value=5000, step=100)
             with c2:
-                archivo_csv = st.text_input("📂 Nombre del archivo CSV de Pinnacle:", value="pinnacle_20260515.csv")
+                archivo_csv = st.text_input("📂 Nombre del archivo CSV de Pinnacle:", value="pinnacle_20260516.csv")
 
             if st.button("🔍 Escanear Mercado en CSV", type="primary"):
                 model = cargar_modelo()

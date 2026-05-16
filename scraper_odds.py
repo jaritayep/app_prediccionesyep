@@ -12,11 +12,14 @@ Scrapea partidos de HOY y MAÑANA de las Top 5 ligas europeas:
   - Ligue 1 (Francia)
 
 Mercados capturados:
-  - 1X2 (moneyline)
-  - Hándicap asiático (spreads)
-  - Total de goles (over/under)
-  - Total de goles por equipo (team totals)
-  - [Córners y tiros a puerta: disponibles vía specials si Pinnacle los ofrece]
+  STRAIGHT (un call por liga):
+    - 1X2 (moneyline)
+    - Hándicap asiático (spreads)
+    - Total de goles — partido completo y por equipo
+
+  RELATED (dos calls por partido):
+    - Córners — total y por equipo
+    - Tiros a puerta — total y por equipo
 
 Instalación:
     pip install requests pandas
@@ -52,42 +55,30 @@ HEADERS = {
 
 # IDs de liga en Pinnacle (Soccer sportId = 29)
 LIGAS = {
-    "Premier League":  {
-        "league_id": 1980,
-        "pais": "Inglaterra",
-    },
-    "La Liga": {
-        "league_id": 2036,
-        "pais": "España",
-    },
-    "Serie A": {
-        "league_id": 2037,
-        "pais": "Italia",
-    },
-    "Bundesliga": {
-        "league_id": 1842,
-        "pais": "Alemania",
-    },
-    "Ligue 1": {
-        "league_id": 2141,
-        "pais": "Francia",
-    },
+    "Premier League": {"league_id": 1980, "pais": "Inglaterra"},
+    "La Liga":        {"league_id": 2036, "pais": "España"},
+    "Serie A":        {"league_id": 2037, "pais": "Italia"},
+    "Bundesliga":     {"league_id": 1842, "pais": "Alemania"},
+    "Ligue 1":        {"league_id": 2141, "pais": "Francia"},
 }
 
-# Períodos de Pinnacle para fútbol
-# 0 = partido completo, 1 = primer tiempo
+# Período 0 = partido completo, 1 = primer tiempo
 PERIODO_PARTIDO = 0
 
-# Delay entre requests para no saturar (segundos)
-REQUEST_DELAY = 1.2
+# Keywords para detectar córners y tiros en los nombres de related matchups
+KEYWORDS_CORNERS = ["corner", "córner", "rincón"]
+KEYWORDS_SHOTS   = ["shot", "tiro", "disparo", "shots on"]
+
+# Delay entre requests (segundos) — respetar rate limits de Pinnacle
+REQUEST_DELAY = 1.5
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HELPERS
+# HTTP HELPER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get(endpoint: str, params: dict = None) -> dict | list | None:
-    """Hace GET a la guest API de Pinnacle con manejo de errores y retry."""
+def get(endpoint: str, params: dict = None):
+    """GET a la guest API de Pinnacle con retry y manejo de rate limit."""
     url = f"{BASE_URL}{endpoint}"
     for intento in range(3):
         try:
@@ -95,8 +86,10 @@ def get(endpoint: str, params: dict = None) -> dict | list | None:
             if resp.status_code == 200:
                 return resp.json()
             elif resp.status_code == 429:
-                print(f"  ⚠ Rate limit (429). Esperando 60s...")
-                time.sleep(60)
+                print(f"  ⚠ Rate limit (429). Esperando 65s...")
+                time.sleep(65)
+            elif resp.status_code == 404:
+                return None  # sin datos, no reintentar
             else:
                 print(f"  ✗ HTTP {resp.status_code} en {endpoint}")
                 return None
@@ -106,11 +99,15 @@ def get(endpoint: str, params: dict = None) -> dict | list | None:
     return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# UTILIDADES
+# ─────────────────────────────────────────────────────────────────────────────
+
 def es_hoy_o_manana(fecha_iso: str) -> bool:
-    """True si la fecha está dentro de las próximas 48 horas."""
-    ahora = datetime.now(timezone.utc)
+    """True si la fecha cae dentro de las próximas 48 horas (UTC)."""
+    ahora  = datetime.now(timezone.utc)
     inicio = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
-    fin = inicio + timedelta(days=2)
+    fin    = inicio + timedelta(days=2)
     try:
         fecha = datetime.fromisoformat(fecha_iso.replace("Z", "+00:00"))
         return inicio <= fecha < fin
@@ -118,82 +115,61 @@ def es_hoy_o_manana(fecha_iso: str) -> bool:
         return False
 
 
-def odds_decimal(precio_americano: float) -> float:
-    """Convierte odds americanas a decimal."""
+def a_decimal(precio_americano) -> float | None:
+    """Convierte odds americanas a formato decimal."""
     if precio_americano is None:
         return None
-    if precio_americano > 0:
-        return round(precio_americano / 100 + 1, 4)
-    else:
-        return round(100 / abs(precio_americano) + 1, 4)
+    p = float(precio_americano)
+    return round(p / 100 + 1, 4) if p > 0 else round(100 / abs(p) + 1, 4)
+
+
+def contiene_keyword(texto: str, keywords: list) -> bool:
+    t = texto.lower()
+    return any(kw in t for kw in keywords)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SCRAPING DE PARTIDOS
+# PARTIDOS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def obtener_partidos(league_id: int, nombre_liga: str) -> list[dict]:
-    """Obtiene la lista de matchups (partidos) de una liga."""
-    print(f"\n  → Obteniendo partidos de {nombre_liga} (league_id={league_id})...")
+def obtener_partidos(league_id: int, nombre_liga: str) -> list:
+    """Devuelve partidos de hoy/mañana de la liga."""
+    print(f"  → Partidos de {nombre_liga}...")
     data = get(f"/leagues/{league_id}/matchups")
     if not data:
         return []
 
     partidos = []
     for m in data:
-        # Filtrar partidos de hoy y mañana (no live ya empezados sin odds)
-        starts = m.get("startTime", "")
-        if not es_hoy_o_manana(starts):
+        if not es_hoy_o_manana(m.get("startTime", "")):
             continue
-
-        # Solo partidos principales (no props/alternates)
+        # Solo matchups principales (parentId ausente = no son sub-eventos)
         if m.get("type") != "matchup" or m.get("parentId"):
             continue
-
         participantes = m.get("participants", [])
         if len(participantes) < 2:
             continue
 
         home = next((p["name"] for p in participantes if p.get("alignment") == "home"), "?")
         away = next((p["name"] for p in participantes if p.get("alignment") == "away"), "?")
+        partidos.append({"id": m["id"], "home": home, "away": away, "inicio": m.get("startTime", "")})
 
-        partidos.append({
-            "id": m["id"],
-            "liga": nombre_liga,
-            "home": home,
-            "away": away,
-            "inicio": starts,
-        })
-
-    print(f"     {len(partidos)} partidos encontrados hoy/mañana")
+    print(f"     {len(partidos)} partidos encontrados")
     return partidos
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SCRAPING DE ODDS
+# ODDS STRAIGHT (1X2 · HANDICAP · TOTALES · TEAM TOTALS)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def obtener_odds_straight(league_id: int) -> list[dict]:
-    """
-    Obtiene todas las odds 'straight' de la liga:
-    moneyline (1X2), spread (hándicap asiático), totals, team totals.
-    """
-    data = get(f"/leagues/{league_id}/markets/straight")
-    return data if data else []
+def obtener_odds_straight(league_id: int) -> list:
+    """Un solo call trae todas las odds straight de la liga."""
+    return get(f"/leagues/{league_id}/markets/straight") or []
 
 
-def parsear_odds_partido(matchup_id: int, odds_data: list) -> dict:
-    """
-    Filtra y estructura las odds para un partido específico.
-    Retorna dict con mercados: 1x2, handicap, total_goles, team_totals.
-    """
-    resultado = {
-        "1x2": None,
-        "handicap_asiatico": [],
-        "total_goles": [],
-        "team_total_home": [],
-        "team_total_away": [],
-    }
+def parsear_straight(matchup_id: int, odds_data: list) -> dict:
+    """Extrae y estructura las odds straight para un partido concreto."""
+    res = {"1x2": {}, "handicap": [], "total_goles": [], "tt_home": [], "tt_away": []}
 
     for market in odds_data:
         if market.get("matchupId") != matchup_id:
@@ -201,155 +177,214 @@ def parsear_odds_partido(matchup_id: int, odds_data: list) -> dict:
         if market.get("period") != PERIODO_PARTIDO:
             continue
 
-        tipo = market.get("type", "").lower()
+        tipo    = market.get("type", "").lower()
         precios = market.get("prices", [])
+        es_alt  = market.get("altLineId") is not None
 
-        # ── 1X2 (Moneyline) ──
         if tipo == "moneyline":
-            ml = {}
             for p in precios:
-                desig = p.get("designation", "").lower()
-                odds_raw = p.get("price")
-                if "home" in desig:
-                    ml["home"] = odds_decimal(odds_raw)
-                elif "away" in desig:
-                    ml["away"] = odds_decimal(odds_raw)
-                elif "draw" in desig or "tie" in desig:
-                    ml["draw"] = odds_decimal(odds_raw)
-            if ml:
-                resultado["1x2"] = ml
+                d = p.get("designation", "").lower()
+                v = a_decimal(p.get("price"))
+                if "home" in d:                   res["1x2"]["home"] = v
+                elif "away" in d:                 res["1x2"]["away"] = v
+                elif "draw" in d or "tie" in d:   res["1x2"]["draw"] = v
 
-        # ── Hándicap Asiático (Spread) ──
         elif tipo == "spread":
             for p in precios:
-                desig = p.get("designation", "").lower()
-                hdp = p.get("points")
-                precio = odds_decimal(p.get("price"))
-                resultado["handicap_asiatico"].append({
-                    "lado": desig,
-                    "handicap": hdp,
-                    "odds": precio,
+                res["handicap"].append({
+                    "lado":     p.get("designation", "").lower(),
+                    "handicap": p.get("points"),
+                    "odds":     a_decimal(p.get("price")),
+                    "es_alt":   es_alt,
                 })
 
-        # ── Total Goles (Over/Under) ──
         elif tipo == "total":
-            alt = market.get("altLineId")  # None = línea principal
             for p in precios:
-                desig = p.get("designation", "").lower()
-                puntos = p.get("points")
-                precio = odds_decimal(p.get("price"))
-                resultado["total_goles"].append({
-                    "linea": puntos,
-                    "lado": desig,
-                    "odds": precio,
-                    "es_alternativa": alt is not None,
+                res["total_goles"].append({
+                    "linea":  p.get("points"),
+                    "lado":   p.get("designation", "").lower(),
+                    "odds":   a_decimal(p.get("price")),
+                    "es_alt": es_alt,
                 })
 
-        # ── Team Totals ──
         elif tipo == "team_total":
             equipo = market.get("side", "").lower()
+            clave  = "tt_home" if equipo == "home" else "tt_away"
             for p in precios:
-                desig = p.get("designation", "").lower()
-                puntos = p.get("points")
-                precio = odds_decimal(p.get("price"))
-                clave = f"team_total_{equipo}" if equipo in ("home", "away") else "team_total_home"
-                resultado[clave].append({
-                    "linea": puntos,
-                    "lado": desig,
-                    "odds": precio,
+                res[clave].append({
+                    "linea":  p.get("points"),
+                    "lado":   p.get("designation", "").lower(),
+                    "odds":   a_decimal(p.get("price")),
+                    "es_alt": es_alt,
                 })
+
+    return res
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ODDS RELATED (CÓRNERS · TIROS A PUERTA)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def parsear_related(matchup_id: int) -> dict:
+    """
+    Obtiene córners y tiros a puerta vía dos endpoints específicos:
+      GET /matchups/{id}/related                    → lista de sub-matchups
+      GET /matchups/{id}/markets/related/straight   → odds de esos sub-matchups
+
+    Retorna dict con claves: corners_total, corners_home, corners_away,
+                                shots_total,   shots_home,   shots_away
+    Cada clave contiene: {linea, over, under}
+    """
+    resultado = {}
+
+    # 1) Lista de sub-matchups relacionados
+    related = get(f"/matchups/{matchup_id}/related") or []
+    time.sleep(REQUEST_DELAY)
+
+    if not related:
+        return resultado
+
+    # id → nombre del sub-matchup
+    id_a_nombre = {r["id"]: r.get("name", "") for r in related if r.get("id")}
+
+    # 2) Odds de todos esos sub-matchups en un solo call
+    odds_related = get(f"/matchups/{matchup_id}/markets/related/straight") or []
+    time.sleep(REQUEST_DELAY)
+
+    if not odds_related:
+        return resultado
+
+    # Agrupar odds por sub-matchup id
+    odds_por_id: dict = {}
+    for market in odds_related:
+        mid = market.get("matchupId")
+        if mid:
+            odds_por_id.setdefault(mid, []).append(market)
+
+    # Clasificar y parsear cada sub-matchup relevante
+    for sub_id, nombre in id_a_nombre.items():
+        es_corner = contiene_keyword(nombre, KEYWORDS_CORNERS)
+        es_shot   = contiene_keyword(nombre, KEYWORDS_SHOTS)
+        if not es_corner and not es_shot:
+            continue
+
+        # Determinar sub-tipo: total / home / away
+        n = nombre.lower()
+        if "home" in n:       subtipo = "home"
+        elif "away" in n:     subtipo = "away"
+        else:                 subtipo = "total"
+
+        prefijo = "corners" if es_corner else "shots"
+        clave   = f"{prefijo}_{subtipo}"
+
+        # Parsear el mercado total (over/under) de este sub-matchup
+        entrada = {}
+        for market in odds_por_id.get(sub_id, []):
+            if market.get("period") != PERIODO_PARTIDO:
+                continue
+            if market.get("type", "").lower() != "total":
+                continue
+            for p in market.get("prices", []):
+                lado  = p.get("designation", "").lower()
+                linea = p.get("points")
+                odds  = a_decimal(p.get("price"))
+                entrada[lado]    = odds
+                entrada["linea"] = linea
+
+        if entrada:
+            resultado[clave] = entrada
 
     return resultado
 
 
-def obtener_odds_specials(league_id: int, matchup_id: int) -> list[dict]:
-    """
-    Obtiene mercados especiales de un partido (córners, tiros a puerta, etc.)
-    Nota: Pinnacle no siempre ofrece estos mercados para todas las ligas.
-    """
-    data = get(f"/leagues/{league_id}/matchups/{matchup_id}/related")
-    if not data:
-        return []
-
-    especiales = []
-    for item in data:
-        nombre = item.get("name", "")
-        nombre_lower = nombre.lower()
-        if any(kw in nombre_lower for kw in ["corner", "córner", "shot", "tiro", "disparo"]):
-            especiales.append({
-                "nombre": nombre,
-                "id": item.get("id"),
-                "tipo": item.get("type"),
-            })
-    return especiales
-
-
 # ─────────────────────────────────────────────────────────────────────────────
-# FLUJO PRINCIPAL POR LIGA
+# FLUJO POR LIGA
 # ─────────────────────────────────────────────────────────────────────────────
 
-def scrapear_liga(nombre_liga: str, config: dict) -> list[dict]:
-    """
-    Scrapea una liga completa: partidos + odds de todos los mercados.
-    """
+def scrapear_liga(nombre_liga: str, config: dict) -> list:
     league_id = config["league_id"]
+
     partidos = obtener_partidos(league_id, nombre_liga)
     if not partidos:
         return []
-
     time.sleep(REQUEST_DELAY)
 
-    # Obtener todas las odds de la liga en un solo call (eficiente)
-    print(f"  → Obteniendo odds de {nombre_liga}...")
-    odds_data = obtener_odds_straight(league_id)
+    print(f"  → Odds straight {nombre_liga}...")
+    odds_straight_data = obtener_odds_straight(league_id)
     time.sleep(REQUEST_DELAY)
 
     resultados = []
     for partido in partidos:
-        mid = partido["id"]
-        odds_partido = parsear_odds_partido(mid, odds_data)
+        mid       = partido["id"]
+        home_name = partido["home"]
+        away_name = partido["away"]
 
-        # Intentar obtener specials (córners/tiros — opcionales)
-        # Comentado por defecto para no exceder rate limits; descomentá si lo necesitás
-        # specials = obtener_odds_specials(league_id, mid)
-        # time.sleep(REQUEST_DELAY)
+        # Parsear straight (1x2, handicap, goles, team totals)
+        straight = parsear_straight(mid, odds_straight_data)
 
-        fecha_dt = datetime.fromisoformat(partido["inicio"].replace("Z", "+00:00"))
-        fecha_local = fecha_dt.astimezone()  # convierte a hora local
+        # Parsear related (córners, tiros a puerta) — 2 calls HTTP
+        print(f"     → Related: {home_name} vs {away_name}...")
+        related = parsear_related(mid)
 
+        # Formatear fechas
+        fecha_dt    = datetime.fromisoformat(partido["inicio"].replace("Z", "+00:00"))
+        fecha_local = fecha_dt.astimezone()
+
+        # Construir fila del CSV/JSON
         fila = {
-            "liga": nombre_liga,
-            "pais": config["pais"],
-            "partido_id": mid,
-            "home": partido["home"],
-            "away": partido["away"],
-            "inicio_utc": partido["inicio"],
+            "liga":         nombre_liga,
+            "pais":         config["pais"],
+            "partido_id":   mid,
+            "home":         home_name,
+            "away":         away_name,
+            "inicio_utc":   partido["inicio"],
             "inicio_local": fecha_local.strftime("%Y-%m-%d %H:%M"),
-            **{f"1x2_{k}": v for k, v in (odds_partido["1x2"] or {}).items()},
         }
 
-        # Hándicap asiático — línea principal (primer hdp)
-        hdps = odds_partido["handicap_asiatico"]
-        if hdps:
-            for h in hdps[:2]:  # home y away de la línea principal
-                fila[f"hdp_{h['lado']}"] = h["handicap"]
-                fila[f"hdp_{h['lado']}_odds"] = h["odds"]
+        # ── 1X2 ──
+        for k, v in straight["1x2"].items():
+            fila[f"1x2_{k}"] = v
 
-        # Total goles — líneas no alternativas
-        totales_main = [t for t in odds_partido["total_goles"] if not t["es_alternativa"]]
-        for t in totales_main[:4]:  # over y under de las 2 primeras líneas
-            fila[f"total_{t['linea']}_{t['lado']}"] = t["odds"]
+        # ── Handicap asiático — línea principal ──
+        hdps_main = [h for h in straight["handicap"] if not h["es_alt"]]
+        for h in hdps_main[:2]:
+            fila[f"hdp_{h['lado']}"]      = h["handicap"]
+            fila[f"hdp_{h['lado']}_odds"] = h["odds"]
 
-        # Team totals — home y away
-        for equipo in ("home", "away"):
-            for t in odds_partido[f"team_total_{equipo}"][:2]:
-                fila[f"tt_{equipo}_{t['linea']}_{t['lado']}"] = t["odds"]
+        # ── Total goles — línea principal ──
+        totales_main = [t for t in straight["total_goles"] if not t["es_alt"]]
+        for t in totales_main[:4]:
+            fila[f"goles_{t['linea']}_{t['lado']}"] = t["odds"]
 
-        # Raw para debug / uso posterior
-        fila["_raw_odds"] = json.dumps(odds_partido, ensure_ascii=False)
+        # ── Team totals goles — línea principal ──
+        for equipo, src in [("home", "tt_home"), ("away", "tt_away")]:
+            tt_main = [t for t in straight[src] if not t["es_alt"]]
+            for t in tt_main[:2]:
+                fila[f"goles_tt_{equipo}_{t['linea']}_{t['lado']}"] = t["odds"]
+
+        # ── Córners ──
+        for subtipo in ("total", "home", "away"):
+            datos = related.get(f"corners_{subtipo}", {})
+            if datos:
+                linea = datos.get("linea", "?")
+                for lado in ("over", "under"):
+                    if lado in datos:
+                        fila[f"corners_{subtipo}_{linea}_{lado}"] = datos[lado]
+
+        # ── Tiros a puerta ──
+        for subtipo in ("total", "home", "away"):
+            datos = related.get(f"shots_{subtipo}", {})
+            if datos:
+                linea = datos.get("linea", "?")
+                for lado in ("over", "under"):
+                    if lado in datos:
+                        fila[f"shots_{subtipo}_{linea}_{lado}"] = datos[lado]
+
+        # Raw para debugging
+        fila["_raw"] = json.dumps({"straight": straight, "related": related}, ensure_ascii=False)
 
         resultados.append(fila)
-        print(f"     ✓ {partido['home']} vs {partido['away']} ({fecha_local.strftime('%d/%m %H:%M')})")
+        print(f"     ✓ {home_name} vs {away_name} ({fecha_local.strftime('%d/%m %H:%M')})")
 
     return resultados
 
@@ -359,17 +394,19 @@ def scrapear_liga(nombre_liga: str, config: dict) -> list[dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
-    hoy = datetime.now()
+    hoy    = datetime.now()
     manana = hoy + timedelta(days=1)
+
     print("=" * 65)
     print("  PINNACLE SCRAPER — TOP 5 LIGAS EUROPEAS")
     print(f"  Partidos: {hoy.strftime('%d/%m/%Y')} y {manana.strftime('%d/%m/%Y')}")
+    print("  Mercados: 1X2 · Handicap · Goles · Team Totals · Córners · Tiros")
     print("=" * 65)
 
     todos = []
     for nombre_liga, config in LIGAS.items():
         print(f"\n{'─'*55}")
-        print(f"  Liga: {nombre_liga.upper()} ({config['pais']})")
+        print(f"  {nombre_liga.upper()} ({config['pais']})")
         print(f"{'─'*55}")
         try:
             filas = scrapear_liga(nombre_liga, config)
@@ -383,31 +420,36 @@ def main():
     print("=" * 65)
 
     if not todos:
-        print("\n⚠ No se encontraron partidos para hoy/mañana.")
-        print("  Esto puede pasar si no hay jornada en las ligas seleccionadas.")
+        print("\n⚠ Sin partidos para hoy/mañana en las ligas seleccionadas.")
         return []
 
-    # ── Guardar resultados ──
     fecha_str = hoy.strftime("%Y%m%d")
 
-    # JSON completo (incluye raw odds)
+    # JSON completo (incluye _raw para debug)
     json_path = f"pinnacle_{fecha_str}.json"
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(todos, f, ensure_ascii=False, indent=2)
-    print(f"\n✅ JSON guardado: {json_path}")
+    print(f"\n✅ JSON: {json_path}")
 
-    # CSV limpio (sin columna _raw_odds)
-    df = pd.DataFrame(todos)
-    cols_csv = [c for c in df.columns if c != "_raw_odds"]
+    # CSV limpio (sin _raw)
+    df       = pd.DataFrame(todos)
+    cols_csv = [c for c in df.columns if c != "_raw"]
     csv_path = f"pinnacle_{fecha_str}.csv"
     df[cols_csv].to_csv(csv_path, index=False, encoding="utf-8-sig")
-    print(f"✅ CSV guardado:  {csv_path}")
+    print(f"✅ CSV:  {csv_path}")
 
-    # Preview en consola
-    print(f"\n📋 Preview ({min(5, len(todos))} primeros partidos):")
+    # Preview consola
     cols_preview = ["liga", "home", "away", "inicio_local", "1x2_home", "1x2_draw", "1x2_away"]
     cols_preview = [c for c in cols_preview if c in df.columns]
+    print(f"\n📋 Preview:\n")
     print(df[cols_preview].head(10).to_string(index=False))
+
+    # Resumen columnas de mercado
+    mercado_cols = [c for c in df.columns if any(
+        c.startswith(p) for p in ["1x2", "hdp", "goles", "corners", "shots"]
+    )]
+    print(f"\n📊 Columnas de mercado capturadas:")
+    print(", ".join(mercado_cols))
 
     return todos
 
