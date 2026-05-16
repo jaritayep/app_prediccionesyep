@@ -558,31 +558,44 @@ elif menu == "Portafolio de Picks":
     tab1, tab2 = st.tabs(["🔍 Escáner en Vivo", "📊 Rendimiento Histórico"])
 
     with tab1:
-        st.markdown("### 🔍 Escáner de Ineficiencias vs Pinnacle (CSV)")
+        st.markdown("### 🔍 Escáner de Ineficiencias vs Pinnacle")
         st.caption("Cruzando modelo ML y Poisson contra las líneas de apertura de Pinnacle.")
         
         try:
             # 1. Cargamos tu Base de Datos de Equipos
             equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
             
+            # --- NUEVA LÓGICA: AUTOMATIZACIÓN DE CARPETA ---
+            directorio_odds = Path("odds_data")
+            # Buscamos todos los archivos CSV de pinnacle
+            archivos_disponibles = list(directorio_odds.glob("pinnacle_*.csv")) if directorio_odds.exists() else []
+            
+            # Ordenamos alfabéticamente al revés (como tienen formato YYYYMMDD, el más nuevo queda de primero)
+            archivos_disponibles.sort(reverse=True)
+            nombres_archivos = [archivo.name for archivo in archivos_disponibles]
+
             c1, c2 = st.columns(2)
             with c1:
                 stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=500, value=5000, step=100)
             with c2:
-                archivo_csv = st.text_input("📂 Nombre del archivo CSV de Pinnacle:", value="pinnacle_20260516.csv")
+                if nombres_archivos:
+                    # Selectbox inteligente: carga todos, pero deja el más nuevo seleccionado por defecto
+                    archivo_seleccionado = st.selectbox("📂 Archivo de cuotas (Automático):", nombres_archivos)
+                    ruta_csv = directorio_odds / archivo_seleccionado
+                else:
+                    st.error("⚠️ No se encontraron archivos en la carpeta 'odds_data/'. ¡Corre el scraper primero!")
+                    ruta_csv = None
 
-            if st.button("🔍 Escanear Mercado en CSV", type="primary"):
+            # Bloqueamos el botón si no hay archivo
+            boton_disabled = ruta_csv is None
+
+            if st.button("🔍 Escanear Mercado", type="primary", disabled=boton_disabled):
                 model = cargar_modelo()
                 if not model:
                     st.error("⚠️ No se encontró el archivo 'modelo_ia.pkl'.")
                     st.stop()
 
-                ruta_csv = Path(archivo_csv)
-                if not ruta_csv.exists():
-                    st.error(f"No se encontró el archivo '{archivo_csv}'.")
-                    st.stop()
-
-                with st.spinner("Analizando miles de cuotas de Pinnacle con Machine Learning..."):
+                with st.spinner(f"Analizando {archivo_seleccionado} con Machine Learning..."):
                     df_pinnacle = pd.read_csv(ruta_csv)
                     oportunidades = []
                     log_debug = []
