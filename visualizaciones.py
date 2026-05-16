@@ -604,8 +604,18 @@ elif menu == "Portafolio de Picks":
 
                     def prob_under(promedio, umbral):
                         return 1 - prob_over(promedio, umbral)
-
-                    import re
+                        
+                    def prob_handicap(prom_favor, prom_contra, linea_hdp):
+                        # Motor Skellam (Poisson Doble) para Hándicap Asiático
+                        # Calcula la probabilidad de que (Goles a Favor + Ventaja Hándicap) > Goles en Contra
+                        prob_acum = 0.0
+                        for gf in range(15):
+                            for gc in range(15):
+                                if (gf + linea_hdp) > gc:
+                                    p_gf = (math.exp(-prom_favor) * (prom_favor**gf)) / math.factorial(gf)
+                                    p_gc = (math.exp(-prom_contra) * (prom_contra**gc)) / math.factorial(gc)
+                                    prob_acum += (p_gf * p_gc)
+                        return prob_acum
 
                     for index, row in df_pinnacle.iterrows():
                         h_csv = str(row['home'])
@@ -625,7 +635,6 @@ elif menu == "Portafolio de Picks":
                         stats_h = get_recent_stats(h_db, conn)
                         stats_a = get_recent_stats(a_db, conn)
                         
-                        # Promedios de Goles
                         xg_h = stats_h.get('xG_home', 1.0) 
                         xg_a = stats_a.get('xG_away', 1.0)
                         xg_diff = xg_h - xg_a
@@ -645,11 +654,10 @@ elif menu == "Portafolio de Picks":
                             dif_tabla, ventaja_fisica
                         ]]
                         
-                        # Probabilidades 1X2 del Modelo .pkl
                         pred_probs = model.predict_proba(input_data)[0]
                         prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
 
-                        # Promedios Base para Poisson
+                        # Promedios Base
                         pred_goles_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
                         pred_goles_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
                         prom_goles_total = pred_goles_home + pred_goles_away
@@ -657,61 +665,68 @@ elif menu == "Portafolio de Picks":
                         prom_corners_total = (stats_h['HC'] + stats_a['AC']) / 2
                         prom_shots_total = (stats_h['HST'] + stats_a['AST']) / 2
 
-                        # --- MAPEO BASE (1X2) ---
                         mercados_a_evaluar = [
                             ("Ganador (Local)", buscar_cuota_segura(row, ['1x2_home']), prob_local),
                             ("Empate", buscar_cuota_segura(row, ['1x2_draw']), prob_empate),
                             ("Ganador (Visita)", buscar_cuota_segura(row, ['1x2_away']), prob_visita)
                         ]
 
-                        # --- LECTURA DINÁMICA DE GOLES, CÓRNERS Y TIROS ---
+                        # --- ESCÁNER DINÁMICO TOTAL (Goles, Hándicaps, Córners, Tiros) ---
                         for col_name, val in row.items():
                             if pd.isna(val) or str(val).strip() == '':
                                 continue
                             
                             col_str = str(col_name).lower()
                             
-                            # 1. Filtramos primero por el nombre de la columna (debe tener formato de línea como .5)
-                            match = re.search(r'_(\d+\.5)_', col_str)
-                            if not match:
+                            # Ignorar variables de identificación que no son apuestas
+                            if col_str in ['liga', 'pais', 'partido_id', 'home', 'away', 'inicio_utc', 'inicio_local']:
                                 continue
                                 
-                            # 2. Intentamos convertir a número de forma segura (ignora textos como "Premier League")
                             try:
                                 val_num = float(val)
-                                if val_num <= 1.0:
-                                    continue
+                                if val_num <= 1.0: continue
                             except ValueError:
                                 continue 
                                 
+                            # 🎯 NUEVO RADAR: Busca el número (.5) esté donde esté, incluso si es negativo (Hándicap)
+                            match = re.search(r'(-?\d+\.5)', col_str)
+                            if not match:
+                                continue
+                                
                             linea = float(match.group(1))
                             
-                            # A. Lógica de Goles
-                            if 'goles' in col_str and 'tt_' not in col_str:
-                                if 'over' in col_str:
-                                    mercados_a_evaluar.append((f"Goles (+{linea})", val_num, prob_over(prom_goles_total, linea)))
-                                elif 'under' in col_str:
-                                    mercados_a_evaluar.append((f"Goles (-{linea})", val_num, prob_under(prom_goles_total, linea)))
-                            elif 'goles_tt_home' in col_str:
-                                if 'over' in col_str:
-                                    mercados_a_evaluar.append((f"Goles Local (+{linea})", val_num, prob_over(pred_goles_home, linea)))
-                            elif 'goles_tt_away' in col_str:
-                                if 'over' in col_str:
-                                    mercados_a_evaluar.append((f"Goles Visita (+{linea})", val_num, prob_over(pred_goles_away, linea)))
-
-                            # B. Lógica de Córners (Total)
-                            elif 'corners' in col_str and 'total' in col_str:
+                            # 1. HÁNDICAP ASIÁTICO
+                            if 'hdp' in col_str or 'handicap' in col_str:
+                                if 'home' in col_str:
+                                    mercados_a_evaluar.append((f"Hándicap Local ({linea:+})", val_num, prob_handicap(pred_goles_home, pred_goles_away, linea)))
+                                elif 'away' in col_str:
+                                    mercados_a_evaluar.append((f"Hándicap Visita ({linea:+})", val_num, prob_handicap(pred_goles_away, pred_goles_home, linea)))
+                                    
+                            # 2. CÓRNERS (Total)
+                            elif 'corners' in col_str:
                                 if 'over' in col_str:
                                     mercados_a_evaluar.append((f"Córners (+{linea})", val_num, prob_over(prom_corners_total, linea)))
                                 elif 'under' in col_str:
                                     mercados_a_evaluar.append((f"Córners (-{linea})", val_num, prob_under(prom_corners_total, linea)))
 
-                            # C. Lógica de Tiros a Puerta (Total)
-                            elif 'shots' in col_str and 'total' in col_str:
+                            # 3. TIROS A PUERTA (Total)
+                            elif 'shots' in col_str:
                                 if 'over' in col_str:
                                     mercados_a_evaluar.append((f"Tiros a Puerta (+{linea})", val_num, prob_over(prom_shots_total, linea)))
                                 elif 'under' in col_str:
                                     mercados_a_evaluar.append((f"Tiros a Puerta (-{linea})", val_num, prob_under(prom_shots_total, linea)))
+
+                            # 4. GOLES
+                            elif 'goles' in col_str or 'total' in col_str:
+                                if 'tt_home' in col_str:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Goles Local (+{linea})", val_num, prob_over(pred_goles_home, linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Local (-{linea})", val_num, prob_under(pred_goles_home, linea)))
+                                elif 'tt_away' in col_str:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Goles Visita (+{linea})", val_num, prob_over(pred_goles_away, linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Visita (-{linea})", val_num, prob_under(pred_goles_away, linea)))
+                                else:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Goles (+{linea})", val_num, prob_over(prom_goles_total, linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Goles (-{linea})", val_num, prob_under(prom_goles_total, linea)))
 
                         def evaluar_edge(mercado_nombre, prob_ia, cuota):
                             if cuota is None: return
