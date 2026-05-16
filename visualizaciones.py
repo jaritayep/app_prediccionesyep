@@ -558,234 +558,167 @@ elif menu == "Portafolio de Picks":
     tab1, tab2 = st.tabs(["🔍 Escáner en Vivo", "📊 Rendimiento Histórico"])
 
     with tab1:
-        import re # Necesario para extraer las líneas de Más/Menos dinámicamente
-        
-        st.markdown("### 🔍 Escáner de Ineficiencias (Impulsado por ML)")
-        st.caption("Cruzando el modelo predictivo en vivo contra todas las líneas de cuotas extraídas de Oddschecker.")
+        st.markdown("### 🔍 Escáner de Ineficiencias vs Pinnacle (CSV)")
+        st.caption("Cruzando modelo ML y Poisson contra las líneas de apertura de Pinnacle.")
         
         try:
+            # 1. Cargamos tu Base de Datos de Equipos
             equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
-            df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
-            df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
             
-            hoy = pd.Timestamp.now().normalize()
-            manana = hoy + pd.Timedelta(days=2)
-            df_jornada = df_jornada[(df_jornada['Date'] >= hoy) & (df_jornada['Date'] <= manana)]
+            c1, c2 = st.columns(2)
+            with c1:
+                stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=500, value=5000, step=1000)
+            with c2:
+                archivo_csv = st.text_input("📂 Nombre del archivo CSV de Pinnacle:", value="pinnacle_20260515.csv")
 
-            if df_jornada.empty:
-                st.info("📅 No hay partidos programados para hoy ni mañana en la base de datos.")
-            else:
-                df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m/%Y')
-                opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
+            if st.button("🔍 Escanear Mercado en CSV", type="primary"):
+                model = cargar_modelo()
+                if not model:
+                    st.error("⚠️ No se encontró el archivo 'modelo_ia.pkl'.")
+                    st.stop()
 
-                c1, c2 = st.columns(2)
-                with c1:
-                    stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=500, value=5000, step=1000)
-                with c2:
-                    dia_seleccionado_str = st.selectbox("📅 Seleccionar Día a Escanear:", opciones_fecha)
+                ruta_csv = Path(archivo_csv)
+                if not ruta_csv.exists():
+                    st.error(f"No se encontró el archivo '{archivo_csv}'.")
+                    st.stop()
 
-                df_jornada_dia = df_jornada[df_jornada['Fecha_Display'] == dia_seleccionado_str]
-                fecha_para_guardar = df_jornada_dia.iloc[0]['Date'].strftime('%Y-%m-%d')
+                with st.spinner("Analizando miles de cuotas de Pinnacle con Machine Learning..."):
+                    df_pinnacle = pd.read_csv(ruta_csv)
+                    oportunidades = []
+                    log_debug = []
+                    
+                    # Función auxiliar para Under (Lo contrario de Over)
+                    def prob_under(promedio, umbral):
+                        return 1 - prob_over(promedio, umbral)
 
-                if st.button("🔍 Escanear Mercado con Scraper Local", type="primary"):
-                    model = cargar_modelo()
-                    if not model:
-                        st.error("⚠️ No se encontró el archivo 'modelo_ia.pkl'. El escáner requiere el modelo para funcionar.")
-                        st.stop()
-
-                    with st.spinner(f"El modelo ML está evaluando cuotas dinámicas y buscando ventajas..."):
-                        oportunidades = []
-                        log_debug = [] 
+                    for index, row in df_pinnacle.iterrows():
+                        h_csv = str(row['home'])
+                        a_csv = str(row['away'])
+                        fecha_partido = str(row['inicio_local']).split()[0] if pd.notna(row['inicio_local']) else str(pd.Timestamp.now().date())
                         
-                        ruta_json = Path("odds_data/latest.json")
-                        if not ruta_json.exists():
-                            st.error("No se encontró 'latest.json'. ¡Debes correr el scraper de Python primero!")
-                            st.stop()
-                            
-                        with open(ruta_json, "r", encoding="utf-8") as f:
-                            datos_scraper = json.load(f)
-                            
-                        log_debug.append(f"📡 Scraper: {len(datos_scraper)} partidos con cuotas disponibles.")
+                        # Cruce de nombres inteligente
+                        h_db_match = process.extractOne(h_csv, equipos_db)
+                        a_db_match = process.extractOne(a_csv, equipos_db)
                         
-                        for partido_scrap in datos_scraper:
-                            h_scrap = partido_scrap.get('home', '')
-                            a_scrap = partido_scrap.get('away', '')
-                            if not h_scrap or not a_scrap: continue
-                                
-                            h_db = process.extractOne(h_scrap, equipos_db)[0]
-                            a_db = process.extractOne(a_scrap, equipos_db)[0]
+                        if not h_db_match or not a_db_match or h_db_match[1] < 80 or a_db_match[1] < 80:
+                            continue
                             
-                            match_encontrado = False
-                            for _, row_p in df_jornada_dia.iterrows():
-                                if h_db.strip().lower() in row_p['Local'].strip().lower() and a_db.strip().lower() in row_p['Visita'].strip().lower():
-                                    match_encontrado = True
-                                    break
-                            
-                            if not match_encontrado: continue
+                        h_db = h_db_match[0]
+                        a_db = a_db_match[0]
 
-                            # --- CÁLCULO DE PROMEDIOS EN VIVO ---
-                            stats_h = get_recent_stats(h_db, conn)
-                            stats_a = get_recent_stats(a_db, conn)
-                            
-                            xg_h = stats_h.get('xG_home', 1.0) 
-                            xg_a = stats_a.get('xG_away', 1.0)
-                            xg_diff = xg_h - xg_a
-                            pts_h = obtener_puntos_temporada(h_db, conn)
-                            pts_a = obtener_puntos_temporada(a_db, conn)
-                            dif_tabla = pts_h - pts_a
-                            descanso_h = obtener_dias_descanso(h_db, conn)
-                            descanso_a = obtener_dias_descanso(a_db, conn)
-                            ventaja_fisica = descanso_h - descanso_a
-                            eff_h = stats_h['FTHG'] / (xg_h + 0.01)
-                            eff_a = stats_a['FTAG'] / (xg_a + 0.01)
-
-                            input_data = [[
-                                stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], 
-                                stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], 
-                                stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff, 
-                                dif_tabla, ventaja_fisica
-                            ]]
-                            
-                            # 1. Probabilidades Ganador (IA)
-                            pred_probs = model.predict_proba(input_data)[0]
-                            prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
-
-                            # 2. Promedios para Mercados Poisson
-                            pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
-                            pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
-                            prom_goles_total = pred_home + pred_away
-                            prom_corners_total = stats_h['HC'] + stats_a['AC']
-                            prom_tiros_total = stats_h['HST'] + stats_a['AST']
-                            prob_local_anota = 1 - math.exp(-xg_h)
-                            prob_visita_anota = 1 - math.exp(-xg_a)
-                            prob_btts_si = prob_local_anota * prob_visita_anota
-
-                            # --- EXTRACCIÓN Y EVALUACIÓN DE CUOTAS DINÁMICAS ---
-                            mercados_json = partido_scrap.get("markets", {})
-                            
-                            def evaluar_pick_dinamico(mercado_nombre, prob_ia, cuota_str):
-                                try:
-                                    cuota = float(cuota_str.replace(',', '.'))
-                                    if cuota > 1.0:
-                                        edge = prob_ia - (1/cuota)
-                                        # FILTRO ESTRICTO: Solo Edge entre 3% y 12%
-                                        if 0.03 <= edge <= 0.12: 
-                                            oportunidades.append((fecha_para_guardar, h_db, a_db, mercado_nombre, cuota, prob_ia, edge))
-                                            log_debug.append(f"🎯 Valor hallado: {h_db} - {mercado_nombre} | Cuota: {cuota} | IA: {prob_ia:.1%} | Edge: {edge:.1%}")
-                                except: pass
-
-                            # Escaneo de Ganador
-                            if "Ganador" in mercados_json:
-                                for linea in mercados_json["Ganador"].get("datos_crudos", []):
-                                    partes = [p.strip() for p in linea.split('|')]
-                                    for i, p in enumerate(partes):
-                                        p_lower = p.lower()
-                                        if h_scrap.lower() in p_lower and i+1 < len(partes):
-                                            evaluar_pick_dinamico("Local", prob_local, partes[i+1])
-                                        elif ("empate" in p_lower or "draw" in p_lower) and i+1 < len(partes):
-                                            evaluar_pick_dinamico("Empate", prob_empate, partes[i+1])
-                                        elif a_scrap.lower() in p_lower and i+1 < len(partes):
-                                            evaluar_pick_dinamico("Visita", prob_visita, partes[i+1])
-
-                            # Escaneo Dinámico de Estadísticas (Goles, Córners, Tiros)
-                            if "Estadisticas" in mercados_json:
-                                for linea in mercados_json["Estadisticas"].get("datos_crudos", []):
-                                    linea_l = linea.lower()
-                                    partes = [p.strip() for p in linea.split('|')]
-                                    
-                                    for i, p in enumerate(partes):
-                                        p_lower = p.lower()
-                                        
-                                        # Buscamos cualquier número decimal en el texto (ej: 2.5, 9.5)
-                                        numeros_linea = re.findall(r'\d+\.\d+', p_lower)
-                                        if numeros_linea and "más de" in p_lower and i+1 < len(partes):
-                                            umbral = float(numeros_linea[0])
-                                            
-                                            # GOLES
-                                            if "goles" in linea_l and "córner" not in linea_l and "esquina" not in linea_l:
-                                                prob = prob_over(prom_goles_total, umbral)
-                                                evaluar_pick_dinamico(f"Goles (+{umbral})", prob, partes[i+1])
-                                                
-                                            # CÓRNERS (Separando por Total o por Equipo)
-                                            elif "córner" in linea_l or "esquina" in linea_l or "corner" in linea_l:
-                                                # Evitamos los del 1er tiempo porque la IA evalúa el partido completo
-                                                if "1er tiempo" not in linea_l and "mitad" not in linea_l and "1st half" not in linea_l:
-                                                    
-                                                    if h_scrap.lower() in linea_l:
-                                                        # Córners SOLO del Local
-                                                        prob = prob_over(stats_h['HC'], umbral)
-                                                        evaluar_pick_dinamico(f"Córners {h_scrap[:10]} (+{umbral})", prob, partes[i+1])
-                                                        
-                                                    elif a_scrap.lower() in linea_l:
-                                                        # Córners SOLO de la Visita
-                                                        prob = prob_over(stats_a['AC'], umbral)
-                                                        evaluar_pick_dinamico(f"Córners {a_scrap[:10]} (+{umbral})", prob, partes[i+1])
-                                                        
-                                                    else:
-                                                        # Córners TOTALES del Partido
-                                                        prob = prob_over(prom_corners_total, umbral)
-                                                        evaluar_pick_dinamico(f"Córners Totales (+{umbral})", prob, partes[i+1])
-                                                
-                                            # TIROS A PUERTA / REMATES
-                                            elif "remates" in linea_l or "tiros a puerta" in linea_l:
-                                                prob = prob_over(prom_tiros_total, umbral)
-                                                evaluar_pick_dinamico(f"Tiros a Puerta (+{umbral})", prob, partes[i+1])
-                                            # AMBOS ANOTAN (BTTS)
-                                            elif "ambos" in linea_l or "marcan" in linea_l or "btts" in linea_l:
-                                                if "sí" in p_lower or "si" in p_lower:
-                                                    if i+1 < len(partes):
-                                                        evaluar_pick_dinamico("Ambos Anotan (Sí)", prob_btts_si, partes[i+1])
-
-                        with st.expander("🛠️ Ver Log de Diagnóstico del Robot"):
-                            for log_msg in log_debug:
-                                st.text(log_msg)
-
-                        if oportunidades:
-                            df_ops = pd.DataFrame(oportunidades, columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob_IA', 'Edge'])
-                            st.session_state['portafolio_escaneado'] = df_ops.sort_values(by='Edge', ascending=False).drop_duplicates(subset=['Home', 'Mercado']).head(10).reset_index(drop=True)
-                        else:
-                            st.warning("📊 Se analizaron todas las líneas, pero ninguna superó los filtros estrictos (Edge entre 3% y 12%).")
-
-                # --- RENDERIZAR TABLA CON CHECKBOXES ---
-                if 'portafolio_escaneado' in st.session_state:
-                    df_portfolio = st.session_state['portafolio_escaneado']
-                    st.success(f"Detección completada: {len(df_portfolio)} posiciones de inversión encontradas.")
-                    
-                    df_display = df_portfolio.copy()
-                    df_display['Partido'] = df_display['Home'] + " vs " + df_display['Away']
-                    df_display['Edge_Str'] = (df_display['Edge'] * 100).round(2).astype(str) + "%"
-                    df_display['Prob_IA_Str'] = (df_display['Prob_IA'] * 100).round(1).astype(str) + "%"
-                    
-                    st.markdown("### 💼 Tu Portafolio Sugerido")
-                    
-                    columnas_mostrar = ['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']
-                    df_seleccionable = df_display[columnas_mostrar].copy()
-                    df_seleccionable.insert(0, "✅ Añadir", True) 
-                    
-                    df_editado = st.data_editor(
-                        df_seleccionable,
-                        hide_index=True,
-                        use_container_width=True,
-                        column_config={"✅ Añadir": st.column_config.CheckboxColumn(required=True)}
-                    )
-
-                    if st.button("💾 Guardar Portafolio Seleccionado", type="primary"):
-                        indices_seleccionados = df_editado[df_editado["✅ Añadir"] == True].index
-                        df_final_a_guardar = df_portfolio.iloc[indices_seleccionados]
+                        # --- CÁLCULO DE PROBABILIDADES IA Y POISSON ---
+                        stats_h = get_recent_stats(h_db, conn)
+                        stats_a = get_recent_stats(a_db, conn)
                         
-                        if df_final_a_guardar.empty:
-                            st.warning("No seleccionaste ningún pick.")
-                        else:
-                            for _, row in df_final_a_guardar.iterrows():
-                                cursor.execute("""
-                                    INSERT INTO portafolio_historico 
-                                    (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob_IA'], row['Edge'], stake_fijo))
-                            conn.commit()
-                            st.toast(f"¡{len(df_final_a_guardar)} picks guardados exitosamente!")
-                            del st.session_state['portafolio_escaneado']
-                            st.rerun()
+                        xg_h = stats_h.get('xG_home', 1.0) 
+                        xg_a = stats_a.get('xG_away', 1.0)
+                        xg_diff = xg_h - xg_a
+                        pts_h = obtener_puntos_temporada(h_db, conn)
+                        pts_a = obtener_puntos_temporada(a_db, conn)
+                        dif_tabla = pts_h - pts_a
+                        descanso_h = obtener_dias_descanso(h_db, conn)
+                        descanso_a = obtener_dias_descanso(a_db, conn)
+                        ventaja_fisica = descanso_h - descanso_a
+                        eff_h = stats_h['FTHG'] / (xg_h + 0.01)
+                        eff_a = stats_a['FTAG'] / (xg_a + 0.01)
+
+                        input_data = [[
+                            stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], 
+                            stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], 
+                            stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff, 
+                            dif_tabla, ventaja_fisica
+                        ]]
+                        
+                        # Predicciones ML
+                        pred_probs = model.predict_proba(input_data)[0]
+                        prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
+
+                        # Promedios Esperados (Goles)
+                        pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
+                        pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+                        prom_goles_total = pred_home + pred_away
+
+                        # --- MAPEO DE MERCADOS PINNACLE ---
+                        # Formato: (Nombre_Mercado, Columna_CSV, Probabilidad_Calculada)
+                        mercados_a_evaluar = [
+                            ("Ganador (Local)", '1x2_home', prob_local),
+                            ("Empate", '1x2_draw', prob_empate),
+                            ("Ganador (Visita)", '1x2_away', prob_visita),
+                            ("Goles (+1.5)", 'total_1.5_over', prob_over(prom_goles_total, 1.5)),
+                            ("Goles (-1.5)", 'total_1.5_under', prob_under(prom_goles_total, 1.5)),
+                            ("Goles (+2.5)", 'total_2.5_over', prob_over(prom_goles_total, 2.5)),
+                            ("Goles (-2.5)", 'total_2.5_under', prob_under(prom_goles_total, 2.5)),
+                            ("Goles (+3.5)", 'total_3.5_over', prob_over(prom_goles_total, 3.5)),
+                            ("Goles (-3.5)", 'total_3.5_under', prob_under(prom_goles_total, 3.5)),
+                            ("Goles Local (+1.5)", 'tt_home_1.5_over', prob_over(pred_home, 1.5)),
+                            ("Goles Visita (+1.5)", 'tt_away_1.5_over', prob_over(pred_away, 1.5))
+                        ]
+
+                        def evaluar_edge(mercado_nombre, prob_ia, cuota):
+                            if pd.notna(cuota) and float(cuota) > 1.0:
+                                cuota_flt = float(cuota)
+                                edge = prob_ia - (1 / cuota_flt)
+                                # 🚨 FILTRO ESTRICTO: Edge entre 2% (0.02) y 14% (0.14)
+                                if 0.02 <= edge <= 0.14:
+                                    oportunidades.append((fecha_partido, h_db, a_db, mercado_nombre, cuota_flt, prob_ia, edge))
+                                    log_debug.append(f"✅ Pick: {h_db} - {mercado_nombre} | Cuota {cuota_flt} | Edge: {edge:.1%}")
+
+                        # Escaneamos cada mercado definido
+                        for nombre_mkt, col_csv, prob_ia in mercados_a_evaluar:
+                            if col_csv in row:
+                                evaluar_edge(nombre_mkt, prob_ia, row[col_csv])
+
+                    # --- RESULTADOS ---
+                    with st.expander("🛠️ Ver Log del Robot Evaluador"):
+                        for log_msg in log_debug:
+                            st.text(log_msg)
+
+                    if oportunidades:
+                        df_ops = pd.DataFrame(oportunidades, columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob_IA', 'Edge'])
+                        st.session_state['portafolio_escaneado'] = df_ops.sort_values(by='Edge', ascending=False).drop_duplicates(subset=['Home', 'Mercado']).reset_index(drop=True)
+                    else:
+                        st.warning("📊 Se analizaron todas las líneas de Pinnacle, pero ninguna cumplió el filtro estricto (Edge entre 2% y 14%).")
+
+            # --- RENDERIZAR TABLA CON CHECKBOXES ---
+            if 'portafolio_escaneado' in st.session_state:
+                df_portfolio = st.session_state['portafolio_escaneado']
+                st.success(f"Detección completada: {len(df_portfolio)} inversiones recomendadas encontradas.")
+                
+                df_display = df_portfolio.copy()
+                df_display['Partido'] = df_display['Home'] + " vs " + df_display['Away']
+                df_display['Edge_Str'] = (df_display['Edge'] * 100).round(2).astype(str) + "%"
+                df_display['Prob_IA_Str'] = (df_display['Prob_IA'] * 100).round(1).astype(str) + "%"
+                
+                st.markdown("### 💼 Portafolio Recomendado Pinnacle")
+                
+                columnas_mostrar = ['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']
+                df_seleccionable = df_display[columnas_mostrar].copy()
+                df_seleccionable.insert(0, "✅ Añadir", True) 
+                
+                df_editado = st.data_editor(
+                    df_seleccionable,
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={"✅ Añadir": st.column_config.CheckboxColumn(required=True)}
+                )
+
+                if st.button("💾 Guardar Portafolio Seleccionado", type="primary"):
+                    indices_seleccionados = df_editado[df_editado["✅ Añadir"] == True].index
+                    df_final_a_guardar = df_portfolio.iloc[indices_seleccionados]
+                    
+                    if df_final_a_guardar.empty:
+                        st.warning("No seleccionaste ningún pick.")
+                    else:
+                        for _, row in df_final_a_guardar.iterrows():
+                            cursor.execute("""
+                                INSERT INTO portafolio_historico 
+                                (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob_IA'], row['Edge'], stake_fijo))
+                        conn.commit()
+                        st.toast(f"¡{len(df_final_a_guardar)} picks guardados exitosamente!")
+                        del st.session_state['portafolio_escaneado']
+                        st.rerun()
 
         except Exception as e:
             st.error(f"Error en la aplicación: {e}")

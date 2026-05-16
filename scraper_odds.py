@@ -1,247 +1,416 @@
 """
-scraper_oddschecker_tabs.py
-==========
-Estrategia Anti-Bloqueo:
-1. Tiempos de espera mucho más largos y aleatorios (simulando lectura humana).
-2. Abre cada partido en una pestaña nueva, extrae la data, cierra la pestaña 
-   y descansa antes de abrir el siguiente partido.
+Pinnacle Scraper — Guest API (sin Selenium, sin login)
+=======================================================
+Usa el endpoint público guest.api.arcadia.pinnacle.com que consume
+el propio frontend de Pinnacle. No requiere cuenta ni API key.
+
+Scrapea partidos de HOY y MAÑANA de las Top 5 ligas europeas:
+  - Premier League (Inglaterra)
+  - La Liga (España)
+  - Serie A (Italia)
+  - Bundesliga (Alemania)
+  - Ligue 1 (Francia)
+
+Mercados capturados:
+  - 1X2 (moneyline)
+  - Hándicap asiático (spreads)
+  - Total de goles (over/under)
+  - Total de goles por equipo (team totals)
+  - [Córners y tiros a puerta: disponibles vía specials si Pinnacle los ofrece]
+
+Instalación:
+    pip install requests pandas
+
+Uso:
+    python pinnacle_scraper.py
 """
 
+import requests
 import json
-import logging
 import time
-import random
-from pathlib import Path
-import sqlite3
 import pandas as pd
-from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
+from datetime import datetime, timezone, timedelta
 
-# --- 1. TU BASE DE DATOS (AUTOMATIZADA) ---
-def obtener_partidos_automatizados():
-    """Se conecta a tu SQLite y extrae los partidos de hoy y mañana"""
-    try:
-        # IMPORTANTE: Cambia "tu_base.db" por el nombre real de tu archivo de base de datos
-        conn = sqlite3.connect("database_partidos.db") 
-        
-        hoy = datetime.now().strftime("%Y-%m-%d")
-        manana = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d") 
-        
-        # Leemos tu tabla exactamente con la misma lógica de tu Streamlit
-        query = f"""
-            SELECT League, Local, Visita 
-            FROM tabla_predicciones_limpia 
-            WHERE date(Date) >= '{hoy}' AND date(Date) <= '{manana}'
-        """
-        df = pd.read_sql(query, conn)
-        conn.close()
-        
-        # Convertimos el DataFrame a la lista de tuplas que necesita el scraper
-        partidos = list(df.itertuples(index=False, name=None))
-        return partidos
-        
-    except Exception as e:
-        log.error(f"Error leyendo la base de datos: {e}")
-        return []
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIGURACIÓN
+# ─────────────────────────────────────────────────────────────────────────────
 
-# El scraper ahora se alimenta solo
-PARTIDOS_DB = obtener_partidos_automatizados()
+BASE_URL = "https://guest.api.arcadia.pinnacle.com/0.1"
 
-# --- DICCIONARIO DE LIGAS A PRUEBA DE BALAS ---
-# Le agregué los códigos cortos (EPL, SP1, etc.) basándome en cómo los tienes 
-# en tu base de datos para que la URL se arme perfectamente siempre.
-RUTAS_LIGAS = {
-    "Premier League": "inglaterra/premier-league",
-    "EPL": "inglaterra/premier-league",
-    "La Liga": "espana/la-liga",
-    "LaLiga": "espana/la-liga",
-    "SP1": "espana/la-liga",
-    "Bundesliga": "alemania/bundesliga",
-    "D1": "alemania/bundesliga",
-    "Serie A": "italia/serie-a",
-    "I1": "italia/serie-a",
-    "Ligue 1": "francia/ligue-1",
-    "F1": "francia/ligue-1"
+HEADERS = {
+    "Accept": "application/json",
+    "Accept-Language": "es-ES,es;q=0.9",
+    "Origin": "https://www.pinnacle.com",
+    "Referer": "https://www.pinnacle.com/",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "x-api-key": "CmX2KcMrXuFmNg6YFbmTxE0y9CIrOi0R",  # token público del frontend
 }
 
-OUTPUT_DIR = Path("odds_data")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger(__name__)
+# IDs de liga en Pinnacle (Soccer sportId = 29)
+LIGAS = {
+    "Premier League":  {
+        "league_id": 1980,
+        "pais": "Inglaterra",
+    },
+    "La Liga": {
+        "league_id": 2036,
+        "pais": "España",
+    },
+    "Serie A": {
+        "league_id": 2037,
+        "pais": "Italia",
+    },
+    "Bundesliga": {
+        "league_id": 1842,
+        "pais": "Alemania",
+    },
+    "Ligue 1": {
+        "league_id": 2141,
+        "pais": "Francia",
+    },
+}
 
-def get_driver():
-    opts = Options()
-    opts.add_argument("--window-size=1920,1080")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    # Este comando es clave para quitar la bandera de "robot" de Selenium
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option('useAutomationExtension', False)
-    opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-    
-    driver = webdriver.Chrome(options=opts)
-    # Inyectamos un script extra para engañar a los detectores de bots
-    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-      "source": """
-        Object.defineProperty(navigator, 'webdriver', {
-          get: () => undefined
+# Períodos de Pinnacle para fútbol
+# 0 = partido completo, 1 = primer tiempo
+PERIODO_PARTIDO = 0
+
+# Delay entre requests para no saturar (segundos)
+REQUEST_DELAY = 1.2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get(endpoint: str, params: dict = None) -> dict | list | None:
+    """Hace GET a la guest API de Pinnacle con manejo de errores y retry."""
+    url = f"{BASE_URL}{endpoint}"
+    for intento in range(3):
+        try:
+            resp = requests.get(url, headers=HEADERS, params=params, timeout=15)
+            if resp.status_code == 200:
+                return resp.json()
+            elif resp.status_code == 429:
+                print(f"  ⚠ Rate limit (429). Esperando 60s...")
+                time.sleep(60)
+            else:
+                print(f"  ✗ HTTP {resp.status_code} en {endpoint}")
+                return None
+        except requests.RequestException as e:
+            print(f"  ✗ Error de red ({intento+1}/3): {e}")
+            time.sleep(3)
+    return None
+
+
+def es_hoy_o_manana(fecha_iso: str) -> bool:
+    """True si la fecha está dentro de las próximas 48 horas."""
+    ahora = datetime.now(timezone.utc)
+    inicio = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
+    fin = inicio + timedelta(days=2)
+    try:
+        fecha = datetime.fromisoformat(fecha_iso.replace("Z", "+00:00"))
+        return inicio <= fecha < fin
+    except Exception:
+        return False
+
+
+def odds_decimal(precio_americano: float) -> float:
+    """Convierte odds americanas a decimal."""
+    if precio_americano is None:
+        return None
+    if precio_americano > 0:
+        return round(precio_americano / 100 + 1, 4)
+    else:
+        return round(100 / abs(precio_americano) + 1, 4)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCRAPING DE PARTIDOS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def obtener_partidos(league_id: int, nombre_liga: str) -> list[dict]:
+    """Obtiene la lista de matchups (partidos) de una liga."""
+    print(f"\n  → Obteniendo partidos de {nombre_liga} (league_id={league_id})...")
+    data = get(f"/leagues/{league_id}/matchups")
+    if not data:
+        return []
+
+    partidos = []
+    for m in data:
+        # Filtrar partidos de hoy y mañana (no live ya empezados sin odds)
+        starts = m.get("startTime", "")
+        if not es_hoy_o_manana(starts):
+            continue
+
+        # Solo partidos principales (no props/alternates)
+        if m.get("type") != "matchup" or m.get("parentId"):
+            continue
+
+        participantes = m.get("participants", [])
+        if len(participantes) < 2:
+            continue
+
+        home = next((p["name"] for p in participantes if p.get("alignment") == "home"), "?")
+        away = next((p["name"] for p in participantes if p.get("alignment") == "away"), "?")
+
+        partidos.append({
+            "id": m["id"],
+            "liga": nombre_liga,
+            "home": home,
+            "away": away,
+            "inicio": starts,
         })
-      """
-    })
-    return driver
 
-def format_url(liga, local, visita):
-    ruta_liga = RUTAS_LIGAS.get(liga, "")
-    local_url = local.lower().replace(" ", "-")
-    visita_url = visita.lower().replace(" ", "-")
-    return f"https://www.oddschecker.com/es/futbol/{ruta_liga}/{local_url}-v-{visita_url}"
+    print(f"     {len(partidos)} partidos encontrados hoy/mañana")
+    return partidos
 
-def pausa_humana(min_seg, max_seg):
-    """Pausa aleatoria para no parecer un robot exacto"""
-    tiempo = random.uniform(min_seg, max_seg)
-    time.sleep(tiempo)
 
-def aceptar_cookies(driver):
-    try:
-        botones_cookies = driver.find_elements(By.XPATH, "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'aceptar') or contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'accept')]")
-        if botones_cookies:
-            driver.execute_script("arguments[0].click();", botones_cookies[0])
-            pausa_humana(1.5, 2.5)
-    except:
-        pass
+# ─────────────────────────────────────────────────────────────────────────────
+# SCRAPING DE ODDS
+# ─────────────────────────────────────────────────────────────────────────────
 
-def apretar_mostrar_mas(driver):
-    try:
-        botones_mas = driver.find_elements(By.XPATH, "//*[contains(text(), 'Mostrar más')]")
-        if botones_mas:
-            log.info(f"      Desplegando {len(botones_mas)} botones de 'Mostrar más'...")
-            for btn in botones_mas:
-                driver.execute_script("arguments[0].click();", btn)
-                pausa_humana(0.8, 1.5) # Pausa entre cada clic de "Mostrar más"
-    except Exception as e:
-        pass
+def obtener_odds_straight(league_id: int) -> list[dict]:
+    """
+    Obtiene todas las odds 'straight' de la liga:
+    moneyline (1X2), spread (hándicap asiático), totals, team totals.
+    """
+    data = get(f"/leagues/{league_id}/markets/straight")
+    return data if data else []
 
-def extraer_datos_html(html):
-    """Aspiradora extrema: extrae todo el texto que parezca una cuota o un mercado"""
-    soup = BeautifulSoup(html, "html.parser")
+
+def parsear_odds_partido(matchup_id: int, odds_data: list) -> dict:
+    """
+    Filtra y estructura las odds para un partido específico.
+    Retorna dict con mercados: 1x2, handicap, total_goles, team_totals.
+    """
+    resultado = {
+        "1x2": None,
+        "handicap_asiatico": [],
+        "total_goles": [],
+        "team_total_home": [],
+        "team_total_away": [],
+    }
+
+    for market in odds_data:
+        if market.get("matchupId") != matchup_id:
+            continue
+        if market.get("period") != PERIODO_PARTIDO:
+            continue
+
+        tipo = market.get("type", "").lower()
+        precios = market.get("prices", [])
+
+        # ── 1X2 (Moneyline) ──
+        if tipo == "moneyline":
+            ml = {}
+            for p in precios:
+                desig = p.get("designation", "").lower()
+                odds_raw = p.get("price")
+                if "home" in desig:
+                    ml["home"] = odds_decimal(odds_raw)
+                elif "away" in desig:
+                    ml["away"] = odds_decimal(odds_raw)
+                elif "draw" in desig or "tie" in desig:
+                    ml["draw"] = odds_decimal(odds_raw)
+            if ml:
+                resultado["1x2"] = ml
+
+        # ── Hándicap Asiático (Spread) ──
+        elif tipo == "spread":
+            for p in precios:
+                desig = p.get("designation", "").lower()
+                hdp = p.get("points")
+                precio = odds_decimal(p.get("price"))
+                resultado["handicap_asiatico"].append({
+                    "lado": desig,
+                    "handicap": hdp,
+                    "odds": precio,
+                })
+
+        # ── Total Goles (Over/Under) ──
+        elif tipo == "total":
+            alt = market.get("altLineId")  # None = línea principal
+            for p in precios:
+                desig = p.get("designation", "").lower()
+                puntos = p.get("points")
+                precio = odds_decimal(p.get("price"))
+                resultado["total_goles"].append({
+                    "linea": puntos,
+                    "lado": desig,
+                    "odds": precio,
+                    "es_alternativa": alt is not None,
+                })
+
+        # ── Team Totals ──
+        elif tipo == "team_total":
+            equipo = market.get("side", "").lower()
+            for p in precios:
+                desig = p.get("designation", "").lower()
+                puntos = p.get("points")
+                precio = odds_decimal(p.get("price"))
+                clave = f"team_total_{equipo}" if equipo in ("home", "away") else "team_total_home"
+                resultado[clave].append({
+                    "linea": puntos,
+                    "lado": desig,
+                    "odds": precio,
+                })
+
+    return resultado
+
+
+def obtener_odds_specials(league_id: int, matchup_id: int) -> list[dict]:
+    """
+    Obtiene mercados especiales de un partido (córners, tiros a puerta, etc.)
+    Nota: Pinnacle no siempre ofrece estos mercados para todas las ligas.
+    """
+    data = get(f"/leagues/{league_id}/matchups/{matchup_id}/related")
+    if not data:
+        return []
+
+    especiales = []
+    for item in data:
+        nombre = item.get("name", "")
+        nombre_lower = nombre.lower()
+        if any(kw in nombre_lower for kw in ["corner", "córner", "shot", "tiro", "disparo"]):
+            especiales.append({
+                "nombre": nombre,
+                "id": item.get("id"),
+                "tipo": item.get("type"),
+            })
+    return especiales
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FLUJO PRINCIPAL POR LIGA
+# ─────────────────────────────────────────────────────────────────────────────
+
+def scrapear_liga(nombre_liga: str, config: dict) -> list[dict]:
+    """
+    Scrapea una liga completa: partidos + odds de todos los mercados.
+    """
+    league_id = config["league_id"]
+    partidos = obtener_partidos(league_id, nombre_liga)
+    if not partidos:
+        return []
+
+    time.sleep(REQUEST_DELAY)
+
+    # Obtener todas las odds de la liga en un solo call (eficiente)
+    print(f"  → Obteniendo odds de {nombre_liga}...")
+    odds_data = obtener_odds_straight(league_id)
+    time.sleep(REQUEST_DELAY)
+
     resultados = []
-    
-    # Buscamos en etiquetas comunes donde Oddschecker guarda la información
-    # (divs, secciones, listas y botones)
-    elementos = soup.find_all(["div", "section", "li", "button"])
-    
-    for el in elementos:
-        # Convertimos las clases y data-testids a texto para buscar palabras clave
-        clases_str = " ".join(el.get("class", [])).lower()
-        testid_str = el.get("data-testid", "").lower()
-        
-        # Si el "contenedor" huele a mercado de apuestas...
-        if any(clave in clases_str or clave in testid_str for clave in ["market", "odd", "bet", "selection", "participant"]):
-            
-            # Extraemos el texto separando los elementos con " | "
-            texto_limpio = el.get_text(separator=" | ", strip=True)
-            
-            # Solo lo guardamos si tiene más de 10 caracteres y contiene algún número (una cuota)
-            if texto_limpio and len(texto_limpio) > 10 and any(char.isdigit() for char in texto_limpio):
-                # Filtramos basura como el menú de navegación
-                if "Inicia sesión" not in texto_limpio and "Regístrate" not in texto_limpio:
-                    resultados.append(texto_limpio)
-    
-    # Si la búsqueda inteligente no sacó nada, aspiramos todos los botones que tengan números
-    if not resultados:
-        botones = soup.find_all("button")
-        for btn in botones:
-            txt = btn.get_text(separator=" ", strip=True)
-            if txt and any(char.isdigit() for char in txt):
-                resultados.append(f"[Botón]: {txt}")
-                
-    # Eliminamos duplicados (ya que un div dentro de otro div captura lo mismo)
-    resultados_unicos = []
-    for r in resultados:
-        if r not in resultados_unicos:
-            resultados_unicos.append(r)
-            
-    # Retornamos la data cruda. Si esto funciona, verás los mercados y las cuotas en el JSON.
-    return {"datos_crudos": resultados_unicos[:60]}
+    for partido in partidos:
+        mid = partido["id"]
+        odds_partido = parsear_odds_partido(mid, odds_data)
 
-def scrape_partido(driver, url, local, visita):
-    log.info(f"📍 Cargando URL: {local} vs {visita}")
-    driver.get(url)
-    
-    # Pausa inicial larga simulando que un humano lee la página al entrar
-    pausa_humana(5.0, 7.0) 
-    aceptar_cookies(driver)
-    
-    datos_partido = {"home": local, "away": visita, "url": url, "markets": {}}
-    
-    # Simulamos un scroll humano (bajamos un poco)
-    driver.execute_script("window.scrollBy(0, 300);")
-    pausa_humana(1.0, 2.0)
-    
-    log.info("  👉 Apretando 'Mercados de ganador'")
-    try:
-        btn_ganador = driver.find_element(By.XPATH, "//span[contains(text(), 'Mercados de ganador')] | //button[contains(text(), 'Mercados de ganador')] | //a[contains(text(), 'Mercados de ganador')]")
-        driver.execute_script("arguments[0].click();", btn_ganador)
-        pausa_humana(3.0, 5.0) # Tiempo para "leer" las cuotas del ganador
-        datos_partido["markets"]["Ganador"] = extraer_datos_html(driver.page_source)
-    except:
-        log.warning("    ❌ No se encontró 'Mercados de ganador'.")
+        # Intentar obtener specials (córners/tiros — opcionales)
+        # Comentado por defecto para no exceder rate limits; descomentá si lo necesitás
+        # specials = obtener_odds_specials(league_id, mid)
+        # time.sleep(REQUEST_DELAY)
 
-    log.info("  👉 Apretando 'Apuestas de estadísticas'")
-    try:
-        btn_estadisticas = driver.find_element(By.XPATH, "//span[contains(text(), 'Apuestas de estadísticas')] | //button[contains(text(), 'Apuestas de estadísticas')] | //a[contains(text(), 'Apuestas de estadísticas')]")
-        driver.execute_script("arguments[0].click();", btn_estadisticas)
-        pausa_humana(4.0, 6.0) # Esperamos que cambie la tabla de stats
-        
-        apretar_mostrar_mas(driver)
-        datos_partido["markets"]["Estadisticas"] = extraer_datos_html(driver.page_source)
-    except:
-        log.warning("    ❌ No se encontró 'Apuestas de estadísticas'.")
-        
-    return datos_partido
+        fecha_dt = datetime.fromisoformat(partido["inicio"].replace("Z", "+00:00"))
+        fecha_local = fecha_dt.astimezone()  # convierte a hora local
+
+        fila = {
+            "liga": nombre_liga,
+            "pais": config["pais"],
+            "partido_id": mid,
+            "home": partido["home"],
+            "away": partido["away"],
+            "inicio_utc": partido["inicio"],
+            "inicio_local": fecha_local.strftime("%Y-%m-%d %H:%M"),
+            **{f"1x2_{k}": v for k, v in (odds_partido["1x2"] or {}).items()},
+        }
+
+        # Hándicap asiático — línea principal (primer hdp)
+        hdps = odds_partido["handicap_asiatico"]
+        if hdps:
+            for h in hdps[:2]:  # home y away de la línea principal
+                fila[f"hdp_{h['lado']}"] = h["handicap"]
+                fila[f"hdp_{h['lado']}_odds"] = h["odds"]
+
+        # Total goles — líneas no alternativas
+        totales_main = [t for t in odds_partido["total_goles"] if not t["es_alternativa"]]
+        for t in totales_main[:4]:  # over y under de las 2 primeras líneas
+            fila[f"total_{t['linea']}_{t['lado']}"] = t["odds"]
+
+        # Team totals — home y away
+        for equipo in ("home", "away"):
+            for t in odds_partido[f"team_total_{equipo}"][:2]:
+                fila[f"tt_{equipo}_{t['linea']}_{t['lado']}"] = t["odds"]
+
+        # Raw para debug / uso posterior
+        fila["_raw_odds"] = json.dumps(odds_partido, ensure_ascii=False)
+
+        resultados.append(fila)
+        print(f"     ✓ {partido['home']} vs {partido['away']} ({fecha_local.strftime('%d/%m %H:%M')})")
+
+    return resultados
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────────────────────
 
 def main():
-    driver = get_driver()
-    resultados = []
-    
-    try:
-        log.info("Iniciando Scraper Oddschecker (Modo Cauteloso)...")
-        
-        # 1. Abrimos una pestaña "Base" (un sitio neutral para no levantar sospechas)
-        driver.get("https://www.google.com")
-        pausa_humana(2.0, 3.0)
-        
-        for liga, local, visita in PARTIDOS_DB:
-            url = format_url(liga, local, visita)
-            
-            log.info(f"Abriendo pestaña nueva para {local}...")
-            # Abrimos pestaña en blanco
-            driver.execute_script("window.open('');")
-            # Saltamos a la última pestaña abierta (la nueva)
-            driver.switch_to.window(driver.window_handles[-1])
-            
-            # Scrapeamos
-            datos = scrape_partido(driver, url, local, visita)
-            resultados.append(datos)
-            
-            log.info("Cerrando pestaña y descansando...")
-            # Cerramos esa pestaña específica
-            driver.close()
-            
-            # Volvemos a la pestaña base (Google)
-            driver.switch_to.window(driver.window_handles[0])
-            
-            # Pausa muy larga entre partidos (clave para evitar el ban)
-            pausa_humana(6.0, 10.0) 
-            
-    finally:
-        driver.quit()
-        
-    OUTPUT_DIR.mkdir(exist_ok=True)
-    with open(OUTPUT_DIR / "latest.json", "w", encoding="utf-8") as f:
-        json.dump(resultados, f, indent=4, ensure_ascii=False)
-    log.info("🎯 Proceso terminado con seguridad. Datos guardados en 'latest.json'.")
+    hoy = datetime.now()
+    manana = hoy + timedelta(days=1)
+    print("=" * 65)
+    print("  PINNACLE SCRAPER — TOP 5 LIGAS EUROPEAS")
+    print(f"  Partidos: {hoy.strftime('%d/%m/%Y')} y {manana.strftime('%d/%m/%Y')}")
+    print("=" * 65)
+
+    todos = []
+    for nombre_liga, config in LIGAS.items():
+        print(f"\n{'─'*55}")
+        print(f"  Liga: {nombre_liga.upper()} ({config['pais']})")
+        print(f"{'─'*55}")
+        try:
+            filas = scrapear_liga(nombre_liga, config)
+            todos.extend(filas)
+        except Exception as e:
+            print(f"  ❌ Error en {nombre_liga}: {e}")
+        time.sleep(REQUEST_DELAY * 2)
+
+    print(f"\n{'='*65}")
+    print(f"  TOTAL: {len(todos)} partidos scrapeados")
+    print("=" * 65)
+
+    if not todos:
+        print("\n⚠ No se encontraron partidos para hoy/mañana.")
+        print("  Esto puede pasar si no hay jornada en las ligas seleccionadas.")
+        return []
+
+    # ── Guardar resultados ──
+    fecha_str = hoy.strftime("%Y%m%d")
+
+    # JSON completo (incluye raw odds)
+    json_path = f"pinnacle_{fecha_str}.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(todos, f, ensure_ascii=False, indent=2)
+    print(f"\n✅ JSON guardado: {json_path}")
+
+    # CSV limpio (sin columna _raw_odds)
+    df = pd.DataFrame(todos)
+    cols_csv = [c for c in df.columns if c != "_raw_odds"]
+    csv_path = f"pinnacle_{fecha_str}.csv"
+    df[cols_csv].to_csv(csv_path, index=False, encoding="utf-8-sig")
+    print(f"✅ CSV guardado:  {csv_path}")
+
+    # Preview en consola
+    print(f"\n📋 Preview ({min(5, len(todos))} primeros partidos):")
+    cols_preview = ["liga", "home", "away", "inicio_local", "1x2_home", "1x2_draw", "1x2_away"]
+    cols_preview = [c for c in cols_preview if c in df.columns]
+    print(df[cols_preview].head(10).to_string(index=False))
+
+    return todos
+
 
 if __name__ == "__main__":
     main()
