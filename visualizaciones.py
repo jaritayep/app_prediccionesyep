@@ -672,13 +672,13 @@ elif menu == "Portafolio de Picks":
                         ]
 
                         # --- ESCÁNER DINÁMICO TOTAL (Goles, Hándicaps, Córners, Tiros) ---
+                        # --- ESCÁNER DINÁMICO TOTAL (Goles, Hándicaps, Córners, Tiros, BTTS) ---
                         for col_name, val in row.items():
                             if pd.isna(val) or str(val).strip() == '':
                                 continue
                             
                             col_str = str(col_name).lower()
                             
-                            # Ignorar variables de identificación que no son apuestas
                             if col_str in ['liga', 'pais', 'partido_id', 'home', 'away', 'inicio_utc', 'inicio_local']:
                                 continue
                                 
@@ -688,7 +688,18 @@ elif menu == "Portafolio de Picks":
                             except ValueError:
                                 continue 
                                 
-                            # 🎯 NUEVO RADAR: Busca el número (.5) esté donde esté, incluso si es negativo (Hándicap)
+                            # 🎯 RADAR 1: Mercados de Texto (BTTS / Ambos Anotan)
+                            if 'btts' in col_str or 'ambos' in col_str:
+                                # Probabilidad Poisson de que AMBOS hagan al menos 1 gol
+                                prob_btts_si = (1 - math.exp(-pred_goles_home)) * (1 - math.exp(-pred_goles_away))
+                                
+                                if 'yes' in col_str or 'si' in col_str:
+                                    mercados_a_evaluar.append(("Ambos Anotan (Sí)", val_num, prob_btts_si))
+                                elif 'no' in col_str:
+                                    mercados_a_evaluar.append(("Ambos Anotan (No)", val_num, 1 - prob_btts_si))
+                                continue # Terminamos con esta columna, pasamos a la siguiente
+
+                            # 🎯 RADAR 2: Mercados Asiáticos / Totales (Busca el .5)
                             match = re.search(r'(-?\d+\.5)', col_str)
                             if not match:
                                 continue
@@ -702,21 +713,31 @@ elif menu == "Portafolio de Picks":
                                 elif 'away' in col_str:
                                     mercados_a_evaluar.append((f"Hándicap Visita ({linea:+})", val_num, prob_handicap(pred_goles_away, pred_goles_home, linea)))
                                     
-                            # 2. CÓRNERS (Total)
+                            # 2. CÓRNERS (Totales y Por Equipo)
                             elif 'corners' in col_str:
-                                if 'over' in col_str:
-                                    mercados_a_evaluar.append((f"Córners (+{linea})", val_num, prob_over(prom_corners_total, linea)))
-                                elif 'under' in col_str:
-                                    mercados_a_evaluar.append((f"Córners (-{linea})", val_num, prob_under(prom_corners_total, linea)))
+                                if 'home' in col_str:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Córners Local (+{linea})", val_num, prob_over(stats_h['HC'], linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Local (-{linea})", val_num, prob_under(stats_h['HC'], linea)))
+                                elif 'away' in col_str:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Córners Visita (+{linea})", val_num, prob_over(stats_a['AC'], linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Visita (-{linea})", val_num, prob_under(stats_a['AC'], linea)))
+                                elif 'total' in col_str:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Córners Totales (+{linea})", val_num, prob_over(prom_corners_total, linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Totales (-{linea})", val_num, prob_under(prom_corners_total, linea)))
 
-                            # 3. TIROS A PUERTA (Total)
+                            # 3. TIROS A PUERTA (Totales y Por Equipo)
                             elif 'shots' in col_str:
-                                if 'over' in col_str:
-                                    mercados_a_evaluar.append((f"Tiros a Puerta (+{linea})", val_num, prob_over(prom_shots_total, linea)))
-                                elif 'under' in col_str:
-                                    mercados_a_evaluar.append((f"Tiros a Puerta (-{linea})", val_num, prob_under(prom_shots_total, linea)))
+                                if 'home' in col_str:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Tiros Local (+{linea})", val_num, prob_over(stats_h['HST'], linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Tiros Local (-{linea})", val_num, prob_under(stats_h['HST'], linea)))
+                                elif 'away' in col_str:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Tiros Visita (+{linea})", val_num, prob_over(stats_a['AST'], linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Tiros Visita (-{linea})", val_num, prob_under(stats_a['AST'], linea)))
+                                elif 'total' in col_str:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Tiros a Puerta Totales (+{linea})", val_num, prob_over(prom_shots_total, linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Tiros a Puerta Totales (-{linea})", val_num, prob_under(prom_shots_total, linea)))
 
-                            # 4. GOLES
+                            # 4. GOLES (Totales y Por Equipo)
                             elif 'goles' in col_str or 'total' in col_str:
                                 if 'tt_home' in col_str:
                                     if 'over' in col_str: mercados_a_evaluar.append((f"Goles Local (+{linea})", val_num, prob_over(pred_goles_home, linea)))
@@ -725,8 +746,8 @@ elif menu == "Portafolio de Picks":
                                     if 'over' in col_str: mercados_a_evaluar.append((f"Goles Visita (+{linea})", val_num, prob_over(pred_goles_away, linea)))
                                     elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Visita (-{linea})", val_num, prob_under(pred_goles_away, linea)))
                                 else:
-                                    if 'over' in col_str: mercados_a_evaluar.append((f"Goles (+{linea})", val_num, prob_over(prom_goles_total, linea)))
-                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Goles (-{linea})", val_num, prob_under(prom_goles_total, linea)))
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Goles Totales (+{linea})", val_num, prob_over(prom_goles_total, linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Totales (-{linea})", val_num, prob_under(prom_goles_total, linea)))
 
                         def evaluar_edge(mercado_nombre, prob_ia, cuota):
                             if cuota is None: return
