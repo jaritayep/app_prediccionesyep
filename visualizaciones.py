@@ -574,7 +574,7 @@ elif menu == "Portafolio de Picks":
 
             c1, c2 = st.columns(2)
             with c1:
-                stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=500, value=5000, step=1000)
+                stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=500, value=5000, step=100)
             with c2:
                 if nombres_archivos:
                     archivo_seleccionado = st.selectbox("📂 Archivo de cuotas (Automático):", nombres_archivos)
@@ -777,31 +777,113 @@ elif menu == "Portafolio de Picks":
                     else:
                         st.warning("📊 No se encontraron ineficiencias dentro del rango rentable (2% a 15%).")
 
-            # --- TABLA INTERACTIVA ---
+            # --- TABLA INTERACTIVA (ESTRUCTURA 3-3-3-1) ---
             if 'portafolio_escaneado' in st.session_state:
-                df_portfolio = st.session_state['portafolio_escaneado']
-                st.success(f"Detección completada: {len(df_portfolio)} inversiones recomendadas.")
+                df_ops = st.session_state['portafolio_escaneado'].copy()
                 
-                df_display = df_portfolio.copy()
-                df_display['Partido'] = df_display['Home'] + " vs " + df_display['Away']
-                df_display['Edge_Str'] = (df_display['Edge'] * 100).round(2).astype(str) + "%"
-                df_display['Prob_IA_Str'] = (df_display['Prob_IA'] * 100).round(1).astype(str) + "%"
+                # Preparar textos visuales
+                df_ops['Partido'] = df_ops['Home'] + " vs " + df_ops['Away']
+                df_ops['Edge_Str'] = (df_ops['Edge'] * 100).round(2).astype(str) + "%"
+                df_ops['Prob_IA_Str'] = (df_ops['Prob_IA'] * 100).round(1).astype(str) + "%"
                 
-                st.markdown("### 💼 Portafolio Recomendado Pinnacle")
-                columnas_mostrar = ['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']
-                df_seleccionable = df_display[columnas_mostrar].copy()
-                df_seleccionable.insert(0, "✅ Añadir", True) 
+                columnas_base = ['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str', 'Date', 'Home', 'Away', 'Prob_IA', 'Edge']
+                df_ops = df_ops[columnas_base]
+
+                # 🧠 LÓGICA DE DISTRIBUCIÓN DE RIESGO
+                selected_indices = []
+                df_top_10_list = []
                 
-                df_editado = st.data_editor(
-                    df_seleccionable,
+                # 1. ⭐ Golden Pick (El mayor Edge de todo el escaneo)
+                golden_idx = df_ops.index[0]
+                selected_indices.append(golden_idx)
+                df_top_10_list.append(df_ops.loc[[golden_idx]].assign(Nivel='⭐ Golden Pick'))
+                
+                # Función auxiliar para filtrar piscinas de cuotas ignorando los ya elegidos
+                def get_pool(min_c, max_c):
+                    return df_ops[~df_ops.index.isin(selected_indices) & (df_ops['Cuota'] >= min_c) & (df_ops['Cuota'] < max_c)]
+                
+                # 2. 🔴 Alto Riesgo (Cuotas >= 2.50) -> Top 3 mayor Edge
+                pool_high = get_pool(2.50, 999.0)
+                if not pool_high.empty:
+                    picks = pool_high.head(3)
+                    selected_indices.extend(picks.index)
+                    df_top_10_list.append(picks.assign(Nivel='🔴 Alto (>2.50)'))
+                    
+                # 3. 🟡 Medio Riesgo (Cuotas 1.90 - 2.49) -> 1 Alto, 1 Medio, 1 Bajo Edge
+                pool_med = get_pool(1.90, 2.50)
+                if not pool_med.empty:
+                    if len(pool_med) >= 3:
+                        # Extraemos el índice del principio, del medio y del final
+                        idxs = [pool_med.index[0], pool_med.index[len(pool_med)//2], pool_med.index[-1]]
+                        picks = df_ops.loc[idxs]
+                    else:
+                        picks = pool_med
+                    selected_indices.extend(picks.index)
+                    df_top_10_list.append(picks.assign(Nivel='🟡 Medio (1.90-2.49)'))
+
+                # 4. 🟢 Bajo Riesgo (Cuotas < 1.90) -> 1 Alto, 1 Medio, 1 Bajo Edge
+                pool_low = get_pool(0.0, 1.90)
+                if not pool_low.empty:
+                    if len(pool_low) >= 3:
+                        idxs = [pool_low.index[0], pool_low.index[len(pool_low)//2], pool_low.index[-1]]
+                        picks = df_ops.loc[idxs]
+                    else:
+                        picks = pool_low
+                    selected_indices.extend(picks.index)
+                    df_top_10_list.append(picks.assign(Nivel='🟢 Bajo (<1.90)'))
+
+                # --- ENSAMBLAJE DE LAS TABLAS ---
+                # Tabla 1: La propuesta automatizada
+                df_top_10 = pd.concat(df_top_10_list).reset_index(drop=True)
+                cols_mostrar = ['Nivel', 'Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']
+                
+                df_mostrar_top = df_top_10[cols_mostrar].copy()
+                df_mostrar_top.insert(0, "✅ Añadir", True) # Estos vienen pre-marcados
+                
+                # Tabla 2: El banquillo de suplentes (Reserva)
+                df_reserva = df_ops[~df_ops.index.isin(selected_indices)].reset_index(drop=True)
+                df_mostrar_reserva = df_reserva[['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']].copy()
+                df_mostrar_reserva.insert(0, "✅ Añadir", False) # Estos vienen desmarcados
+
+                # --- RENDERIZADO VISUAL ---
+                st.success(f"Escaneo listo. Se construyó un portafolio equilibrado usando {len(df_top_10)} picks recomendados.")
+                st.markdown("### 🎯 Portafolio IA Automatizado (3-3-3-1)")
+                
+                # Mostramos la tabla principal
+                edit_top10 = st.data_editor(
+                    df_mostrar_top,
                     hide_index=True,
                     use_container_width=True,
+                    key="editor_top10",
                     column_config={"✅ Añadir": st.column_config.CheckboxColumn(required=True)}
                 )
+                
+                # Mostramos la tabla de reserva minimizada
+                with st.expander(f"📂 Ver el resto de picks válidos ({len(df_reserva)} en Reserva)"):
+                    if not df_mostrar_reserva.empty:
+                        st.caption("Si desmarcaste algún pick de arriba, puedes seleccionar reemplazos desde aquí.")
+                        edit_reserva = st.data_editor(
+                            df_mostrar_reserva,
+                            hide_index=True,
+                            use_container_width=True,
+                            key="editor_reserva",
+                            column_config={"✅ Añadir": st.column_config.CheckboxColumn(required=True)}
+                        )
+                    else:
+                        st.info("No hay más picks de reserva. Se utilizaron todos los disponibles.")
 
+                # --- BOTÓN DE GUARDADO UNIFICADO ---
                 if st.button("💾 Guardar Portafolio Seleccionado", type="primary"):
-                    indices_seleccionados = df_editado[df_editado["✅ Añadir"] == True].index
-                    df_final_a_guardar = df_portfolio.iloc[indices_seleccionados]
+                    # Extraemos las filas originales correspondientes a los que el usuario dejó marcados
+                    indices_top = edit_top10[edit_top10["✅ Añadir"] == True].index
+                    indices_res = []
+                    if not df_mostrar_reserva.empty:
+                        indices_res = edit_reserva[edit_reserva["✅ Añadir"] == True].index
+                    
+                    df_final_top = df_top_10.iloc[indices_top]
+                    df_final_res = df_reserva.iloc[indices_res] if not df_mostrar_reserva.empty else pd.DataFrame()
+                    
+                    df_final_a_guardar = pd.concat([df_final_top, df_final_res])
                     
                     if df_final_a_guardar.empty:
                         st.warning("No seleccionaste ningún pick.")
@@ -812,7 +894,7 @@ elif menu == "Portafolio de Picks":
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob_IA'], row['Edge'], stake_fijo))
                         conn.commit()
-                        st.toast("¡Picks guardados exitosamente!")
+                        st.toast(f"¡{len(df_final_a_guardar)} picks guardados exitosamente!")
                         del st.session_state['portafolio_escaneado']
                         st.rerun()
 
