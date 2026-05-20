@@ -901,28 +901,78 @@ elif menu == "Portafolio de Picks":
         except Exception as e:
             st.error(f"Error en la aplicación: {e}")
 
-    with tab2:
+with tab2:
         st.subheader("🏦 Rendimiento Acumulado")
         
-        # 1. BOTÓN MÁGICO: Liquidar apuestas pendientes (Cruza con tu actualización de 3 días)
+        # 1. BOTÓN MÁGICO: Liquidar apuestas pendientes
         if st.button("⚖️ Liquidar Apuestas Pendientes", type="primary"):
             df_pendientes = pd.read_sql("SELECT * FROM portafolio_historico WHERE Estado = 'Pendiente'", conn)
             liquidadas = 0
+            import re
             
             for _, pick in df_pendientes.iterrows():
-                # Buscar resultado real en el historial
-                q_res = f"SELECT FTHG, FTAG, FTR FROM historial_multiliga_ml WHERE Date = '{pick['Date']}' AND HomeTeam = '{pick['HomeTeam']}'"
+                # Traemos TODO (*) para poder evaluar goles, córners y tiros
+                q_res = f"SELECT * FROM historial_multiliga_ml WHERE Date = '{pick['Date']}' AND HomeTeam = '{pick['HomeTeam']}'"
                 res_real = pd.read_sql(q_res, conn)
                 
                 if not res_real.empty:
-                    hg, ag, ftr = res_real.iloc[0]['FTHG'], res_real.iloc[0]['FTAG'], res_real.iloc[0]['FTR']
+                    row = res_real.iloc[0]
+                    
+                    # 1. Verificación de seguridad: ¿Se ha jugado el partido?
+                    hg = row['FTHG'] if pd.notna(row.get('FTHG')) else None
+                    ag = row['FTAG'] if pd.notna(row.get('FTAG')) else None
+                    
+                    # Si no hay goles registrados en la DB, el partido aún no ocurre o no se ha scrapeado.
+                    if hg is None or ag is None:
+                        continue
+                        
+                    # Extraemos métricas secundarias (Si no están, asumimos 0 temporalmente)
+                    hc = row['HC'] if 'HC' in row and pd.notna(row['HC']) else 0
+                    ac = row['AC'] if 'AC' in row and pd.notna(row['AC']) else 0
+                    hst = row['HST'] if 'HST' in row and pd.notna(row['HST']) else 0
+                    ast = row['AST'] if 'AST' in row and pd.notna(row['AST']) else 0
+                    
+                    mkt = pick['Mercado']
                     ganada = False
                     
-                    if pick['Mercado'] == 'Local' and ftr == 'H': ganada = True
-                    elif pick['Mercado'] == 'Visita' and ftr == 'A': ganada = True
-                    elif pick['Mercado'] == '+2.5 Goles' and (hg + ag) > 2.5: ganada = True
-                    
+                    # --- MOTOR DE RESOLUCIÓN INTELIGENTE ---
+                    # A. Mercados Fijos (1X2 y BTTS)
+                    if mkt == "Ganador (Local)": ganada = (hg > ag)
+                    elif mkt == "Empate": ganada = (hg == ag)
+                    elif mkt == "Ganador (Visita)": ganada = (ag > hg)
+                    elif mkt == "Ambos Anotan (Sí)": ganada = (hg > 0 and ag > 0)
+                    elif mkt == "Ambos Anotan (No)": ganada = (hg == 0 or ag == 0)
+                    else:
+                        # B. Mercados Dinámicos (Totales y Hándicaps)
+                        # Busca el patrón entre paréntesis, ej: (+2.5) o (-1.5)
+                        match = re.search(r'\(([+-]\d+\.5)\)', mkt)
+                        if match:
+                            signo = match.group(1)[0] # Extrae el '+' o el '-'
+                            valor_linea = float(match.group(1)[1:]) # Extrae solo el número (ej: 2.5)
+                            linea_matematica = float(match.group(1)) # Extrae el número con el signo (ej: -1.5)
+                            
+                            if "Hándicap" in mkt:
+                                if "Local" in mkt: ganada = (hg + linea_matematica > ag)
+                                elif "Visita" in mkt: ganada = (ag + linea_matematica > hg)
+                            else:
+                                # Evaluamos Totales (Over = '+', Under = '-')
+                                score = -1
+                                if "Goles Local" in mkt: score = hg
+                                elif "Goles Visita" in mkt: score = ag
+                                elif "Goles" in mkt: score = hg + ag
+                                elif "Córners Local" in mkt: score = hc
+                                elif "Córners Visita" in mkt: score = ac
+                                elif "Córners" in mkt: score = hc + ac
+                                elif "Tiros Local" in mkt: score = hst
+                                elif "Tiros Visita" in mkt: score = ast
+                                elif "Tiros" in mkt: score = hst + ast
+                                
+                                if signo == '+': ganada = (score > valor_linea)
+                                elif signo == '-': ganada = (score < valor_linea)
+
+                    # --- CÁLCULO DE LIQUIDACIÓN ---
                     estado = 'Ganada' if ganada else 'Perdida'
+                    # Si gana: recupera su stake más la ganancia neta. Si pierde, resta el stake.
                     beneficio = (pick['Stake'] * pick['Cuota']) - pick['Stake'] if ganada else -pick['Stake']
                     
                     cursor.execute("UPDATE portafolio_historico SET Estado = ?, Beneficio_Neto = ? WHERE id = ?", (estado, beneficio, pick['id']))
@@ -951,9 +1001,20 @@ elif menu == "Portafolio de Picks":
                 
             st.divider()
             st.write("📋 **Historial de Picks**")
-            # Damos formato para mostrar
-            df_mostrar = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto']].sort_values(by='Date', ascending=False)
-            st.dataframe(df_mostrar, hide_index=True, use_container_width=True)
+            
+            # Ordenamos primero por Pendientes y luego por fecha descendente
+            df_mostrar = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto']].copy()
+            df_mostrar['Es_Pendiente'] = df_mostrar['Estado'] == 'Pendiente'
+            df_mostrar = df_mostrar.sort_values(by=['Es_Pendiente', 'Date'], ascending=[False, False]).drop(columns=['Es_Pendiente'])
+            
+            # Aplicamos colores en la tabla para facilitar la lectura visual
+            def color_estado(val):
+                if val == 'Ganada': return 'color: #00FF00; font-weight: bold'
+                elif val == 'Perdida': return 'color: #FF4B4B'
+                elif val == 'Pendiente': return 'color: #FFD700'
+                return ''
+                
+            st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
 
 
 conn.close()
