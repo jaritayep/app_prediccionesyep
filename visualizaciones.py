@@ -556,7 +556,7 @@ elif menu == "Portafolio de Picks":
     conn.commit()
 
     # Tabs para organizar la UI
-    tab1, tab2 = st.tabs(["🔍 Escáner en Vivo", "📊 Rendimiento Histórico"])
+    tab1, tab2 = st.tabs(["🔍 Escáner en Vivo", "🏦 Rendimiento Histórico"])
 
     with tab1:
         st.markdown("### 🔍 Escáner de Ineficiencias vs Pinnacle")
