@@ -901,7 +901,7 @@ elif menu == "Portafolio de Picks":
         except Exception as e:
             st.error(f"Error en la aplicación: {e}")
 
-with tab2:
+    with tab2:
         # Encabezado con Botón de Reset al lado
         c_tit, c_btn = st.columns([0.85, 0.15])
         c_tit.subheader("🏦 Rendimiento Acumulado")
