@@ -902,31 +902,36 @@ elif menu == "Portafolio de Picks":
             st.error(f"Error en la aplicación: {e}")
 
 with tab2:
-        st.subheader("🏦 Rendimiento Acumulado")
-        
+        # Encabezado con Botón de Reset al lado
+        c_tit, c_btn = st.columns([0.85, 0.15])
+        c_tit.subheader("🏦 Rendimiento Acumulado")
+        if c_btn.button("🔄 Refrescar", use_container_width=True):
+            st.rerun()
+            
         # 1. BOTÓN MÁGICO: Liquidar apuestas pendientes
         if st.button("⚖️ Liquidar Apuestas Pendientes", type="primary"):
             df_pendientes = pd.read_sql("SELECT * FROM portafolio_historico WHERE Estado = 'Pendiente'", conn)
             liquidadas = 0
+            
+            # Variables para calcular el Yield de esta liquidación específica
+            beneficio_reciente = 0.0
+            stake_reciente = 0.0
+            
             import re
             
             for _, pick in df_pendientes.iterrows():
-                # Traemos TODO (*) para poder evaluar goles, córners y tiros
                 q_res = f"SELECT * FROM historial_multiliga_ml WHERE Date = '{pick['Date']}' AND HomeTeam = '{pick['HomeTeam']}'"
                 res_real = pd.read_sql(q_res, conn)
                 
                 if not res_real.empty:
                     row = res_real.iloc[0]
                     
-                    # 1. Verificación de seguridad: ¿Se ha jugado el partido?
                     hg = row['FTHG'] if pd.notna(row.get('FTHG')) else None
                     ag = row['FTAG'] if pd.notna(row.get('FTAG')) else None
                     
-                    # Si no hay goles registrados en la DB, el partido aún no ocurre o no se ha scrapeado.
                     if hg is None or ag is None:
                         continue
                         
-                    # Extraemos métricas secundarias (Si no están, asumimos 0 temporalmente)
                     hc = row['HC'] if 'HC' in row and pd.notna(row['HC']) else 0
                     ac = row['AC'] if 'AC' in row and pd.notna(row['AC']) else 0
                     hst = row['HST'] if 'HST' in row and pd.notna(row['HST']) else 0
@@ -935,27 +940,23 @@ with tab2:
                     mkt = pick['Mercado']
                     ganada = False
                     
-                    # --- MOTOR DE RESOLUCIÓN INTELIGENTE ---
-                    # A. Mercados Fijos (1X2 y BTTS)
+                    # --- MOTOR DE RESOLUCIÓN ---
                     if mkt == "Ganador (Local)": ganada = (hg > ag)
                     elif mkt == "Empate": ganada = (hg == ag)
                     elif mkt == "Ganador (Visita)": ganada = (ag > hg)
                     elif mkt == "Ambos Anotan (Sí)": ganada = (hg > 0 and ag > 0)
                     elif mkt == "Ambos Anotan (No)": ganada = (hg == 0 or ag == 0)
                     else:
-                        # B. Mercados Dinámicos (Totales y Hándicaps)
-                        # Busca el patrón entre paréntesis, ej: (+2.5) o (-1.5)
                         match = re.search(r'\(([+-]\d+\.5)\)', mkt)
                         if match:
-                            signo = match.group(1)[0] # Extrae el '+' o el '-'
-                            valor_linea = float(match.group(1)[1:]) # Extrae solo el número (ej: 2.5)
-                            linea_matematica = float(match.group(1)) # Extrae el número con el signo (ej: -1.5)
+                            signo = match.group(1)[0] 
+                            valor_linea = float(match.group(1)[1:]) 
+                            linea_matematica = float(match.group(1)) 
                             
                             if "Hándicap" in mkt:
                                 if "Local" in mkt: ganada = (hg + linea_matematica > ag)
                                 elif "Visita" in mkt: ganada = (ag + linea_matematica > hg)
                             else:
-                                # Evaluamos Totales (Over = '+', Under = '-')
                                 score = -1
                                 if "Goles Local" in mkt: score = hg
                                 elif "Goles Visita" in mkt: score = ag
@@ -972,15 +973,23 @@ with tab2:
 
                     # --- CÁLCULO DE LIQUIDACIÓN ---
                     estado = 'Ganada' if ganada else 'Perdida'
-                    # Si gana: recupera su stake más la ganancia neta. Si pierde, resta el stake.
                     beneficio = (pick['Stake'] * pick['Cuota']) - pick['Stake'] if ganada else -pick['Stake']
                     
                     cursor.execute("UPDATE portafolio_historico SET Estado = ?, Beneficio_Neto = ? WHERE id = ?", (estado, beneficio, pick['id']))
+                    
+                    # Sumamos a las variables recientes
                     liquidadas += 1
+                    beneficio_reciente += beneficio
+                    stake_reciente += pick['Stake']
             
             conn.commit()
-            if liquidadas > 0: st.success(f"¡Se liquidaron {liquidadas} partidos finalizados!")
-            else: st.info("No hay partidos nuevos terminados para liquidar.")
+            
+            # Mensaje dinámico con el rendimiento de la tanda recién liquidada
+            if liquidadas > 0: 
+                yield_tanda = (beneficio_reciente / stake_reciente * 100) if stake_reciente > 0 else 0
+                st.success(f"¡Se liquidaron {liquidadas} partidos! 📈 Beneficio de esta tanda: **${beneficio_reciente:,.0f}** (Yield: **{yield_tanda:.2f}%**)")
+            else: 
+                st.info("No hay partidos nuevos terminados para liquidar.")
 
         # 2. Mostrar Resultados Globales
         df_hist = pd.read_sql("SELECT * FROM portafolio_historico", conn)
@@ -988,7 +997,8 @@ with tab2:
         if not df_hist.empty:
             df_cerradas = df_hist[df_hist['Estado'] != 'Pendiente']
             
-            c_res1, c_res2, c_res3 = st.columns(3)
+            # Ampliamos a 4 columnas para agregar el Yield
+            c_res1, c_res2, c_res3, c_res4 = st.columns(4)
             with c_res1:
                 st.metric("Picks Cerrados", len(df_cerradas))
             with c_res2:
@@ -996,18 +1006,21 @@ with tab2:
                 win_rate = (ganadas / len(df_cerradas) * 100) if len(df_cerradas) > 0 else 0
                 st.metric("Win Rate", f"{win_rate:.1f}%")
             with c_res3:
+                # Matemáticas del Yield Global: (Ganancia Neta Total / Dinero Total Invertido) * 100
                 beneficio_total = df_cerradas['Beneficio_Neto'].sum()
+                inversion_total = df_cerradas['Stake'].sum()
+                yield_global = (beneficio_total / inversion_total * 100) if inversion_total > 0 else 0
+                st.metric("Yield (ROI)", f"{yield_global:.2f}%")
+            with c_res4:
                 st.metric("Ganancia Neta Global", f"${beneficio_total:,.0f}")
                 
             st.divider()
             st.write("📋 **Historial de Picks**")
             
-            # Ordenamos primero por Pendientes y luego por fecha descendente
             df_mostrar = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto']].copy()
             df_mostrar['Es_Pendiente'] = df_mostrar['Estado'] == 'Pendiente'
             df_mostrar = df_mostrar.sort_values(by=['Es_Pendiente', 'Date'], ascending=[False, False]).drop(columns=['Es_Pendiente'])
             
-            # Aplicamos colores en la tabla para facilitar la lectura visual
             def color_estado(val):
                 if val == 'Ganada': return 'color: #00FF00; font-weight: bold'
                 elif val == 'Perdida': return 'color: #FF4B4B'
