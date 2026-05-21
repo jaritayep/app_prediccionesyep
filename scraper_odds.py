@@ -87,7 +87,7 @@ def get(endpoint: str, params: dict = None):
 def es_hoy_o_manana(fecha_iso: str) -> bool:
     ahora  = datetime.now(timezone.utc)
     inicio = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
-    fin    = inicio + timedelta(days=2)
+    fin    = inicio + timedelta(days=3)
     try:
         fecha = datetime.fromisoformat(fecha_iso.replace("Z", "+00:00"))
         return inicio <= fecha < fin
