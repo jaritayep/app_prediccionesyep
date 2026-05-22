@@ -566,25 +566,47 @@ elif menu == "Portafolio de Picks":
             # 1. Cargamos tu Base de Datos de Equipos
             equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
             
-            # --- AUTOMATIZACIÓN DE CARPETA ---
+            # --- AUTOMATIZACIÓN DE CARPETA Y CONSOLIDACIÓN DE FECHAS ---
             directorio_odds = Path("odds_data")
-            archivos_disponibles = list(directorio_odds.glob("pinnacle_*.csv")) if directorio_odds.exists() else []
-            archivos_disponibles.sort(reverse=True)
-            nombres_archivos = [archivo.name for archivo in archivos_disponibles]
+            archivos_csv = list(directorio_odds.glob("pinnacle_*.csv")) if directorio_odds.exists() else []
+            
+            df_master_odds = pd.DataFrame()
+            fechas_disponibles = []
+
+            if archivos_csv:
+                lista_dfs = []
+                for f in archivos_csv:
+                    try:
+                        df_temp = pd.read_csv(f)
+                        # Nos aseguramos de que el archivo tenga la columna de tiempo
+                        if 'inicio_local' in df_temp.columns:
+                            lista_dfs.append(df_temp)
+                    except Exception:
+                        pass
+                
+                if lista_dfs:
+                    # Combinamos todos y eliminamos partidos repetidos
+                    df_master_odds = pd.concat(lista_dfs, ignore_index=True)
+                    df_master_odds = df_master_odds.drop_duplicates(subset=['home', 'away', 'inicio_local'])
+                    
+                    # Extraemos la fecha limpia borrando la hora del texto
+                    df_master_odds['Fecha_Match'] = df_master_odds['inicio_local'].astype(str).str.split().str[0]
+                    
+                    # Obtenemos los días únicos ordenados
+                    fechas_disponibles = sorted(df_master_odds['Fecha_Match'].unique())
 
             c1, c2 = st.columns(2)
             with c1:
                 # 🎯 CAMBIO 3: Ahora pides el total del portafolio, no por pick
                 inversion_total = st.number_input("💰 Inversión TOTAL Portafolio ($)", min_value=1000, value=50000, step=500)
             with c2:
-                if nombres_archivos:
-                    archivo_seleccionado = st.selectbox("📂 Archivo de cuotas (Automático):", nombres_archivos)
-                    ruta_csv = directorio_odds / archivo_seleccionado
+                if fechas_disponibles:
+                    fecha_seleccionada = st.selectbox("📅 Seleccionar Día del Portafolio:", fechas_disponibles)
                 else:
-                    st.error("⚠️ No se encontraron archivos en la carpeta 'odds_data/'. ¡Corre el scraper primero!")
-                    ruta_csv = None
+                    st.error("⚠️ No se encontraron partidos en la carpeta 'odds_data/'. ¡Corre el scraper primero!")
+                    fecha_seleccionada = None
 
-            boton_disabled = ruta_csv is None
+            boton_disabled = fecha_seleccionada is None
 
             if st.button("🔍 Escanear Mercado", type="primary", disabled=boton_disabled):
                 model = cargar_modelo()
@@ -592,8 +614,10 @@ elif menu == "Portafolio de Picks":
                     st.error("⚠️ No se encontró el archivo 'modelo_ia.pkl'.")
                     st.stop()
 
-                with st.spinner(f"Analizando {archivo_seleccionado} con Inteligencia Artificial..."):
-                    df_pinnacle = pd.read_csv(ruta_csv)
+                with st.spinner(f"Analizando los partidos del {fecha_seleccionada} con Inteligencia Artificial..."):
+                    # 🎯 FILTRADO AUTOMÁTICO: Extraemos solo las cuotas del día seleccionado
+                    df_pinnacle = df_master_odds[df_master_odds['Fecha_Match'] == fecha_seleccionada]
+                    
                     oportunidades = []
                     log_debug = []
                     
@@ -672,7 +696,6 @@ elif menu == "Portafolio de Picks":
                             ("Ganador (Visita)", buscar_cuota_segura(row, ['1x2_away']), prob_visita)
                         ]
 
-                        # --- ESCÁNER DINÁMICO TOTAL (Goles, Hándicaps, Córners, Tiros) ---
                         # --- ESCÁNER DINÁMICO TOTAL (Goles, Hándicaps, Córners, Tiros, BTTS) ---
                         for col_name, val in row.items():
                             if pd.isna(val) or str(val).strip() == '':
