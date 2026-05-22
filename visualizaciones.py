@@ -578,9 +578,16 @@ elif menu == "Portafolio de Picks":
                 for f in archivos_csv:
                     try:
                         df_temp = pd.read_csv(f)
-                        # Nos aseguramos de que el archivo tenga la columna de tiempo
-                        if 'inicio_local' in df_temp.columns:
-                            lista_dfs.append(df_temp)
+                        
+                        # 🎯 PLAN B: Retrocompatibilidad para archivos antiguos
+                        if 'inicio_local' not in df_temp.columns:
+                            # Extrae '20260515' del nombre 'pinnacle_20260515'
+                            fecha_archivo = f.stem.split('_')[-1] 
+                            # Lo convierte a formato '2026-05-15 12:00'
+                            fecha_limpia = f"{fecha_archivo[:4]}-{fecha_archivo[4:6]}-{fecha_archivo[6:]} 12:00"
+                            df_temp['inicio_local'] = fecha_limpia
+
+                        lista_dfs.append(df_temp)
                     except Exception:
                         pass
                 
