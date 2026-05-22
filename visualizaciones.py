@@ -574,7 +574,8 @@ elif menu == "Portafolio de Picks":
 
             c1, c2 = st.columns(2)
             with c1:
-                stake_fijo = st.number_input("💰 Inversión FIJA por Pick ($)", min_value=500, value=5000, step=100)
+                # 🎯 CAMBIO 3: Ahora pides el total del portafolio, no por pick
+                inversion_total = st.number_input("💰 Inversión TOTAL Portafolio ($)", min_value=1000, value=50000, step=500)
             with c2:
                 if nombres_archivos:
                     archivo_seleccionado = st.selectbox("📂 Archivo de cuotas (Automático):", nombres_archivos)
@@ -781,7 +782,6 @@ elif menu == "Portafolio de Picks":
             if 'portafolio_escaneado' in st.session_state:
                 df_ops = st.session_state['portafolio_escaneado'].copy()
                 
-                # Preparar textos visuales
                 df_ops['Partido'] = df_ops['Home'] + " vs " + df_ops['Away']
                 df_ops['Edge_Str'] = (df_ops['Edge'] * 100).round(2).astype(str) + "%"
                 df_ops['Prob_IA_Str'] = (df_ops['Prob_IA'] * 100).round(1).astype(str) + "%"
@@ -789,52 +789,54 @@ elif menu == "Portafolio de Picks":
                 columnas_base = ['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str', 'Date', 'Home', 'Away', 'Prob_IA', 'Edge']
                 df_ops = df_ops[columnas_base]
 
-                # 🧠 LÓGICA DE DISTRIBUCIÓN DE RIESGO
+                # 🧠 🎯 CAMBIO 1: LÓGICA DE PARTIDOS ÚNICOS
                 selected_indices = []
+                used_matches = set() # Aquí guardaremos la memoria de los partidos ya elegidos
                 df_top_10_list = []
                 
-                # 1. ⭐ Golden Pick (El mayor Edge de todo el escaneo)
-                golden_idx = df_ops.index[0]
-                selected_indices.append(golden_idx)
-                df_top_10_list.append(df_ops.loc[[golden_idx]].assign(Nivel='⭐ Golden Pick'))
+                def add_pick(idx, nivel_label):
+                    partido = df_ops.loc[idx, 'Partido']
+                    # Si el partido ya tiene un pick, LO IGNORAMOS
+                    if partido not in used_matches:
+                        selected_indices.append(idx)
+                        used_matches.add(partido) # Lo registramos para no volver a usarlo
+                        df_top_10_list.append(df_ops.loc[[idx]].assign(Nivel=nivel_label))
+                        return True
+                    return False
+
+                def get_available_pool(min_c, max_c):
+                    # Filtra las cuotas y ELIMINA los partidos que ya están en el portafolio
+                    disponibles = df_ops[~df_ops['Partido'].isin(used_matches) & (df_ops['Cuota'] >= min_c) & (df_ops['Cuota'] < max_c)]
+                    # Elimina duplicados del MISMO partido dentro de esta piscina (se queda con el de mayor edge)
+                    return disponibles.drop_duplicates(subset=['Partido'], keep='first')
+
+                # 1. ⭐ Golden Pick 
+                for idx in df_ops.index:
+                    if add_pick(idx, '⭐ Golden Pick'): break
                 
-                # Función auxiliar para filtrar piscinas de cuotas ignorando los ya elegidos
-                def get_pool(min_c, max_c):
-                    return df_ops[~df_ops.index.isin(selected_indices) & (df_ops['Cuota'] >= min_c) & (df_ops['Cuota'] < max_c)]
-                
-                # 2. 🔴 Alto Riesgo (Cuotas >= 2.50) -> Top 3 mayor Edge
-                pool_high = get_pool(2.50, 999.0)
-                if not pool_high.empty:
-                    picks = pool_high.head(3)
-                    selected_indices.extend(picks.index)
-                    df_top_10_list.append(picks.assign(Nivel='🔴 Alto (>2.50)'))
+                # 2. 🔴 Alto Riesgo (Cuotas >= 2.50) -> Top 3
+                pool_high = get_available_pool(2.50, 999.0)
+                for idx in pool_high.head(3).index:
+                    add_pick(idx, '🔴 Alto (>2.50)')
                     
-                # 3. 🟡 Medio Riesgo (Cuotas 1.90 - 2.49) -> 1 Alto, 1 Medio, 1 Bajo Edge
-                pool_med = get_pool(1.90, 2.50)
+                # 3. 🟡 Medio Riesgo (Cuotas 1.90 - 2.49) -> Top, Medio, Bajo
+                pool_med = get_available_pool(1.90, 2.50)
                 if not pool_med.empty:
-                    if len(pool_med) >= 3:
-                        # Extraemos el índice del principio, del medio y del final
-                        idxs = [pool_med.index[0], pool_med.index[len(pool_med)//2], pool_med.index[-1]]
-                        picks = df_ops.loc[idxs]
-                    else:
-                        picks = pool_med
-                    selected_indices.extend(picks.index)
-                    df_top_10_list.append(picks.assign(Nivel='🟡 Medio (1.90-2.49)'))
+                    idxs = [pool_med.index[0]]
+                    if len(pool_med) >= 3: idxs.extend([pool_med.index[len(pool_med)//2], pool_med.index[-1]])
+                    elif len(pool_med) == 2: idxs.append(pool_med.index[-1])
+                    for idx in idxs: add_pick(idx, '🟡 Medio (1.90-2.49)')
 
-                # 4. 🟢 Bajo Riesgo (Cuotas < 1.90) -> 1 Alto, 1 Medio, 1 Bajo Edge
-                pool_low = get_pool(0.0, 1.90)
+                # 4. 🟢 Bajo Riesgo (Cuotas < 1.90) -> Top, Medio, Bajo
+                pool_low = get_available_pool(0.0, 1.90)
                 if not pool_low.empty:
-                    if len(pool_low) >= 3:
-                        idxs = [pool_low.index[0], pool_low.index[len(pool_low)//2], pool_low.index[-1]]
-                        picks = df_ops.loc[idxs]
-                    else:
-                        picks = pool_low
-                    selected_indices.extend(picks.index)
-                    df_top_10_list.append(picks.assign(Nivel='🟢 Bajo (<1.90)'))
+                    idxs = [pool_low.index[0]]
+                    if len(pool_low) >= 3: idxs.extend([pool_low.index[len(pool_low)//2], pool_low.index[-1]])
+                    elif len(pool_low) == 2: idxs.append(pool_low.index[-1])
+                    for idx in idxs: add_pick(idx, '🟢 Bajo (<1.90)')
 
-                # --- ENSAMBLAJE DE LAS TABLAS ---
-                # Tabla 1: La propuesta automatizada
-                df_top_10 = pd.concat(df_top_10_list).reset_index(drop=True)
+                # --- ENSAMBLAJE ---
+                df_top_10 = pd.concat(df_top_10_list).reset_index(drop=True) if df_top_10_list else pd.DataFrame()
                 cols_mostrar = ['Nivel', 'Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']
                 
                 df_mostrar_top = df_top_10[cols_mostrar].copy()
@@ -847,7 +849,7 @@ elif menu == "Portafolio de Picks":
 
                 # --- RENDERIZADO VISUAL ---
                 st.success(f"Escaneo listo. Se construyó un portafolio equilibrado usando {len(df_top_10)} picks recomendados.")
-                st.markdown("### 🎯 Portafolio IA Automatizado (3-3-3-1)")
+                st.markdown("### 🎯 Portafolio (3-3-3-1)")
                 
                 # Mostramos la tabla principal
                 edit_top10 = st.data_editor(
@@ -874,27 +876,26 @@ elif menu == "Portafolio de Picks":
 
                 # --- BOTÓN DE GUARDADO UNIFICADO ---
                 if st.button("💾 Guardar Portafolio Seleccionado", type="primary"):
-                    # Extraemos las filas originales correspondientes a los que el usuario dejó marcados
                     indices_top = edit_top10[edit_top10["✅ Añadir"] == True].index
-                    indices_res = []
-                    if not df_mostrar_reserva.empty:
-                        indices_res = edit_reserva[edit_reserva["✅ Añadir"] == True].index
+                    indices_res = edit_reserva[edit_reserva["✅ Añadir"] == True].index if not df_mostrar_reserva.empty else []
                     
                     df_final_top = df_top_10.iloc[indices_top]
                     df_final_res = df_reserva.iloc[indices_res] if not df_mostrar_reserva.empty else pd.DataFrame()
-                    
                     df_final_a_guardar = pd.concat([df_final_top, df_final_res])
                     
                     if df_final_a_guardar.empty:
                         st.warning("No seleccionaste ningún pick.")
                     else:
+                        # 🎯 CAMBIO 3: División exacta del dinero total entre los picks seleccionados
+                        stake_por_pick = inversion_total / len(df_final_a_guardar)
+                        
                         for _, row in df_final_a_guardar.iterrows():
                             cursor.execute("""
                                 INSERT INTO portafolio_historico (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob_IA'], row['Edge'], stake_fijo))
+                            """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob_IA'], row['Edge'], stake_por_pick))
                         conn.commit()
-                        st.toast(f"¡{len(df_final_a_guardar)} picks guardados exitosamente!")
+                        st.toast(f"¡{len(df_final_a_guardar)} picks guardados! (Inversión por pick: ${stake_por_pick:,.0f})")
                         del st.session_state['portafolio_escaneado']
                         st.rerun()
 
@@ -902,13 +903,17 @@ elif menu == "Portafolio de Picks":
             st.error(f"Error en la aplicación: {e}")
 
     with tab2:
-        # Encabezado con Botón de Reset al lado
-        c_tit, c_btn = st.columns([0.85, 0.15])
+        # 🎯 CAMBIO 2: Botón rojo para limpiar toda la tabla de rendimiento
+        c_tit, c_btn = st.columns([0.75, 0.25])
         c_tit.subheader("🏦 Rendimiento Acumulado")
-        if c_btn.button("🔄 Refrescar", use_container_width=True):
+        
+        if c_btn.button("🗑️ Resetear Historial", use_container_width=True):
+            cursor.execute("DELETE FROM portafolio_historico")
+            conn.commit()
+            st.toast("¡Historial borrado con éxito! Portafolio limpio.")
             st.rerun()
             
-        # 1. BOTÓN MÁGICO: Liquidar apuestas pendientes
+        # 1.Liquidar apuestas pendientes
         if st.button("⚖️ Liquidar Apuestas Pendientes", type="primary"):
             df_pendientes = pd.read_sql("SELECT * FROM portafolio_historico WHERE Estado = 'Pendiente'", conn)
             liquidadas = 0
