@@ -568,7 +568,7 @@ elif menu == "Portafolio de Picks":
             
             # --- AUTOMATIZACIÓN DE CARPETA Y CONSOLIDACIÓN DE FECHAS ---
             directorio_odds = Path("odds_data")
-            archivos_csv = list(directorio_odds.glob("pinnacle_*.csv")) if directorio_odds.exists() else []
+            archivos_csv = list(directorio_odds.glob("*.csv")) if directorio_odds.exists() else []
             
             df_master_odds = pd.DataFrame()
             fechas_disponibles = []
@@ -578,33 +578,57 @@ elif menu == "Portafolio de Picks":
                 for f in archivos_csv:
                     try:
                         df_temp = pd.read_csv(f)
+                        if df_temp.empty:
+                            continue
                         
-                        # 🎯 PLAN B: Retrocompatibilidad para archivos antiguos
-                        if 'inicio_local' not in df_temp.columns:
-                            # Extrae '20260515' del nombre 'pinnacle_20260515'
-                            fecha_archivo = f.stem.split('_')[-1] 
-                            # Lo convierte a formato '2026-05-15 12:00'
-                            fecha_limpia = f"{fecha_archivo[:4]}-{fecha_archivo[4:6]}-{fecha_archivo[6:]} 12:00"
-                            df_temp['inicio_local'] = fecha_limpia
+                        # 🔍 1. DETECTAR FECHA EN EL NOMBRE DEL ARCHIVO (Regex Infalible)
+                        import re
+                        match_dash = re.search(r'(\d{4})-(\d{2})-(\d{2})', f.name)
+                        match_pure = re.search(r'(\d{4})(\d{2})(\d{2})', f.name)
+                        
+                        if match_dash:
+                            fecha_fallback = match_dash.group(0)
+                        elif match_pure:
+                            fecha_fallback = f"{match_pure.group(1)}-{match_pure.group(2)}-{match_pure.group(3)}"
+                        else:
+                            import os
+                            mtime = os.path.getmtime(f)
+                            from datetime import datetime
+                            fecha_fallback = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d')
+
+                        # 🔍 2. EVITAR CONFLICTOS DE MAYÚSCULAS/MINÚSCULAS
+                        df_temp.columns = [c.lower() for c in df_temp.columns]
+
+                        # Mapeo de compatibilidad por si cambiaste nombres de columnas en el tiempo
+                        if 'hometeam' in df_temp.columns and 'home' not in df_temp.columns:
+                            df_temp = df_temp.rename(columns={'hometeam': 'home'})
+                        if 'awayteam' in df_temp.columns and 'away' not in df_temp.columns:
+                            df_temp = df_temp.rename(columns={'awayteam': 'away'})
+
+                        # 🔍 3. NORMALIZAR O INYECTAR COLUMNA DE TIEMPO
+                        if 'inicio_local' not in df_temp.columns or df_temp['inicio_local'].isna().all():
+                            df_temp['inicio_local'] = fecha_fallback + " 12:00"
+                        else:
+                            df_temp['inicio_local'] = df_temp['inicio_local'].fillna(fecha_fallback + " 12:00")
 
                         lista_dfs.append(df_temp)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        st.sidebar.error(f"⚠️ Error en archivo {f.name}: {e}")
                 
                 if lista_dfs:
-                    # Combinamos todos y eliminamos partidos repetidos
                     df_master_odds = pd.concat(lista_dfs, ignore_index=True)
                     df_master_odds = df_master_odds.drop_duplicates(subset=['home', 'away', 'inicio_local'])
                     
-                    # Extraemos la fecha limpia borrando la hora del texto
-                    df_master_odds['Fecha_Match'] = df_master_odds['inicio_local'].astype(str).str.split().str[0]
+                    # Cortamos estrictamente los primeros 10 caracteres (YYYY-MM-DD)
+                    df_master_odds['Fecha_Match'] = df_master_odds['inicio_local'].astype(str).str.strip().str.slice(0, 10)
                     
-                    # Obtenemos los días únicos ordenados
+                    # Filtramos filas que mantengan la estructura de fecha real
+                    df_master_odds = df_master_odds[df_master_odds['Fecha_Match'].str.match(r'^\d{4}-\d{2}-\d{2}$', na=False)]
                     fechas_disponibles = sorted(df_master_odds['Fecha_Match'].unique())
 
+            # --- INTERFAZ VISUAL DE CONTROL ---
             c1, c2 = st.columns(2)
             with c1:
-                # 🎯 CAMBIO 3: Ahora pides el total del portafolio, no por pick
                 inversion_total = st.number_input("💰 Inversión TOTAL Portafolio ($)", min_value=1000, value=50000, step=500)
             with c2:
                 if fechas_disponibles:
@@ -622,7 +646,7 @@ elif menu == "Portafolio de Picks":
                     st.stop()
 
                 with st.spinner(f"Analizando los partidos del {fecha_seleccionada} con Inteligencia Artificial..."):
-                    # 🎯 FILTRADO AUTOMÁTICO: Extraemos solo las cuotas del día seleccionado
+                    # Filtramos las cuotas maestras para quedarnos solo con el día elegido
                     df_pinnacle = df_master_odds[df_master_odds['Fecha_Match'] == fecha_seleccionada]
                     
                     oportunidades = []
@@ -638,8 +662,6 @@ elif menu == "Portafolio de Picks":
                         return 1 - prob_over(promedio, umbral)
                         
                     def prob_handicap(prom_favor, prom_contra, linea_hdp):
-                        # Motor Skellam (Poisson Doble) para Hándicap Asiático
-                        # Calcula la probabilidad de que (Goles a Favor + Ventaja Hándicap) > Goles en Contra
                         prob_acum = 0.0
                         for gf in range(15):
                             for gc in range(15):
