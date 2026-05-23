@@ -966,88 +966,102 @@ elif menu == "Portafolio de Picks":
             st.rerun()
             
         # 1.Liquidar apuestas pendientes
+        # 1. BOTÓN MÁGICO: Liquidar apuestas pendientes
         if st.button("⚖️ Liquidar Apuestas Pendientes", type="primary"):
             df_pendientes = pd.read_sql("SELECT * FROM portafolio_historico WHERE Estado = 'Pendiente'", conn)
             liquidadas = 0
-            
-            # Variables para calcular el Yield de esta liquidación específica
             beneficio_reciente = 0.0
             stake_reciente = 0.0
             
             import re
+            from thefuzz import process
+            from datetime import datetime, timedelta
             
             for _, pick in df_pendientes.iterrows():
-                q_res = f"SELECT * FROM historial_multiliga_ml WHERE Date = '{pick['Date']}' AND HomeTeam = '{pick['HomeTeam']}'"
+                # 🛡️ 1. Margen de Fecha (Buscamos el partido entre ayer, hoy y mañana)
+                try:
+                    fecha_dt = datetime.strptime(pick['Date'], '%Y-%m-%d')
+                    fecha_inicio = (fecha_dt - timedelta(days=1)).strftime('%Y-%m-%d')
+                    fecha_fin = (fecha_dt + timedelta(days=1)).strftime('%Y-%m-%d')
+                except Exception:
+                    fecha_inicio = pick['Date']
+                    fecha_fin = pick['Date']
+
+                q_res = f"SELECT * FROM historial_multiliga_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'"
                 res_real = pd.read_sql(q_res, conn)
                 
                 if not res_real.empty:
-                    row = res_real.iloc[0]
+                    # 🛡️ 2. Fuzzy Matching para Nombres de Equipos (M'gladbach == Borussia Monchengladbach)
+                    equipos_posibles = res_real['HomeTeam'].tolist()
+                    match_fuzz = process.extractOne(pick['HomeTeam'], equipos_posibles)
                     
-                    hg = row['FTHG'] if pd.notna(row.get('FTHG')) else None
-                    ag = row['FTAG'] if pd.notna(row.get('FTAG')) else None
-                    
-                    if hg is None or ag is None:
-                        continue
+                    # Si hay coincidencia de al menos 75% de similitud de texto
+                    if match_fuzz and match_fuzz[1] >= 75:
+                        equipo_db_real = match_fuzz[0]
+                        row = res_real[res_real['HomeTeam'] == equipo_db_real].iloc[0]
                         
-                    hc = row['HC'] if 'HC' in row and pd.notna(row['HC']) else 0
-                    ac = row['AC'] if 'AC' in row and pd.notna(row['AC']) else 0
-                    hst = row['HST'] if 'HST' in row and pd.notna(row['HST']) else 0
-                    ast = row['AST'] if 'AST' in row and pd.notna(row['AST']) else 0
-                    
-                    mkt = pick['Mercado']
-                    ganada = False
-                    
-                    # --- MOTOR DE RESOLUCIÓN ---
-                    if mkt == "Ganador (Local)": ganada = (hg > ag)
-                    elif mkt == "Empate": ganada = (hg == ag)
-                    elif mkt == "Ganador (Visita)": ganada = (ag > hg)
-                    elif mkt == "Ambos Anotan (Sí)": ganada = (hg > 0 and ag > 0)
-                    elif mkt == "Ambos Anotan (No)": ganada = (hg == 0 or ag == 0)
-                    else:
-                        match = re.search(r'\(([+-]\d+\.5)\)', mkt)
-                        if match:
-                            signo = match.group(1)[0] 
-                            valor_linea = float(match.group(1)[1:]) 
-                            linea_matematica = float(match.group(1)) 
+                        hg = row['FTHG'] if pd.notna(row.get('FTHG')) else None
+                        ag = row['FTAG'] if pd.notna(row.get('FTAG')) else None
+                        
+                        if hg is None or ag is None:
+                            continue
                             
-                            if "Hándicap" in mkt:
-                                if "Local" in mkt: ganada = (hg + linea_matematica > ag)
-                                elif "Visita" in mkt: ganada = (ag + linea_matematica > hg)
-                            else:
-                                score = -1
-                                if "Goles Local" in mkt: score = hg
-                                elif "Goles Visita" in mkt: score = ag
-                                elif "Goles" in mkt: score = hg + ag
-                                elif "Córners Local" in mkt: score = hc
-                                elif "Córners Visita" in mkt: score = ac
-                                elif "Córners" in mkt: score = hc + ac
-                                elif "Tiros Local" in mkt: score = hst
-                                elif "Tiros Visita" in mkt: score = ast
-                                elif "Tiros" in mkt: score = hst + ast
+                        hc = row['HC'] if 'HC' in row and pd.notna(row['HC']) else 0
+                        ac = row['AC'] if 'AC' in row and pd.notna(row['AC']) else 0
+                        hst = row['HST'] if 'HST' in row and pd.notna(row['HST']) else 0
+                        ast = row['AST'] if 'AST' in row and pd.notna(row['AST']) else 0
+                        
+                        mkt = pick['Mercado']
+                        ganada = False
+                        
+                        # --- MOTOR DE RESOLUCIÓN ---
+                        if mkt == "Ganador (Local)": ganada = (hg > ag)
+                        elif mkt == "Empate": ganada = (hg == ag)
+                        elif mkt == "Ganador (Visita)": ganada = (ag > hg)
+                        elif mkt == "Ambos Anotan (Sí)": ganada = (hg > 0 and ag > 0)
+                        elif mkt == "Ambos Anotan (No)": ganada = (hg == 0 or ag == 0)
+                        else:
+                            match = re.search(r'\(([+-]\d+\.5)\)', mkt)
+                            if match:
+                                signo = match.group(1)[0] 
+                                valor_linea = float(match.group(1)[1:]) 
+                                linea_matematica = float(match.group(1)) 
                                 
-                                if signo == '+': ganada = (score > valor_linea)
-                                elif signo == '-': ganada = (score < valor_linea)
+                                if "Hándicap" in mkt:
+                                    if "Local" in mkt: ganada = (hg + linea_matematica > ag)
+                                    elif "Visita" in mkt: ganada = (ag + linea_matematica > hg)
+                                else:
+                                    score = -1
+                                    if "Goles Local" in mkt: score = hg
+                                    elif "Goles Visita" in mkt: score = ag
+                                    elif "Goles" in mkt: score = hg + ag
+                                    elif "Córners Local" in mkt: score = hc
+                                    elif "Córners Visita" in mkt: score = ac
+                                    elif "Córners" in mkt: score = hc + ac
+                                    elif "Tiros Local" in mkt: score = hst
+                                    elif "Tiros Visita" in mkt: score = ast
+                                    elif "Tiros" in mkt: score = hst + ast
+                                    
+                                    if signo == '+': ganada = (score > valor_linea)
+                                    elif signo == '-': ganada = (score < valor_linea)
 
-                    # --- CÁLCULO DE LIQUIDACIÓN ---
-                    estado = 'Ganada' if ganada else 'Perdida'
-                    beneficio = (pick['Stake'] * pick['Cuota']) - pick['Stake'] if ganada else -pick['Stake']
-                    
-                    cursor.execute("UPDATE portafolio_historico SET Estado = ?, Beneficio_Neto = ? WHERE id = ?", (estado, beneficio, pick['id']))
-                    
-                    # Sumamos a las variables recientes
-                    liquidadas += 1
-                    beneficio_reciente += beneficio
-                    stake_reciente += pick['Stake']
+                        # --- CÁLCULO DE LIQUIDACIÓN ---
+                        estado = 'Ganada' if ganada else 'Perdida'
+                        beneficio = (pick['Stake'] * pick['Cuota']) - pick['Stake'] if ganada else -pick['Stake']
+                        
+                        cursor.execute("UPDATE portafolio_historico SET Estado = ?, Beneficio_Neto = ? WHERE id = ?", (estado, beneficio, pick['id']))
+                        
+                        liquidadas += 1
+                        beneficio_reciente += beneficio
+                        stake_reciente += pick['Stake']
             
             conn.commit()
             
-            # Mensaje dinámico con el rendimiento de la tanda recién liquidada
             if liquidadas > 0: 
                 yield_tanda = (beneficio_reciente / stake_reciente * 100) if stake_reciente > 0 else 0
                 st.success(f"¡Se liquidaron {liquidadas} partidos! 📈 Beneficio de esta tanda: **${beneficio_reciente:,.0f}** (Yield: **{yield_tanda:.2f}%**)")
             else: 
                 st.info("No hay partidos nuevos terminados para liquidar.")
-
         # 2. Mostrar Resultados Globales
         df_hist = pd.read_sql("SELECT * FROM portafolio_historico", conn)
         
