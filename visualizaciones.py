@@ -966,10 +966,12 @@ elif menu == "Mundial 2026":
             "United States": 3, "Mexico": 3, "Japan": 3, "Morocco": 3, "Senegal": 3, "Switzerland": 3, "Ecuador": 3, "Denmark": 3
         }
 
-        # --- MODO SIMULACIÓN MASIVA (48 Equipos - 12 Grupos) ---
+        # --- 🎯 FIX 1: CONDICIÓN DE SIMULACIÓN BLINDADA ---
         equipos_validos = df_fixture_wc[(df_fixture_wc['HomeTeam'] != 'TBA') & (df_fixture_wc['AwayTeam'] != 'TBA')]
-        if equipos_validos.empty:
-            st.warning("⚠️ Sorteo oficial pendiente. Activando **Modo Simulación Completa (48 Equipos)**.")
+        
+        # Exigimos al menos 70 partidos válidos (Fase de grupos completa) para apagar la simulación
+        if len(equipos_validos) < 70:
+            st.warning("⚠️ Sorteo oficial incompleto. Activando **Modo Simulación Completa (48 Equipos)**.")
             paises_mock = [
                 "Argentina", "Mexico", "Poland", "Saudi Arabia", "England", "United States", "Iran", "Wales",
                 "France", "Denmark", "Australia", "Tunisia", "Spain", "Germany", "Japan", "Costa Rica",
@@ -1056,7 +1058,6 @@ elif menu == "Mundial 2026":
                 "Ganador": winner, "Goles_H": goles_h, "Goles_A": goles_a
             }
 
-        # --- DICCIONARIOS PARA BRACKET OFICIAL ---
         posiciones_oficiales = {}
         lista_terceros = []
 
@@ -1099,7 +1100,6 @@ elif menu == "Mundial 2026":
                     
                     datos_grupos[nombre_grupo] = {'tabla': df_tabla, 'resultados': resultados_textos}
                     
-                    # 🎯 ALMACENAR POSICIONES PARA EL BRACKET OFICIAL
                     letra = nombre_grupo.replace("GROUP ", "")
                     if len(df_tabla) >= 1: posiciones_oficiales[f"1{letra}"] = df_tabla.iloc[0]['Selección']
                     if len(df_tabla) >= 2: posiciones_oficiales[f"2{letra}"] = df_tabla.iloc[1]['Selección']
@@ -1110,7 +1110,6 @@ elif menu == "Mundial 2026":
                             'Puntos': df_tabla.iloc[2]['Puntos']
                         })
                         
-                # Seleccionar los 8 mejores terceros
                 df_terceros = pd.DataFrame(lista_terceros).sort_values(by='Puntos', ascending=False)
                 mejores_terceros = df_terceros.head(8)['Selección'].tolist() if not df_terceros.empty else []
                     
@@ -1137,34 +1136,21 @@ elif menu == "Mundial 2026":
         with tab_finales:
             st.subheader("La Ruta hacia la Copa del Mundo 🏆")
             
-            # Función para consumir terceros según el formato FIFA
             terceros_restantes = mejores_terceros.copy()
             def get_team(code):
                 if code == "3":
                     return terceros_restantes.pop(0) if terceros_restantes else "TBA"
                 return posiciones_oficiales.get(code, "TBA")
 
-            # 🎯 EMPAREJAMIENTOS OFICIALES DE 16AVOS (Basado en la estructura del Mundial 2026)
-            # Índices 0-7: Lado Izquierdo del Cuadro | Índices 8-15: Lado Derecho del Cuadro
             parejas_r32 = [
-                # --- LLAVE IZQUIERDA ---
-                (get_team("1E"), get_team("3")),    # Match 74
-                (get_team("1I"), get_team("3")),    # Match 77
-                (get_team("2A"), get_team("2B")),   # Match 73
-                (get_team("1F"), get_team("2C")),   # Match 75
-                (get_team("2K"), get_team("2L")),   # Match 83
-                (get_team("1H"), get_team("2J")),   # Match 84
-                (get_team("1D"), get_team("3")),    # Match 81
-                (get_team("1G"), get_team("3")),    # Match 82
-                # --- LLAVE DERECHA ---
-                (get_team("1C"), get_team("2F")),   # Match 76
-                (get_team("2E"), get_team("2I")),   # Match 78
-                (get_team("1A"), get_team("3")),    # Match 79
-                (get_team("1L"), get_team("3")),    # Match 80
-                (get_team("1J"), get_team("2H")),   # Match 86
-                (get_team("2D"), get_team("2G")),   # Match 88
-                (get_team("1B"), get_team("3")),    # Match 85
-                (get_team("1K"), get_team("3"))     # Match 87
+                (get_team("1E"), get_team("3")), (get_team("1I"), get_team("3")),
+                (get_team("2A"), get_team("2B")), (get_team("1F"), get_team("2C")),
+                (get_team("2K"), get_team("2L")), (get_team("1H"), get_team("2J")),
+                (get_team("1D"), get_team("3")), (get_team("1G"), get_team("3")),
+                (get_team("1C"), get_team("2F")), (get_team("2E"), get_team("2I")),
+                (get_team("1A"), get_team("3")), (get_team("1L"), get_team("3")),
+                (get_team("1J"), get_team("2H")), (get_team("2D"), get_team("2G")),
+                (get_team("1B"), get_team("3")), (get_team("1K"), get_team("3"))
             ]
 
             def simular_ronda_bracket(parejas):
@@ -1179,19 +1165,15 @@ elif menu == "Mundial 2026":
                     res = predecir_partido_mundial(home, away)
                     if res['Ganador'] == "Empate":
                         ganador = home if res['Prob_H'] >= res['Prob_A'] else away
-                        metodo = " (P)" # Ganó por penales
+                        metodo = " (P)" 
                     else:
                         ganador = res['Ganador']
                         metodo = ""
 
                     ganadores.append(ganador)
-                    resultados.append({
-                        'home': home, 'away': away, 'g_h': res['Goles_H'], 'g_a': res['Goles_A'], 
-                        'winner': ganador, 'metodo': metodo
-                    })
+                    resultados.append({'home': home, 'away': away, 'g_h': res['Goles_H'], 'g_a': res['Goles_A'], 'winner': ganador, 'metodo': metodo})
                 return resultados, ganadores
 
-            # Simulamos ronda por ronda
             res_r32, win_r32 = simular_ronda_bracket(parejas_r32)
             res_r16, win_r16 = simular_ronda_bracket(list(zip(win_r32[::2], win_r32[1::2])))
             res_qf, win_qf   = simular_ronda_bracket(list(zip(win_r16[::2], win_r16[1::2])))
@@ -1199,7 +1181,6 @@ elif menu == "Mundial 2026":
             res_final, win_final = simular_ronda_bracket(list(zip(win_sf[::2], win_sf[1::2])))
             campeon = win_final[0] if win_final else "TBA"
 
-            # 🎯 GENERADOR DE HTML/CSS CON DISEÑO CONVERGENTE
             def generar_columna_html(resultados, fase):
                 html = f'<div class="phase-header">{fase}</div>' if fase else ""
                 for r in resultados:
@@ -1208,41 +1189,48 @@ elif menu == "Mundial 2026":
                     html += f'<div class="match-box"><div class="team {w_h}"><span>{r["home"]}</span> <span class="score">{r["g_h"]}{r["metodo"] if w_h else ""}</span></div><div class="team {w_a}"><span>{r["away"]}</span> <span class="score">{r["g_a"]}{r["metodo"] if w_a else ""}</span></div></div>'
                 return html
 
-# 🚨 PEGA ESTO EXACTAMENTE ASÍ, SIN ESPACIOS AL LADO IZQUIERDO:
-            bracket_html = f"""<style>
-.bracket-wrapper {{ display: flex; width: 100%; font-family: sans-serif; background-color: #111; color: white; border-radius: 10px; padding: 10px; overflow-x: auto; justify-content: space-between; }}
-.half-bracket {{ display: flex; flex: 1; }}
-.half-bracket.right {{ flex-direction: row-reverse; }}
-.bracket-col {{ display: flex; flex-direction: column; justify-content: space-around; width: 180px; min-width: 160px; margin: 0 5px; }}
-.phase-header {{ text-align: center; font-weight: bold; margin-bottom: 10px; color: #4CAF50; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }}
-.match-box {{ background-color: #222; border: 1px solid #444; border-radius: 6px; padding: 4px; margin: 5px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.4); }}
-.team {{ display: flex; justify-content: space-between; padding: 3px 5px; font-size: 11px; border-radius: 3px; align-items: center; }}
-.team.winner {{ font-weight: bold; background-color: rgba(76, 175, 80, 0.2); color: #4CAF50; border-left: 2px solid #4CAF50; }}
-.score {{ font-weight: bold; color: #eee; font-size: 12px; }}
-.center-bracket {{ display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 0 20px; min-width: 200px; }}
-.champion-box {{ background: linear-gradient(45deg, #FFD700, #B8860B); color: black; text-align: center; padding: 15px; border-radius: 8px; font-size: 16px; font-weight: bold; box-shadow: 0 0 15px rgba(255, 215, 0, 0.5); margin-top: 20px; width: 100%; }}
-</style>
-<div class="bracket-wrapper">
-<div class="half-bracket left">
-<div class="bracket-col">{generar_columna_html(res_r32[:8], "16avos")}</div>
-<div class="bracket-col">{generar_columna_html(res_r16[:4], "Octavos")}</div>
-<div class="bracket-col">{generar_columna_html(res_qf[:2], "Cuartos")}</div>
-<div class="bracket-col">{generar_columna_html(res_sf[:1], "Semifinal")}</div>
-</div>
-<div class="center-bracket">
-<div class="phase-header" style="font-size: 14px; color: gold;">LA GRAN FINAL</div>
-{generar_columna_html(res_final, "")}
-<div class="champion-box">🏆 {campeon} 🏆</div>
-</div>
-<div class="half-bracket right">
-<div class="bracket-col">{generar_columna_html(res_r32[8:], "16avos")}</div>
-<div class="bracket-col">{generar_columna_html(res_r16[4:], "Octavos")}</div>
-<div class="bracket-col">{generar_columna_html(res_qf[2:], "Cuartos")}</div>
-<div class="bracket-col">{generar_columna_html(res_sf[1:], "Semifinal")}</div>
-</div>
-</div>"""
+            # Usamos indentación de Python normal, pero luego lo aplanamos
+            bracket_html = f"""
+            <style>
+                .bracket-wrapper {{ display: flex; width: 100%; font-family: sans-serif; background-color: #111; color: white; border-radius: 10px; padding: 10px; overflow-x: auto; justify-content: space-between; }}
+                .half-bracket {{ display: flex; flex: 1; }}
+                .half-bracket.right {{ flex-direction: row-reverse; }}
+                .bracket-col {{ display: flex; flex-direction: column; justify-content: space-around; width: 180px; min-width: 160px; margin: 0 5px; }}
+                .phase-header {{ text-align: center; font-weight: bold; margin-bottom: 10px; color: #4CAF50; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }}
+                .match-box {{ background-color: #222; border: 1px solid #444; border-radius: 6px; padding: 4px; margin: 5px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.4); }}
+                .team {{ display: flex; justify-content: space-between; padding: 3px 5px; font-size: 11px; border-radius: 3px; align-items: center; }}
+                .team.winner {{ font-weight: bold; background-color: rgba(76, 175, 80, 0.2); color: #4CAF50; border-left: 2px solid #4CAF50; }}
+                .score {{ font-weight: bold; color: #eee; font-size: 12px; }}
+                .center-bracket {{ display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 0 20px; min-width: 200px; }}
+                .champion-box {{ background: linear-gradient(45deg, #FFD700, #B8860B); color: black; text-align: center; padding: 15px; border-radius: 8px; font-size: 16px; font-weight: bold; box-shadow: 0 0 15px rgba(255, 215, 0, 0.5); margin-top: 20px; width: 100%; }}
+            </style>
+            <div class="bracket-wrapper">
+                <div class="half-bracket left">
+                    <div class="bracket-col">{generar_columna_html(res_r32[:8], "16avos")}</div>
+                    <div class="bracket-col">{generar_columna_html(res_r16[:4], "Octavos")}</div>
+                    <div class="bracket-col">{generar_columna_html(res_qf[:2], "Cuartos")}</div>
+                    <div class="bracket-col">{generar_columna_html(res_sf[:1], "Semifinal")}</div>
+                </div>
+                <div class="center-bracket">
+                    <div class="phase-header" style="font-size: 14px; color: gold;">LA GRAN FINAL</div>
+                    {generar_columna_html(res_final, "")}
+                    <div class="champion-box">🏆 {campeon} 🏆</div>
+                </div>
+                <div class="half-bracket right">
+                    <div class="bracket-col">{generar_columna_html(res_r32[8:], "16avos")}</div>
+                    <div class="bracket-col">{generar_columna_html(res_r16[4:], "Octavos")}</div>
+                    <div class="bracket-col">{generar_columna_html(res_qf[2:], "Cuartos")}</div>
+                    <div class="bracket-col">{generar_columna_html(res_sf[1:], "Semifinal")}</div>
+                </div>
+            </div>
+            """
+            
+            # --- 🎯 FIX 2: LA APLANADORA DE HTML ---
+            # Esto convierte todas las líneas de arriba en un solo bloque sólido de código,
+            # haciendo imposible que Streamlit lo confunda con Markdown
+            bracket_html_limpio = bracket_html.replace('\n', '').replace('    ', '')
+            st.markdown(bracket_html_limpio, unsafe_allow_html=True)
 
-            st.markdown(bracket_html, unsafe_allow_html=True)
     except Exception as e:
         st.error(f"Error cargando el Oráculo del Mundial: {e}")
 conn.close()
