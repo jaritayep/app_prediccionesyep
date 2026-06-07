@@ -1199,59 +1199,50 @@ elif menu == "Mundial 2026":
             res_final, win_final = simular_ronda_bracket(list(zip(win_sf[::2], win_sf[1::2])))
             campeon = win_final[0] if win_final else "TBA"
 
-            # 🎯 GENERADOR DE HTML/CSS CON DISEÑO CONVERGENTE (Izquierda vs Derecha)
-            # 🎯 GENERADOR DE HTML/CSS CON DISEÑO CONVERGENTE (Corregido para Streamlit)
+            # 🎯 GENERADOR DE HTML/CSS CON DISEÑO CONVERGENTE
             def generar_columna_html(resultados, fase):
                 html = f'<div class="phase-header">{fase}</div>' if fase else ""
                 for r in resultados:
                     w_h = "winner" if r['winner'] == r['home'] else ""
                     w_a = "winner" if r['winner'] == r['away'] else ""
-                    
-                    # 🎯 CAMBIO CLAVE: Todo el HTML en una sola línea sin espacios al principio
                     html += f'<div class="match-box"><div class="team {w_h}"><span>{r["home"]}</span> <span class="score">{r["g_h"]}{r["metodo"] if w_h else ""}</span></div><div class="team {w_a}"><span>{r["away"]}</span> <span class="score">{r["g_a"]}{r["metodo"] if w_a else ""}</span></div></div>'
                 return html
 
-            bracket_html = f"""
-            <style>
-                .bracket-wrapper {{ display: flex; width: 100%; font-family: sans-serif; background-color: #111; color: white; border-radius: 10px; padding: 10px; overflow-x: auto; justify-content: space-between; }}
-                .half-bracket {{ display: flex; flex: 1; }}
-                .half-bracket.right {{ flex-direction: row-reverse; }}
-                .bracket-col {{ display: flex; flex-direction: column; justify-content: space-around; width: 180px; min-width: 160px; margin: 0 5px; }}
-                .phase-header {{ text-align: center; font-weight: bold; margin-bottom: 10px; color: #4CAF50; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }}
-                .match-box {{ background-color: #222; border: 1px solid #444; border-radius: 6px; padding: 4px; margin: 5px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.4); }}
-                .team {{ display: flex; justify-content: space-between; padding: 3px 5px; font-size: 11px; border-radius: 3px; align-items: center; }}
-                .team.winner {{ font-weight: bold; background-color: rgba(76, 175, 80, 0.2); color: #4CAF50; border-left: 2px solid #4CAF50; }}
-                .score {{ font-weight: bold; color: #eee; font-size: 12px; }}
-                .center-bracket {{ display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 0 20px; min-width: 200px; }}
-                .champion-box {{ background: linear-gradient(45deg, #FFD700, #B8860B); color: black; text-align: center; padding: 15px; border-radius: 8px; font-size: 16px; font-weight: bold; box-shadow: 0 0 15px rgba(255, 215, 0, 0.5); margin-top: 20px; width: 100%; }}
-            </style>
-            
-            <div class="bracket-wrapper">
-                <div class="half-bracket left">
-                    <div class="bracket-col">{generar_columna_html(res_r32[:8], "16avos")}</div>
-                    <div class="bracket-col">{generar_columna_html(res_r16[:4], "Octavos")}</div>
-                    <div class="bracket-col">{generar_columna_html(res_qf[:2], "Cuartos")}</div>
-                    <div class="bracket-col">{generar_columna_html(res_sf[:1], "Semifinal")}</div>
-                </div>
-                
-                <div class="center-bracket">
-                    <div class="phase-header" style="font-size: 14px; color: gold;">LA GRAN FINAL</div>
-                    {generar_columna_html(res_final, "")}
-                    <div class="champion-box">🏆 {campeon} 🏆</div>
-                </div>
-                
-                <div class="half-bracket right">
-                    <div class="bracket-col">{generar_columna_html(res_r32[8:], "16avos")}</div>
-                    <div class="bracket-col">{generar_columna_html(res_r16[4:], "Octavos")}</div>
-                    <div class="bracket-col">{generar_columna_html(res_qf[2:], "Cuartos")}</div>
-                    <div class="bracket-col">{generar_columna_html(res_sf[1:], "Semifinal")}</div>
-                </div>
-            </div>
-            """
-            
-            # 🎯 Renderizado limpio
-            st.markdown(bracket_html, unsafe_allow_html=True)
+# 🚨 PEGA ESTO EXACTAMENTE ASÍ, SIN ESPACIOS AL LADO IZQUIERDO:
+            bracket_html = f"""<style>
+.bracket-wrapper {{ display: flex; width: 100%; font-family: sans-serif; background-color: #111; color: white; border-radius: 10px; padding: 10px; overflow-x: auto; justify-content: space-between; }}
+.half-bracket {{ display: flex; flex: 1; }}
+.half-bracket.right {{ flex-direction: row-reverse; }}
+.bracket-col {{ display: flex; flex-direction: column; justify-content: space-around; width: 180px; min-width: 160px; margin: 0 5px; }}
+.phase-header {{ text-align: center; font-weight: bold; margin-bottom: 10px; color: #4CAF50; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }}
+.match-box {{ background-color: #222; border: 1px solid #444; border-radius: 6px; padding: 4px; margin: 5px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.4); }}
+.team {{ display: flex; justify-content: space-between; padding: 3px 5px; font-size: 11px; border-radius: 3px; align-items: center; }}
+.team.winner {{ font-weight: bold; background-color: rgba(76, 175, 80, 0.2); color: #4CAF50; border-left: 2px solid #4CAF50; }}
+.score {{ font-weight: bold; color: #eee; font-size: 12px; }}
+.center-bracket {{ display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 0 20px; min-width: 200px; }}
+.champion-box {{ background: linear-gradient(45deg, #FFD700, #B8860B); color: black; text-align: center; padding: 15px; border-radius: 8px; font-size: 16px; font-weight: bold; box-shadow: 0 0 15px rgba(255, 215, 0, 0.5); margin-top: 20px; width: 100%; }}
+</style>
+<div class="bracket-wrapper">
+<div class="half-bracket left">
+<div class="bracket-col">{generar_columna_html(res_r32[:8], "16avos")}</div>
+<div class="bracket-col">{generar_columna_html(res_r16[:4], "Octavos")}</div>
+<div class="bracket-col">{generar_columna_html(res_qf[:2], "Cuartos")}</div>
+<div class="bracket-col">{generar_columna_html(res_sf[:1], "Semifinal")}</div>
+</div>
+<div class="center-bracket">
+<div class="phase-header" style="font-size: 14px; color: gold;">LA GRAN FINAL</div>
+{generar_columna_html(res_final, "")}
+<div class="champion-box">🏆 {campeon} 🏆</div>
+</div>
+<div class="half-bracket right">
+<div class="bracket-col">{generar_columna_html(res_r32[8:], "16avos")}</div>
+<div class="bracket-col">{generar_columna_html(res_r16[4:], "Octavos")}</div>
+<div class="bracket-col">{generar_columna_html(res_qf[2:], "Cuartos")}</div>
+<div class="bracket-col">{generar_columna_html(res_sf[1:], "Semifinal")}</div>
+</div>
+</div>"""
 
+            st.markdown(bracket_html, unsafe_allow_html=True)
     except Exception as e:
         st.error(f"Error cargando el Oráculo del Mundial: {e}")
 conn.close()
