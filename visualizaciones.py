@@ -1000,16 +1000,15 @@ elif menu == "Mundial 2026":
             "Congo DR": "DR Congo", "USA": "United States"
         }
 
-        # Sistema de Jerarquía ("peso de la camiseta")
-        # Tier 1: Élite Mundial | Tier 2: Potencias | Tier 3: Competitivos | Tier 4: Resto (Default)
-        JERARQUIA_WC = {
-            "Argentina": 1, "France": 1, "Brazil": 1, "England": 1,
-            "Spain": 1, "Germany": 1, "Portugal": 1,
-            "Netherlands": 2, "Italy": 2, "Uruguay": 2, "Colombia": 2,
-            "Belgium": 2, "Croatia": 2,
-            "United States": 3, "Mexico": 3, "Japan": 3, "Morocco": 3,
-            "Senegal": 3, "Switzerland": 3, "Ecuador": 3, "Denmark": 3
-        }
+        # Sistema de Jerarquía basado en el Ranking FIFA 2026
+        # Se carga desde fifa_ranking_2026.csv (columnas: Team, Ranking)
+        # Si el archivo no existe o un equipo no está, se usa el ranking 50 como valor por defecto
+        try:
+            df_fifa_ranking = pd.read_csv('fifa_ranking_2026.csv')
+            df_fifa_ranking.columns = [c.strip() for c in df_fifa_ranking.columns]
+            RANKING_FIFA_WC = dict(zip(df_fifa_ranking['Team'].str.strip(), df_fifa_ranking['Ranking'].astype(int)))
+        except Exception:
+            RANKING_FIFA_WC = {}
 
         df_hist_wc = pd.read_sql("SELECT * FROM historial_selecciones_ml", conn)
 
@@ -1039,16 +1038,24 @@ elif menu == "Mundial 2026":
             else:
                 p_h_raw, p_d_raw, p_a_raw = 0.33, 0.33, 0.33
 
-            # 2. Ajuste cuantitativo por Jerarquía
-            tier_h = JERARQUIA_WC.get(h, 4)
-            tier_a = JERARQUIA_WC.get(a, 4)
+            # 2. Ajuste cuantitativo por Ranking FIFA
+            # Ranking más bajo = mejor equipo (ej: 1 es el mejor)
+            rank_h = RANKING_FIFA_WC.get(h, 50)
+            rank_a = RANKING_FIFA_WC.get(a, 50)
 
-            # Diferencia de niveles: positivo = local es más grande
-            diferencia_niveles = tier_a - tier_h
+            # Diferencia de rankings: positivo = local tiene peor ranking (rival más fuerte)
+            diferencia_ranking = rank_h - rank_a
 
-            # Cada nivel de diferencia aplica un multiplicador del 20%
-            multiplicador_h = max(0.1, 1.0 + (diferencia_niveles * 0.20))
-            multiplicador_a = max(0.1, 1.0 - (diferencia_niveles * 0.20))
+            # Normalizamos la diferencia: cada 10 puestos de diferencia equivalen a un ~10% de ajuste
+            ajuste = min(abs(diferencia_ranking) / 10, 2.0) * 0.10
+            if diferencia_ranking > 0:
+                # El equipo local tiene peor ranking → favorecemos al visitante
+                multiplicador_h = max(0.1, 1.0 - ajuste)
+                multiplicador_a = max(0.1, 1.0 + ajuste)
+            else:
+                # El equipo local tiene mejor ranking → lo favorecemos
+                multiplicador_h = max(0.1, 1.0 + ajuste)
+                multiplicador_a = max(0.1, 1.0 - ajuste)
 
             p_h_ajustada = p_h_raw * multiplicador_h
             p_a_ajustada = p_a_raw * multiplicador_a
