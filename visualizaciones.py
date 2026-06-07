@@ -1000,15 +1000,65 @@ elif menu == "Mundial 2026":
             "Congo DR": "DR Congo", "USA": "United States"
         }
 
-        # Sistema de Jerarquía basado en el Ranking FIFA 2026
-        # Se carga desde fifa_ranking_2026.csv (columnas: Team, Ranking)
-        # Si el archivo no existe o un equipo no está, se usa el ranking 50 como valor por defecto
+        # ── Carga del CSV FIFA 2026 ───────────────────────────────────────
+        # Columnas: rank, country (en español), points, valor_total_mill_eur
+        # Los nombres en español se traducen al inglés usado internamente.
+        TRADUCCION_CSV = {
+            "Francia": "France", "España": "Spain", "Argentina": "Argentina",
+            "Inglaterra": "England", "Portugal": "Portugal", "Brasil": "Brazil",
+            "Países Bajos": "Netherlands", "Marruecos": "Morocco", "Bélgica": "Belgium",
+            "Alemania": "Germany", "Croacia": "Croatia", "Italia": "Italy",
+            "Colombia": "Colombia", "Senegal": "Senegal", "México": "Mexico",
+            "Estados Unidos": "United States", "Uruguay": "Uruguay", "Japón": "Japan",
+            "Suiza": "Switzerland", "Dinamarca": "Denmark", "Irán": "Iran",
+            "Turquía": "Turkey", "Ecuador": "Ecuador", "Austria": "Austria",
+            "Corea del Sur": "Korea Republic", "Nigeria": "Nigeria", "Australia": "Australia",
+            "Argelia": "Algeria", "Egipto": "Egypt", "Canadá": "Canada",
+            "Noruega": "Norway", "Ucrania": "Ukraine", "Panamá": "Panama",
+            "Costa de Marfil": "Ivory Coast", "Polonia": "Poland", "Rusia": "Russia",
+            "Gales": "Wales", "Suecia": "Sweden", "Serbia": "Serbia",
+            "Paraguay": "Paraguay", "Chequia": "Czech Republic", "Hungría": "Hungary",
+            "Escocia": "Scotland", "Túnez": "Tunisia", "Camerún": "Cameroon",
+            "RD Congo": "DR Congo", "Grecia": "Greece", "Eslovaquia": "Slovakia",
+            "Venezuela": "Venezuela", "Uzbekistán": "Uzbekistan", "Costa Rica": "Costa Rica",
+            "Malí": "Mali", "Perú": "Peru", "Chile": "Chile", "Catar": "Qatar",
+            "Rumanía": "Romania", "Irak": "Iraq", "Eslovenia": "Slovenia",
+            "Irlanda": "Ireland", "Sudáfrica": "South Africa", "Arabia Saudita": "Saudi Arabia",
+            "Burkina Faso": "Burkina Faso", "Jordania": "Jordan", "Albania": "Albania",
+            "Bosnia": "Bosnia and Herzegovina", "Honduras": "Honduras",
+            "Macedonia Norte": "North Macedonia", "EAU": "United Arab Emirates",
+            "Cabo Verde": "Cape Verde", "Irlanda Norte": "Northern Ireland",
+            "Jamaica": "Jamaica", "Georgia": "Georgia", "Finlandia": "Finland",
+            "Ghana": "Ghana", "Islandia": "Iceland", "Bolivia": "Bolivia",
+            "Israel": "Israel", "Kosovo": "Kosovo", "Omán": "Oman",
+            "Guinea": "Guinea", "Montenegro": "Montenegro", "Curazao": "Curaçao",
+            "Haití": "Haiti", "Siria": "Syria", "Nueva Zelanda": "New Zealand",
+            "Bulgaria": "Bulgaria", "Gabón": "Gabon", "Uganda": "Uganda",
+            "Angola": "Angola", "Benín": "Benin", "Baréin": "Bahrain",
+            "Zambia": "Zambia", "Tailandia": "Thailand", "China": "China",
+            "Palestina": "Palestine", "Guatemala": "Guatemala",
+            "Bielorrusia": "Belarus", "Luxemburgo": "Luxembourg",
+            "Vietnam": "Vietnam", "El Salvador": "El Salvador",
+        }
+
         try:
             df_fifa_ranking = pd.read_csv('fifa_ranking_2026.csv')
             df_fifa_ranking.columns = [c.strip() for c in df_fifa_ranking.columns]
-            RANKING_FIFA_WC = dict(zip(df_fifa_ranking['Team'].str.strip(), df_fifa_ranking['Ranking'].astype(int)))
+            df_fifa_ranking['country_en'] = df_fifa_ranking['country'].str.strip().map(TRADUCCION_CSV)
+
+            pts_min = df_fifa_ranking['points'].min()
+            pts_max = df_fifa_ranking['points'].max()
+            val_min = df_fifa_ranking['valor_total_mill_eur'].min()
+            val_max = df_fifa_ranking['valor_total_mill_eur'].max()
+
+            df_fifa_ranking['pts_norm']  = (df_fifa_ranking['points'] - pts_min) / (pts_max - pts_min)
+            df_fifa_ranking['val_norm']  = (df_fifa_ranking['valor_total_mill_eur'] - val_min) / (val_max - val_min)
+
+            FIFA_SCORES = dict(zip(df_fifa_ranking['country_en'], zip(
+                df_fifa_ranking['pts_norm'], df_fifa_ranking['val_norm']
+            )))
         except Exception:
-            RANKING_FIFA_WC = {}
+            FIFA_SCORES = {}
 
         df_hist_wc = pd.read_sql("SELECT * FROM historial_selecciones_ml", conn)
 
@@ -1038,42 +1088,48 @@ elif menu == "Mundial 2026":
             else:
                 p_h_raw, p_d_raw, p_a_raw = 0.33, 0.33, 0.33
 
-            # 2. Ajuste cuantitativo por Ranking FIFA + bono de confederación
-            # Ranking más bajo = mejor equipo (ej: 1 es el mejor)
-            rank_h = RANKING_FIFA_WC.get(h, 50)
-            rank_a = RANKING_FIFA_WC.get(a, 50)
+            # 2. Score compuesto de 3 factores para medir la fuerza real de cada selección
+            #
+            #   - Puntos FIFA (40%): refleja el rendimiento reciente oficial
+            #   - Valor de mercado (40%): proxy de calidad individual de plantilla
+            #   - Bono confederación (20%): UEFA y CONMEBOL tienen mayor rodaje en mundiales
+            #
+            # Los tres factores se normalizan entre 0 y 1 y se combinan en un score único.
+            # La diferencia de scores entre ambos equipos determina el multiplicador de probabilidad.
 
-            # Bono de confederación: UEFA y CONMEBOL históricamente dominan los mundiales.
-            # Se aplica un bono aditivo al ranking efectivo (rank más bajo = más fuerte).
-            UEFA = {
+            UEFA_ES = {
                 "France", "Spain", "England", "Germany", "Portugal", "Netherlands",
                 "Italy", "Belgium", "Croatia", "Switzerland", "Denmark", "Austria",
                 "Poland", "Serbia", "Ukraine", "Czech Republic", "Hungary", "Slovakia",
                 "Romania", "Turkey", "Scotland", "Wales", "Greece", "Slovenia",
-                "Albania", "Georgia", "Norway", "Sweden", "Finland", "Bosnia and Herzegovina"
+                "Albania", "Georgia", "Norway", "Sweden", "Finland",
+                "Bosnia and Herzegovina", "North Macedonia", "Kosovo", "Montenegro",
+                "Bulgaria", "Luxembourg", "Belarus", "Ireland", "Northern Ireland",
+                "Iceland", "Israel"
             }
-            CONMEBOL = {
+            CONMEBOL_ES = {
                 "Argentina", "Brazil", "Uruguay", "Colombia", "Chile",
                 "Ecuador", "Peru", "Paraguay", "Venezuela", "Bolivia"
             }
-            BONO_CONFEDERACION = 8  # Equivale a escalar 8 puestos en el ranking
 
-            rank_h_eff = rank_h - (BONO_CONFEDERACION if h in UEFA or h in CONMEBOL else 0)
-            rank_a_eff = rank_a - (BONO_CONFEDERACION if a in UEFA or a in CONMEBOL else 0)
+            def _score_seleccion(equipo):
+                if equipo in FIFA_SCORES:
+                    pts_n, val_n = FIFA_SCORES[equipo]
+                else:
+                    pts_n, val_n = 0.3, 0.05   # Equipo desconocido: valores bajos por defecto
+                conf = 1.0 if equipo in UEFA_ES or equipo in CONMEBOL_ES else 0.0
+                return 0.40 * pts_n + 0.40 * val_n + 0.20 * conf
 
-            # Diferencia de rankings efectivos: positivo = local es más débil
-            diferencia_ranking = rank_h_eff - rank_a_eff
+            score_h = _score_seleccion(h)
+            score_a = _score_seleccion(a)
 
-            # Curva de ajuste más agresiva: cada 10 puestos → 15% de ajuste, techo en 60%
-            ajuste = min(abs(diferencia_ranking) / 10, 4.0) * 0.15
-            if diferencia_ranking > 0:
-                # El equipo local es más débil → favorecemos al visitante
-                multiplicador_h = max(0.1, 1.0 - ajuste)
-                multiplicador_a = max(0.1, 1.0 + ajuste)
-            else:
-                # El equipo local es más fuerte → lo favorecemos
-                multiplicador_h = max(0.1, 1.0 + ajuste)
-                multiplicador_a = max(0.1, 1.0 - ajuste)
+            # Diferencia de scores: positivo = local es más fuerte
+            diff_score = score_h - score_a
+
+            # Multiplicador lineal: 1 punto de diferencia de score → 100% de ajuste
+            # Con scores entre 0 y 1, el rango real es [-1, 1], dando multiplicadores de [0, 2]
+            multiplicador_h = max(0.1, 1.0 + diff_score)
+            multiplicador_a = max(0.1, 1.0 - diff_score)
 
             p_h_ajustada = p_h_raw * multiplicador_h
             p_a_ajustada = p_a_raw * multiplicador_a

@@ -1,101 +1,101 @@
-rank,country,points
-1,Francia,1877
-2,España,1876
-3,Argentina,1875
-4,Inglaterra,1826
-5,Portugal,1764
-6,Brasil,1761
-7,Países Bajos,1758
-8,Marruecos,1756
-9,Bélgica,1735
-10,Alemania,1730
-11,Croacia,1717
-12,Italia,1700
-13,Colombia,1693
-14,Senegal,1689
-15,México,1681
-16,Estados Unidos,1673
-17,Uruguay,1673
-18,Japón,1660
-19,Suiza,1649
-20,Dinamarca,1621
-21,Irán,1615
-22,Turquía,1599
-23,Ecuador,1595
-24,Austria,1593
-25,Corea del Sur,1589
-26,Nigeria,1585
-27,Australia,1581
-28,Argelia,1564
-29,Egipto,1563
-30,Canadá,1556
-31,Noruega,1551
-32,Ucrania,1547
-33,Panamá,1541
-34,Costa de Marfil,1533
-35,Polonia,1528
-36,Rusia,1526
-37,Gales,1524
-38,Suecia,1515
-39,Serbia,1509
-40,Paraguay,1504
-41,Chequia,1501
-42,Hungría,1501
-43,Escocia,1498
-44,Túnez,1483
-45,Camerún,1481
-46,RD Congo,1478
-47,Grecia,1476
-48,Eslovaquia,1474
-49,Venezuela,1468
-50,Uzbekistán,1465
-51,Costa Rica,1460
-52,Malí,1459
-53,Perú,1456
-54,Chile,1455
-55,Catar,1455
-56,Rumanía,1451
-57,Irak,1447
-58,Eslovenia,1446
-59,Irlanda,1437
-60,Sudáfrica,1430
-61,Arabia Saudita,1421
-62,Burkina Faso,1412
-63,Jordania,1391
-64,Albania,1388
-65,Bosnia,1386
-66,Honduras,1380
-67,Macedonia Norte,1372
-68,EAU,1370
-69,Cabo Verde,1366
-70,Irlanda Norte,1362
-71,Jamaica,1358
-72,Georgia,1350
-73,Finlandia,1346
-74,Ghana,1346
-75,Islandia,1345
-76,Bolivia,1329
-77,Israel,1328
-78,Kosovo,1319
-79,Omán,1313
-80,Guinea,1300
-81,Montenegro,1296
-82,Curazao,1295
-83,Haití,1292
-84,Siria,1289
-85,Nueva Zelanda,1282
-86,Bulgaria,1279
-87,Gabón,1273
-88,Uganda,1264
-89,Angola,1263
-90,Benín,1259
-91,Baréin,1259
-92,Zambia,1256
-93,Tailandia,1252
-94,China,1252
-95,Palestina,1245
-96,Guatemala,1243
-97,Bielorrusia,1236
-98,Luxemburgo,1228
-99,Vietnam,1226
-100,El Salvador,1225
+rank,country,points,valor_total_mill_eur
+1,Francia,1877,1520.00
+2,España,1876,1220.00
+3,Argentina,1875,782.50
+4,Inglaterra,1826,1360.00
+5,Portugal,1764,1010.00
+6,Brasil,1761,923.20
+7,Países Bajos,1758,804.20
+8,Marruecos,1756,498.30
+9,Bélgica,1735,547.50
+10,Alemania,1730,947.00
+11,Croacia,1717,387.30
+12,Italia,1700,315.70
+13,Colombia,1693,302.35
+14,Senegal,1689,478.10
+15,México,1681,191.85
+16,Estados Unidos,1673,385.65
+17,Uruguay,1673,359.30
+18,Japón,1660,270.85
+19,Suiza,1649,332.50
+20,Dinamarca,1621,365.00
+21,Irán,1615,32.05
+22,Turquía,1599,473.70
+23,Ecuador,1595,368.70
+24,Austria,1593,242.20
+25,Corea del Sur,1589,139.05
+26,Nigeria,1585,171.85
+27,Australia,1581,77.45
+28,Argelia,1564,256.90
+29,Egipto,1563,116.48
+30,Canadá,1556,196.65
+31,Noruega,1551,589.90
+32,Ucrania,1547,246.50
+33,Panamá,1541,34.55
+34,Costa de Marfil,1533,522.10
+35,Polonia,1528,231.60
+36,Rusia,1526,242.70
+37,Gales,1524,180.65
+38,Suecia,1515,406.08
+39,Serbia,1509,206.00
+40,Paraguay,1504,153.65
+41,Chequia,1501,188.18
+42,Hungría,1501,209.20
+43,Escocia,1498,170.25
+44,Túnez,1483,69.95
+45,Camerún,1481,198.70
+46,RD Congo,1478,143.90
+47,Grecia,1476,278.60
+48,Eslovaquia,1474,59.85
+49,Venezuela,1468,78.90
+50,Uzbekistán,1465,85.33
+51,Costa Rica,1460,27.50
+52,Malí,1459,116.55
+53,Perú,1456,30.03
+54,Chile,1455,65.60
+55,Catar,1455,19.93
+56,Rumanía,1451,54.90
+57,Irak,1447,21.20
+58,Eslovenia,1446,100.50
+59,Irlanda,1437,146.43
+60,Sudáfrica,1430,49.25
+61,Arabia Saudita,1421,40.68
+62,Burkina Faso,1412,110.55
+63,Jordania,1391,20.00
+64,Albania,1388,88.75
+65,Bosnia,1386,151.60
+66,Honduras,1380,20.93
+67,Macedonia Norte,1372,33.80
+68,EAU,1370,29.05
+69,Cabo Verde,1366,54.50
+70,Irlanda Norte,1362,79.90
+71,Jamaica,1358,9.05
+72,Georgia,1350,258.10
+73,Finlandia,1346,41.85
+74,Ghana,1346,234.60
+75,Islandia,1345,89.10
+76,Bolivia,1329,18.05
+77,Israel,1328,62.40
+78,Kosovo,1319,147.53
+79,Omán,1313,6.73
+80,Guinea,1300,73.30
+81,Montenegro,1296,68.53
+82,Curazao,1295,25.78
+83,Haití,1292,55.90
+84,Siria,1289,7.93
+85,Nueva Zelanda,1282,34.35
+86,Bulgaria,1279,30.15
+87,Gabón,1273,34.98
+88,Uganda,1264,8.75
+89,Angola,1263,47.35
+90,Benín,1259,17.98
+91,Baréin,1259,6.15
+92,Zambia,1256,14.13
+93,Tailandia,1252,6.43
+94,China,1252,13.30
+95,Palestina,1245,10.30
+96,Guatemala,1243,7.78
+97,Bielorrusia,1236,15.38
+98,Luxemburgo,1228,14.55
+99,Vietnam,1226,6.38
+100,El Salvador,1225,7.13
