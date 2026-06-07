@@ -1118,7 +1118,7 @@ elif menu == "Mundial 2026":
                 else:
                     pts_n, val_n = 0.3, 0.05   # Equipo desconocido: valores bajos por defecto
                 conf = 1.0 if equipo in UEFA_ES or equipo in CONMEBOL_ES else 0.0
-                return 0.43 * pts_n + 0.40 * val_n + 0.17 * conf
+                return 0.38 * pts_n + 0.45 * val_n + 0.17 * conf
 
             score_h = _score_seleccion(h)
             score_a = _score_seleccion(a)
