@@ -1200,17 +1200,15 @@ elif menu == "Mundial 2026":
             campeon = win_final[0] if win_final else "TBA"
 
             # 🎯 GENERADOR DE HTML/CSS CON DISEÑO CONVERGENTE (Izquierda vs Derecha)
+            # 🎯 GENERADOR DE HTML/CSS CON DISEÑO CONVERGENTE (Corregido para Streamlit)
             def generar_columna_html(resultados, fase):
                 html = f'<div class="phase-header">{fase}</div>' if fase else ""
                 for r in resultados:
                     w_h = "winner" if r['winner'] == r['home'] else ""
                     w_a = "winner" if r['winner'] == r['away'] else ""
-                    html += f"""
-                    <div class="match-box">
-                        <div class="team {w_h}"><span>{r['home']}</span> <span class="score">{r['g_h']}{r['metodo'] if w_h else ''}</span></div>
-                        <div class="team {w_a}"><span>{r['away']}</span> <span class="score">{r['g_a']}{r['metodo'] if w_a else ''}</span></div>
-                    </div>
-                    """
+                    
+                    # 🎯 CAMBIO CLAVE: Todo el HTML en una sola línea sin espacios al principio
+                    html += f'<div class="match-box"><div class="team {w_h}"><span>{r["home"]}</span> <span class="score">{r["g_h"]}{r["metodo"] if w_h else ""}</span></div><div class="team {w_a}"><span>{r["away"]}</span> <span class="score">{r["g_a"]}{r["metodo"] if w_a else ""}</span></div></div>'
                 return html
 
             bracket_html = f"""
@@ -1250,6 +1248,8 @@ elif menu == "Mundial 2026":
                 </div>
             </div>
             """
+            
+            # 🎯 Renderizado limpio
             st.markdown(bracket_html, unsafe_allow_html=True)
 
     except Exception as e:
