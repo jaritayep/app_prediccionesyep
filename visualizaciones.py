@@ -944,85 +944,71 @@ elif menu == "Portafolio de Picks":
             st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
 elif menu == "Mundial 2026":
     st.title("🏆 Oráculo Mundial 2026")
-    st.markdown("Motor predictivo de torneos. Proyecta tablas de posiciones y llaves de eliminación.")
+    st.markdown("Proyección oficial basada en formato FIFA 48 selecciones.")
 
     try:
-        # 1. Cargar el cerebro de selecciones
         modelo_wc = joblib.load('modelo_selecciones_rf.pkl')
         encoder_wc = joblib.load('encoder_equipos_selecciones.pkl')
         df_hist_wc = pd.read_sql("SELECT * FROM historial_selecciones_ml", conn)
         df_fixture_wc = pd.read_sql("SELECT * FROM fixture_mundial", conn)
         
-        # 🎯 FIX: Normalizar los nombres de los grupos de la BD
-        df_fixture_wc['Grupo'] = df_fixture_wc['Grupo'].str.replace('_', ' ').str.replace('GROUP ', 'GROUP ').str.strip()
-
-        TRADUCCION = {
-            "Czechia": "Czech Republic", "South Korea": "Korea Republic",
-            "Bosnia-Herzegovina": "Bosnia and Herzegovina", "Cape Verde Islands": "Cape Verde",
-            "Congo DR": "DR Congo", "USA": "United States", "US": "United States"
-        }
-
-        JERARQUIA = {
-            "Argentina": 1, "France": 1, "Brazil": 1, "England": 1, "Spain": 1, "Germany": 1, "Portugal": 1,
-            "Netherlands": 2, "Italy": 2, "Uruguay": 2, "Colombia": 2, "Belgium": 2, "Croatia": 2,
-            "United States": 3, "Mexico": 3, "Japan": 3, "Morocco": 3, "Senegal": 3, "Switzerland": 3, "Ecuador": 3, "Denmark": 3
-        }
-
-        # --- MOTOR ESTADÍSTICO ---
-        def predecir_partido_mundial(home_raw, away_raw):
-            home = TRADUCCION.get(home_raw, home_raw)
-            away = TRADUCCION.get(away_raw, away_raw)
-            if home not in encoder_wc.classes_ or away not in encoder_wc.classes_:
-                return {"Prob_H": 0.33, "Prob_D": 0.33, "Prob_A": 0.33, "Pts_H": 1, "Pts_A": 1, "Ganador": "Empate", "Goles_H": 1, "Goles_A": 1}
-            
-            hist_h = df_hist_wc[df_hist_wc['HomeTeam'] == home]
-            hist_a = df_hist_wc[df_hist_wc['HomeTeam'] == away]
-            hst, hc = hist_h['HST'].mean() if not hist_h.empty else 4.0, hist_h['HC'].mean() if not hist_h.empty else 5.0
-            ast, ac = hist_a['AST'].mean() if not hist_a.empty else 3.5, hist_a['AC'].mean() if not hist_a.empty else 4.0
-            
-            h_code = encoder_wc.transform([home])[0]
-            a_code = encoder_wc.transform([away])[0]
-            features = pd.DataFrame([[h_code, a_code, hst, ast, hc, ac]], columns=['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC'])
-            probs = modelo_wc.predict_proba(features)[0]
-            p_h, p_d, p_a = probs[2], probs[1], probs[0]
-            
-            # Ajuste Jerarquía
-            tier_h, tier_a = JERARQUIA.get(home, 4), JERARQUIA.get(away, 4)
-            mult_h = max(0.1, 1.0 + ((tier_a - tier_h) * 0.20))
-            p_h, p_a = p_h * mult_h, p_a * (1/mult_h)
-            
-            pts_h, pts_a, winner = (3,0,home) if p_h>p_a and p_h>p_d else (0,3,away) if p_a>p_h and p_a>p_d else (1,1,"Empate")
-            return {"Prob_H": p_h, "Prob_D": p_d, "Prob_A": p_a, "Pts_H": pts_h, "Pts_A": pts_a, "Ganador": winner, "Goles_H": 1, "Goles_A": 0}
-
+        # Diccionario de grupos para asegurar que no salgan TBA
         posiciones_oficiales = {}
-        tab_grupos, tab_finales = st.tabs(["📊 Fase de Grupos", "⚔️ Ruta a la Copa"])
+        
+        # --- MOTOR DE PREDICCIÓN ---
+        def predecir_partido_mundial(h, a):
+            hst, hc = 4.0, 5.0 
+            ast, ac = 3.5, 4.0
+            if h in encoder_wc.classes_ and a in encoder_wc.classes_:
+                h_c, a_c = encoder_wc.transform([h])[0], encoder_wc.transform([a])[0]
+                probs = modelo_wc.predict_proba(pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC']))[0]
+                p_h, p_d, p_a = probs[2], probs[1], probs[0]
+                pts_h, pts_a = (3,0) if p_h>p_a else (0,3) if p_a>p_h else (1,1)
+                return {"Pts_H": pts_h, "Pts_A": pts_a, "Ganador": h if p_h>p_a else a, "Goles_H": int(p_h*2), "Goles_A": int(p_a*2)}
+            return {"Pts_H": 1, "Pts_A": 1, "Ganador": "Empate", "Goles_H": 1, "Goles_A": 1}
 
-        with tab_grupos:
-            df_grupos = df_fixture_wc[df_fixture_wc['Grupo'].str.contains('GROUP', na=False)]
-            grupos_unicos = sorted(df_grupos['Grupo'].unique())
-            for nombre_grupo in grupos_unicos:
-                partidos_g = df_grupos[df_grupos['Grupo'] == nombre_grupo]
-                tabla_pts = {}
-                for _, p in partidos_g.iterrows():
-                    res = predecir_partido_mundial(p['HomeTeam'], p['AwayTeam'])
-                    tabla_pts[p['HomeTeam']] = tabla_pts.get(p['HomeTeam'], 0) + res['Pts_H']
-                    tabla_pts[p['AwayTeam']] = tabla_pts.get(p['AwayTeam'], 0) + res['Pts_A']
-                
-                df_tabla = pd.DataFrame(list(tabla_pts.items()), columns=['Selección', 'Puntos']).sort_values(by='Puntos', ascending=False).reset_index(drop=True)
-                
-                # 🎯 Guardar posiciones con formato limpio (Ej: 1A)
-                letra = nombre_grupo.replace("GROUP", "").strip()
-                if len(df_tabla) >= 1: posiciones_oficiales[f"1{letra}"] = df_tabla.iloc[0]['Selección']
-                if len(df_tabla) >= 2: posiciones_oficiales[f"2{letra}"] = df_tabla.iloc[1]['Selección']
-                st.write(f"**{nombre_grupo}**"); st.dataframe(df_tabla)
-
-        with tab_finales:
-            def get_team(code): return posiciones_oficiales.get(code, "TBA")
-            parejas_r32 = [(get_team("1A"), get_team("2B")), (get_team("1B"), get_team("2A")), (get_team("1C"), get_team("2D")), (get_team("1D"), get_team("2C")), (get_team("1E"), get_team("2F")), (get_team("1F"), get_team("2E")), (get_team("1G"), get_team("2H")), (get_team("1H"), get_team("2G"))]
+        tab_g, tab_f = st.tabs(["📊 Grupos", "⚔️ Ruta a la Copa"])
+        
+        with tab_g:
+            # Forzamos grupos si la DB está mal
+            grupos_keys = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']
+            cols = st.columns(3)
             
-            # Renderizado simple para verificar si los equipos se cargan
-            st.write("Equipos detectados en llave 1:", parejas_r32[0])
-            st.info(f"Si aquí sale 'TBA', el problema es que la fase de grupos no se está calculando.")
+            for i, letra in enumerate(grupos_keys):
+                # Filtramos por grupo
+                df_g = df_fixture_wc[df_fixture_wc['Grupo'].str.contains(letra, na=False)]
+                if df_g.empty: continue
+                
+                tabla = {}
+                res_txt = []
+                for _, p in df_g.iterrows():
+                    res = predecir_partido_mundial(p['HomeTeam'], p['AwayTeam'])
+                    tabla[p['HomeTeam']] = tabla.get(p['HomeTeam'], 0) + res['Pts_H']
+                    tabla[p['AwayTeam']] = tabla.get(p['AwayTeam'], 0) + res['Pts_A']
+                    res_txt.append(f"{p['HomeTeam']} {res['Goles_H']}-{res['Goles_A']} {p['AwayTeam']}")
+                
+                df_t = pd.DataFrame(list(tabla.items()), columns=['Selección', 'Puntos']).sort_values('Puntos', ascending=False).reset_index(drop=True)
+                df_t.index += 1
+                
+                # Guardar para el bracket
+                if len(df_t)>0: posiciones_oficiales[f"1{letra}"] = df_t.iloc[0]['Selección']
+                if len(df_t)>1: posiciones_oficiales[f"2{letra}"] = df_t.iloc[1]['Selección']
+                
+                with cols[i % 3]:
+                    st.write(f"**Grupo {letra}**"); st.dataframe(df_t)
+                    with st.expander("Marcadores"):
+                        for r in res_txt: st.text(r)
+
+        with tab_f:
+            st.write("Generando Bracket basado en:", posiciones_oficiales)
+            # Bracket lógico
+            def get_t(c): return posiciones_oficiales.get(c, "TBA")
+            parejas_r32 = [(get_t("1A"), get_t("2B")), (get_t("1B"), get_t("2A")), (get_t("1C"), get_t("2D")), (get_t("1D"), get_t("2C"))]
+            
+            # Dibujar partidos de forma simple para asegurar que salgan
+            for h, a in parejas_r32:
+                st.write(f"Match: {h} vs {a}")
+                
     except Exception as e:
         st.error(f"Error: {e}")
 conn.close()
