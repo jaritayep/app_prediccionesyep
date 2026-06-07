@@ -120,7 +120,6 @@ if menu == "Análisis del Día":
         # 2. 🎯 MODO INTERNACIONAL (Fallback si no hay clubes)
         if df_jornada.empty:
             df_jornada = pd.read_sql("SELECT * FROM fixture_mundial WHERE HomeTeam != 'TBA' AND AwayTeam != 'TBA'", conn)
-            # Manejo de fechas del fixture del mundial
             df_jornada['Date'] = pd.to_datetime(df_jornada['Date'], errors='coerce').dt.tz_localize(None).dt.normalize()
             df_jornada = df_jornada[df_jornada['Date'] >= hoy]
             es_mundial = True
@@ -145,7 +144,6 @@ if menu == "Análisis del Día":
             # Separar y corregir nombres
             home_raw, away_raw = partido_texto.split(" vs ")
             
-            # 4. Definir base de datos histórica según el modo
             hist_table = "historial_selecciones_ml" if es_mundial else "historial_multiliga_ml"
             equipos_db = pd.read_sql(f"SELECT DISTINCT HomeTeam FROM {hist_table}", conn)['HomeTeam'].tolist()
             
@@ -178,12 +176,10 @@ if menu == "Análisis del Día":
                 st.subheader("IA Predictiva")
                 
                 if es_mundial:
-                    # 🌍 CEREBRO INTERNACIONAL
                     try:
                         modelo_intl = joblib.load('modelo_selecciones_rf.pkl')
                         encoder_intl = joblib.load('encoder_equipos_selecciones.pkl')
                         
-                        # Extraer estadísticas recientes de selecciones
                         df_sh = pd.read_sql(f'SELECT * FROM {hist_table} WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" ORDER BY Date DESC LIMIT 6', conn)
                         df_sa = pd.read_sql(f'SELECT * FROM {hist_table} WHERE HomeTeam="{away_team}" OR AwayTeam="{away_team}" ORDER BY Date DESC LIMIT 6', conn)
                         
@@ -196,12 +192,6 @@ if menu == "Análisis del Día":
                         gf_h, gc_h = seguro_mean(df_sh, 'FTHG', 1.5), seguro_mean(df_sh, 'FTAG', 1.0)
                         gf_a, gc_a = seguro_mean(df_sa, 'FTHG', 1.2), seguro_mean(df_sa, 'FTAG', 1.3)
                         
-                        hy, ay = seguro_mean(df_sh, 'HY', 1.5), seguro_mean(df_sa, 'AY', 1.5)
-                        
-                        stats_h_dict = {'HY': hy}
-                        stats_a_dict = {'AY': ay}
-
-                        # Predicción del modelo
                         if home_team in encoder_intl.classes_ and away_team in encoder_intl.classes_:
                             h_c = encoder_intl.transform([home_team])[0]
                             a_c = encoder_intl.transform([away_team])[0]
@@ -211,18 +201,15 @@ if menu == "Análisis del Día":
                         else:
                             prob_visita, prob_empate, prob_local = 0.33, 0.34, 0.33
 
-                        # Cálculo de Expected Goals (xG)
                         xg_h = (gf_h + gc_a) / 2
                         xg_a = (gf_a + gc_h) / 2
                         promedio_goles = xg_h + xg_a
                         prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
 
-                        # Gráfico de Torta
                         fig_pie = px.pie(values=[prob_local, prob_empate, prob_visita], names=['Local', 'Empate', 'Visita'], color=['Local', 'Empate', 'Visita'], color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'}, hole=0.45)
                         fig_pie.update_layout(dragmode=False, margin=dict(t=0, b=0, l=0, r=0))
                         st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
 
-                        # Métricas de Goles Internacionales
                         c1, c2 = st.columns(2)
                         c1.metric("Goles Exp. (xG Total)", f"{(xg_h + xg_a):.2f}")
                         c2.metric("Prob. Over 2.5", f"{prob_over:.1%}")
@@ -243,7 +230,6 @@ if menu == "Análisis del Día":
                         st.error(f"Error cargando IA de selecciones: {e}")
                         
                 else:
-                    # 🏟️ CEREBRO DE CLUBES (Lógica Original)
                     model = cargar_modelo()
                     if model:
                         stats_h, stats_a = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
@@ -296,26 +282,32 @@ if menu == "Análisis del Día":
                         with cp1: st.write(f"Tiros: **{stats_h['HST']:.1f}** | **{stats_a['AST']:.1f}**")
                         with cp2: st.write(f"Córners: **{stats_h['HC']:.1f}** | **{stats_a['AC']:.1f}**")
 
-            # --- TARJETAS AMBAS VERSIONES ---
+            # --- 🎯 FIX: CONDICIONAL PARA TARJETAS ---
             st.divider()
             st.subheader("🟨 Disciplina y Tarjetas")
-            cd1, cd2 = st.columns(2)
+            
+            if es_mundial:
+                st.info("ℹ️ La base de datos de selecciones no incluye registro de tarjetas. Esta métrica es exclusiva del modelo de clubes.")
+            else:
+                cd1, cd2 = st.columns(2)
+                with cd1:
+                    st.markdown("#### **Media Amarillas**")
+                    m1, m2 = st.columns(2)
+                    m1.metric(f"{home_team[:12]}", f"{stats_h_dict.get('HY', 0):.1f}")
+                    m2.metric(f"{away_team[:12]}", f"{stats_a_dict.get('AY', 0):.1f}")
 
-            with cd1:
-                st.markdown("#### **Media Amarillas**")
-                m1, m2 = st.columns(2)
-                m1.metric(f"{home_team[:12]}", f"{stats_h_dict['HY']:.1f}")
-                m2.metric(f"{away_team[:12]}", f"{stats_a_dict['AY']:.1f}")
-
-            with cd2:
-                q_cards = f'SELECT Date, (HY + AY) as Total FROM {hist_table} WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
-                df_cards = pd.read_sql(q_cards, conn)
-                if not df_cards.empty:
-                    fig_cards = px.bar(df_cards, x='Date', y='Total', color_discrete_sequence=['#f1c40f'])
-                    fig_cards.update_layout(dragmode=False, xaxis={'fixedrange': True}, yaxis={'fixedrange': True})
-                    st.plotly_chart(fig_cards, use_container_width=True, config=CONFIG_FIJA)
-                else:
-                    st.info("Sin datos suficientes de tarjetas para graficar H2H.")
+                with cd2:
+                    q_cards = f'SELECT Date, (HY + AY) as Total FROM {hist_table} WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
+                    try:
+                        df_cards = pd.read_sql(q_cards, conn)
+                        if not df_cards.empty:
+                            fig_cards = px.bar(df_cards, x='Date', y='Total', color_discrete_sequence=['#f1c40f'])
+                            fig_cards.update_layout(dragmode=False, xaxis={'fixedrange': True}, yaxis={'fixedrange': True})
+                            st.plotly_chart(fig_cards, use_container_width=True, config=CONFIG_FIJA)
+                        else:
+                            st.info("Sin datos suficientes de tarjetas para graficar H2H.")
+                    except Exception:
+                        st.info("No se pudieron graficar las tarjetas.")
                     
         else:
             st.info("No hay partidos programados en la base de datos.")
@@ -1020,7 +1012,7 @@ elif menu == "Portafolio de Picks":
                 
             st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
 elif menu == "Mundial 2026":
-    st.title("🏆 Oráculo Mundial 2026")
+    st.title("Simulacion Mundial 2026")
     st.markdown("Proyección oficial basada en formato FIFA 48 selecciones.")
 
     st.markdown("""
