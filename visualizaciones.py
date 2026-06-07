@@ -992,26 +992,113 @@ elif menu == "Mundial 2026":
         df_fixture_wc['_letra'] = df_fixture_wc['Grupo'].str.replace('GROUP_', '', regex=False).str.strip()
 
         # ── Motor de predicción ───────────────────────────────────────────
-        def predecir_wc(h, a):
-            hst, hc, ast, ac = 4.0, 5.0, 3.5, 4.0
+
+        # Diccionario de traducción de nombres de selecciones
+        TRADUCCION_WC = {
+            "Czechia": "Czech Republic", "South Korea": "Korea Republic",
+            "Bosnia-Herzegovina": "Bosnia and Herzegovina", "Cape Verde Islands": "Cape Verde",
+            "Congo DR": "DR Congo", "USA": "United States"
+        }
+
+        # Sistema de Jerarquía ("peso de la camiseta")
+        # Tier 1: Élite Mundial | Tier 2: Potencias | Tier 3: Competitivos | Tier 4: Resto (Default)
+        JERARQUIA_WC = {
+            "Argentina": 1, "France": 1, "Brazil": 1, "England": 1,
+            "Spain": 1, "Germany": 1, "Portugal": 1,
+            "Netherlands": 2, "Italy": 2, "Uruguay": 2, "Colombia": 2,
+            "Belgium": 2, "Croatia": 2,
+            "United States": 3, "Mexico": 3, "Japan": 3, "Morocco": 3,
+            "Senegal": 3, "Switzerland": 3, "Ecuador": 3, "Denmark": 3
+        }
+
+        df_hist_wc = pd.read_sql("SELECT * FROM historial_selecciones_ml", conn)
+
+        def _fuerza_seleccion(equipo):
+            hist = df_hist_wc[df_hist_wc['HomeTeam'] == equipo]
+            if hist.empty:
+                return 4.0, 5.0
+            return hist['HST'].mean(), hist['HC'].mean()
+
+        def predecir_wc(h_raw, a_raw):
+            h = TRADUCCION_WC.get(h_raw, h_raw)
+            a = TRADUCCION_WC.get(a_raw, a_raw)
+
             classes = list(encoder_wc.classes_)
+
+            # 1. Predicción base del modelo (estadística pura)
             if h in classes and a in classes:
+                hst, hc = _fuerza_seleccion(h)
+                ast, ac = _fuerza_seleccion(a)
                 h_c = encoder_wc.transform([h])[0]
                 a_c = encoder_wc.transform([a])[0]
                 X = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]],
                                   columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
                 probs = modelo_wc.predict_proba(X)[0]
                 # sklearn RandomForest ordena clases alfabéticamente: A(way)=0, D(raw)=1, H(ome)=2
-                p_h, p_d, p_a = float(probs[2]), float(probs[1]), float(probs[0])
+                p_a_raw, p_d_raw, p_h_raw = float(probs[0]), float(probs[1]), float(probs[2])
             else:
-                p_h, p_d, p_a = 0.34, 0.32, 0.34
+                p_h_raw, p_d_raw, p_a_raw = 0.33, 0.33, 0.33
 
-            pts_h = 3 if p_h > p_a else (0 if p_a > p_h else 1)
-            pts_a = 3 if p_a > p_h else (0 if p_h > p_a else 1)
-            # Goles estimados proporcionales a probabilidad
-            goles_total = 2.4
-            gh = max(0, round(p_h / (p_h + p_a + 1e-9) * goles_total))
-            ga = max(0, round(p_a / (p_h + p_a + 1e-9) * goles_total))
+            # 2. Ajuste cuantitativo por Jerarquía
+            tier_h = JERARQUIA_WC.get(h, 4)
+            tier_a = JERARQUIA_WC.get(a, 4)
+
+            # Diferencia de niveles: positivo = local es más grande
+            diferencia_niveles = tier_a - tier_h
+
+            # Cada nivel de diferencia aplica un multiplicador del 20%
+            multiplicador_h = max(0.1, 1.0 + (diferencia_niveles * 0.20))
+            multiplicador_a = max(0.1, 1.0 - (diferencia_niveles * 0.20))
+
+            p_h_ajustada = p_h_raw * multiplicador_h
+            p_a_ajustada = p_a_raw * multiplicador_a
+            p_d_ajustada = p_d_raw * 0.9  # Reducimos ligeramente empates cuando hay diferencia de nivel
+
+            # Normalizar para que sumen 1
+            suma_probs = p_h_ajustada + p_a_ajustada + p_d_ajustada
+            p_h = p_h_ajustada / suma_probs
+            p_a = p_a_ajustada / suma_probs
+            p_d = p_d_ajustada / suma_probs
+
+            # 3. Puntos según probabilidades ajustadas
+            if p_h > p_a and p_h > p_d:
+                pts_h, pts_a = 3, 0
+            elif p_a > p_h and p_a > p_d:
+                pts_h, pts_a = 0, 3
+            else:
+                pts_h, pts_a = 1, 1
+
+            # 4. Cálculo de goles (sincronizado con la jerarquía ajustada)
+            hist_h = df_hist_wc[df_hist_wc['HomeTeam'] == h]
+            hist_a = df_hist_wc[df_hist_wc['AwayTeam'] == a]
+
+            gf_h = hist_h['FTHG'].mean() if not hist_h.empty else 1.5
+            gc_h = hist_h['FTAG'].mean() if not hist_h.empty else 1.0
+            gf_a = hist_a['FTAG'].mean() if not hist_a.empty else 1.2
+            gc_a = hist_a['FTHG'].mean() if not hist_a.empty else 1.5
+
+            xg_home = (gf_h + gc_a) / 2
+            xg_away = (gf_a + gc_h) / 2
+
+            # Si un equipo tiene probabilidad aplastante (>60%), potenciamos sus goles
+            if p_h > 0.60:
+                xg_home += 1.0
+                xg_away = max(0, xg_away - 0.5)
+            elif p_a > 0.60:
+                xg_away += 1.0
+                xg_home = max(0, xg_home - 0.5)
+
+            gh = int(round(xg_home))
+            ga = int(round(xg_away))
+
+            # Blindaje final del marcador: que sea coherente con el ganador
+            if pts_h == 3 and gh <= ga:
+                gh = ga + 1
+            elif pts_a == 3 and ga <= gh:
+                ga = gh + 1
+            elif pts_h == 1 and pts_a == 1:
+                gh = ga = max(gh, ga)
+
             return {
                 "Pts_H": pts_h, "Pts_A": pts_a,
                 "GH": gh, "GA": ga,
