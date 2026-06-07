@@ -107,30 +107,48 @@ st.sidebar.markdown("---")
 
 if menu == "Análisis del Día":
     try:
-        # Carga de datos inicial
-        equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
+        # 1. Intentar cargar partidos de clubes
         df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
-
-        # 1. Normalizar fechas y filtrar para mostrar solo HOY y el FUTURO
-        df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
-
-        # Obtenemos la fecha actual
         hoy = pd.Timestamp.now().normalize()
-        df_jornada = df_jornada[df_jornada['Date'] >= hoy]
+        
+        if not df_jornada.empty:
+            df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
+            df_jornada = df_jornada[df_jornada['Date'] >= hoy]
+        
+        es_mundial = False
+        
+        # 2. 🎯 MODO INTERNACIONAL (Fallback si no hay clubes)
+        if df_jornada.empty:
+            df_jornada = pd.read_sql("SELECT * FROM fixture_mundial WHERE HomeTeam != 'TBA' AND AwayTeam != 'TBA'", conn)
+            # Manejo de fechas del fixture del mundial
+            df_jornada['Date'] = pd.to_datetime(df_jornada['Date'], errors='coerce').dt.tz_localize(None).dt.normalize()
+            df_jornada = df_jornada[df_jornada['Date'] >= hoy]
+            es_mundial = True
+            st.info("🌍 **Modo Internacional Automático:** No hay partidos de clubes programados. Mostrando Fixture del Mundial.")
 
         if not df_jornada.empty:
             df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m')
 
-            # 2. Selección de fecha y partido en la sidebar
+            # 3. Selección en la sidebar
             opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
             dia_sel_str = st.sidebar.selectbox("📅 Seleccionar Día:", opciones_fecha)
 
-            # Filtrar partidos del día seleccionado
             partidos_dia = df_jornada[df_jornada['Fecha_Display'] == dia_sel_str]
-            partido_texto = st.sidebar.selectbox("🏟️ Partido:", partidos_dia['Local'] + " vs " + partidos_dia['Visita'])
+            
+            if es_mundial:
+                partidos_list = partidos_dia['HomeTeam'] + " vs " + partidos_dia['AwayTeam']
+            else:
+                partidos_list = partidos_dia['Local'] + " vs " + partidos_dia['Visita']
+                
+            partido_texto = st.sidebar.selectbox("🏟️ Partido:", partidos_list)
 
             # Separar y corregir nombres
             home_raw, away_raw = partido_texto.split(" vs ")
+            
+            # 4. Definir base de datos histórica según el modo
+            hist_table = "historial_selecciones_ml" if es_mundial else "historial_multiliga_ml"
+            equipos_db = pd.read_sql(f"SELECT DISTINCT HomeTeam FROM {hist_table}", conn)['HomeTeam'].tolist()
+            
             home_team = corregir_nombre_equipo(home_raw, equipos_db)
             away_team = corregir_nombre_equipo(away_raw, equipos_db)
 
@@ -142,85 +160,143 @@ if menu == "Análisis del Día":
 
             with col1:
                 st.subheader("📊 Historial H2H")
-                q_h2h = f'SELECT Date, HomeTeam as L, AwayTeam as V, FTHG as [GL], FTAG as [GV], FTR as R FROM historial_multiliga_ml WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
+                q_h2h = f'SELECT Date, HomeTeam as L, AwayTeam as V, FTHG as [GL], FTAG as [GV], FTR as R FROM {hist_table} WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
                 df_h2h = pd.read_sql(q_h2h, conn)
                 if not df_h2h.empty:
                     df_h2h['Date'] = pd.to_datetime(df_h2h['Date']).dt.strftime('%d/%m/%y')
                     st.dataframe(df_h2h, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No existen enfrentamientos directos recientes en la base de datos.")
 
                 st.subheader("📈 Tendencia de Goles")
-                q_trend = f'SELECT FTHG as [Local], FTAG as [Visita] FROM historial_multiliga_ml WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" ORDER BY Date DESC LIMIT 10'
-                st.line_chart(pd.read_sql(q_trend, conn).iloc[::-1])
+                q_trend = f'SELECT FTHG as [Local], FTAG as [Visita] FROM {hist_table} WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" ORDER BY Date DESC LIMIT 10'
+                df_trend = pd.read_sql(q_trend, conn)
+                if not df_trend.empty:
+                    st.line_chart(df_trend.iloc[::-1])
 
             with col2:
                 st.subheader("IA Predictiva")
-                model = cargar_modelo()
-                if model:
-                    stats_h, stats_a = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
+                
+                if es_mundial:
+                    # 🌍 CEREBRO INTERNACIONAL
+                    try:
+                        modelo_intl = joblib.load('modelo_selecciones_rf.pkl')
+                        encoder_intl = joblib.load('encoder_equipos_selecciones.pkl')
+                        
+                        # Extraer estadísticas recientes de selecciones
+                        df_sh = pd.read_sql(f'SELECT * FROM {hist_table} WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" ORDER BY Date DESC LIMIT 6', conn)
+                        df_sa = pd.read_sql(f'SELECT * FROM {hist_table} WHERE HomeTeam="{away_team}" OR AwayTeam="{away_team}" ORDER BY Date DESC LIMIT 6', conn)
+                        
+                        def seguro_mean(df, col, default):
+                            return df[col].mean() if not df.empty and col in df.columns and pd.notna(df[col].mean()) else default
 
-                    # --- NUEVA PREPARACIÓN DE DATOS PARA LA IA (14 Variables) ---
-                    # 1. Extraer xG (Uso .get() para evitar caídas si la DB devuelve nulo)
-                    xg_h = stats_h.get('xG_home', 1.0) 
-                    xg_a = stats_a.get('xG_away', 1.0)
-                    xg_diff = xg_h - xg_a
-                    pts_h = obtener_puntos_temporada(home_team, conn)
-                    pts_a = obtener_puntos_temporada(away_team, conn)
-                    dif_tabla = pts_h - pts_a
-                    descanso_h = obtener_dias_descanso(home_team, conn)
-                    descanso_a = obtener_dias_descanso(away_team, conn)
-                    ventaja_fisica = descanso_h - descanso_a
-                    
-                    # 2. Calcular Eficiencia
-                    eff_h = stats_h['FTHG'] / (xg_h + 0.01)
-                    eff_a = stats_a['FTAG'] / (xg_a + 0.01)
+                        hst, hc = seguro_mean(df_sh, 'HST', 4.0), seguro_mean(df_sh, 'HC', 4.5)
+                        ast, ac = seguro_mean(df_sa, 'AST', 3.5), seguro_mean(df_sa, 'AC', 4.0)
+                        
+                        gf_h, gc_h = seguro_mean(df_sh, 'FTHG', 1.5), seguro_mean(df_sh, 'FTAG', 1.0)
+                        gf_a, gc_a = seguro_mean(df_sa, 'FTHG', 1.2), seguro_mean(df_sa, 'FTAG', 1.3)
+                        
+                        hy, ay = seguro_mean(df_sh, 'HY', 1.5), seguro_mean(df_sa, 'AY', 1.5)
+                        
+                        stats_h_dict = {'HY': hy}
+                        stats_a_dict = {'AY': ay}
 
-                    # 3. Construir el array con el orden EXACTO de las 14 variables
-                    input_data = [[
-                        stats_h['FTHG'], stats_h['FTAG'], 
-                        stats_h['HS'], stats_h['AS'], 
-                        stats_h['HST'], stats_h['AST'], 
-                        stats_h['HC'], stats_h['AC'], 
-                        stats_h['HY'], stats_h['AY'],
-                        xg_h,            # Variable 11 (xG Local)
-                        xg_a,            # Variable 12 (xG Visita)
-                        eff_h,           # Variable 13 (Eficiencia)
-                        xg_diff,         # Variable 14 (Dominio)
-                        dif_tabla,       # Variable 15 (Tabla)
-                        ventaja_fisica   # Variable 16 (Fatiga)
-                    ]]
-                    
-                    # Generar predicción
-                    prob_ia = model.predict_proba(input_data)[0]
+                        # Predicción del modelo
+                        if home_team in encoder_intl.classes_ and away_team in encoder_intl.classes_:
+                            h_c = encoder_intl.transform([home_team])[0]
+                            a_c = encoder_intl.transform([away_team])[0]
+                            X_input = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                            probs = modelo_intl.predict_proba(X_input)[0]
+                            prob_visita, prob_empate, prob_local = probs[0], probs[1], probs[2]
+                        else:
+                            prob_visita, prob_empate, prob_local = 0.33, 0.34, 0.33
 
-                    # Gráfico de Torta (Probabilidades)
-                    fig_pie = px.pie(values=[prob_ia[2], prob_ia[1], prob_ia[0]], names=['Local', 'Empate', 'Visita'], color=['Local', 'Empate', 'Visita'], color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'}, hole=0.45)
-                    fig_pie.update_layout(dragmode=False, margin=dict(t=0, b=0, l=0, r=0))
-                    st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
+                        # Cálculo de Expected Goals (xG)
+                        xg_h = (gf_h + gc_a) / 2
+                        xg_a = (gf_a + gc_h) / 2
+                        promedio_goles = xg_h + xg_a
+                        prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
 
-                    # --- LÓGICA DE PREDICCIÓN DE GOLES ---
-                    pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
-                    pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
-                    promedio_goles = pred_home + pred_away
-                    prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
+                        # Gráfico de Torta
+                        fig_pie = px.pie(values=[prob_local, prob_empate, prob_visita], names=['Local', 'Empate', 'Visita'], color=['Local', 'Empate', 'Visita'], color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'}, hole=0.45)
+                        fig_pie.update_layout(dragmode=False, margin=dict(t=0, b=0, l=0, r=0))
+                        st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
 
-                    # Métricas de Goles Actualizadas
-                    c1, c2 = st.columns(2)
-                    c1.metric("Goles Exp. (xG Total)", f"{(xg_h + xg_a):.2f}")
-                    c2.metric("Prob. Over 2.5", f"{prob_over:.1%}")
-                    st.progress(prob_over)
+                        # Métricas de Goles Internacionales
+                        c1, c2 = st.columns(2)
+                        c1.metric("Goles Exp. (xG Total)", f"{(xg_h + xg_a):.2f}")
+                        c2.metric("Prob. Over 2.5", f"{prob_over:.1%}")
+                        st.progress(prob_over)
 
-                    # Predicción Individual por Equipo
-                    st.markdown("---")
-                    cp_g1, cp_g2 = st.columns(2)
-                    cp_g1.metric(f"Goles {home_team[:10]}", f"{pred_home:.2f}")
-                    cp_g2.metric(f"Goles {away_team[:10]}", f"{pred_away:.2f}")
-                    st.markdown("---")
+                        st.markdown("---")
+                        cp_g1, cp_g2 = st.columns(2)
+                        cp_g1.metric(f"Goles {home_team[:10]}", f"{xg_h:.2f}")
+                        cp_g2.metric(f"Goles {away_team[:10]}", f"{xg_a:.2f}")
+                        st.markdown("---")
 
-                    st.markdown("#### **Tiros y Córners**")
-                    cp1, cp2 = st.columns(2)
-                    with cp1: st.write(f"Tiros: **{stats_h['HST']:.1f}** | **{stats_a['AST']:.1f}**")
-                    with cp2: st.write(f"Córners: **{stats_h['HC']:.1f}** | **{stats_a['AC']:.1f}**")
+                        st.markdown("#### **Tiros y Córners**")
+                        cp1, cp2 = st.columns(2)
+                        with cp1: st.write(f"Tiros: **{hst:.1f}** | **{ast:.1f}**")
+                        with cp2: st.write(f"Córners: **{hc:.1f}** | **{ac:.1f}**")
+                        
+                    except Exception as e:
+                        st.error(f"Error cargando IA de selecciones: {e}")
+                        
+                else:
+                    # 🏟️ CEREBRO DE CLUBES (Lógica Original)
+                    model = cargar_modelo()
+                    if model:
+                        stats_h, stats_a = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
+                        stats_h_dict, stats_a_dict = stats_h, stats_a
 
+                        xg_h = stats_h.get('xG_home', 1.0) 
+                        xg_a = stats_a.get('xG_away', 1.0)
+                        xg_diff = xg_h - xg_a
+                        pts_h = obtener_puntos_temporada(home_team, conn)
+                        pts_a = obtener_puntos_temporada(away_team, conn)
+                        dif_tabla = pts_h - pts_a
+                        descanso_h = obtener_dias_descanso(home_team, conn)
+                        descanso_a = obtener_dias_descanso(away_team, conn)
+                        ventaja_fisica = descanso_h - descanso_a
+                        
+                        eff_h = stats_h['FTHG'] / (xg_h + 0.01)
+                        eff_a = stats_a['FTAG'] / (xg_a + 0.01)
+
+                        input_data = [[
+                            stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], 
+                            stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], 
+                            stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff, 
+                            dif_tabla, ventaja_fisica
+                        ]]
+                        
+                        prob_ia = model.predict_proba(input_data)[0]
+
+                        fig_pie = px.pie(values=[prob_ia[2], prob_ia[1], prob_ia[0]], names=['Local', 'Empate', 'Visita'], color=['Local', 'Empate', 'Visita'], color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'}, hole=0.45)
+                        fig_pie.update_layout(dragmode=False, margin=dict(t=0, b=0, l=0, r=0))
+                        st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
+
+                        pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
+                        pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+                        promedio_goles = pred_home + pred_away
+                        prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
+
+                        c1, c2 = st.columns(2)
+                        c1.metric("Goles Exp. (xG Total)", f"{(xg_h + xg_a):.2f}")
+                        c2.metric("Prob. Over 2.5", f"{prob_over:.1%}")
+                        st.progress(prob_over)
+
+                        st.markdown("---")
+                        cp_g1, cp_g2 = st.columns(2)
+                        cp_g1.metric(f"Goles {home_team[:10]}", f"{pred_home:.2f}")
+                        cp_g2.metric(f"Goles {away_team[:10]}", f"{pred_away:.2f}")
+                        st.markdown("---")
+
+                        st.markdown("#### **Tiros y Córners**")
+                        cp1, cp2 = st.columns(2)
+                        with cp1: st.write(f"Tiros: **{stats_h['HST']:.1f}** | **{stats_a['AST']:.1f}**")
+                        with cp2: st.write(f"Córners: **{stats_h['HC']:.1f}** | **{stats_a['AC']:.1f}**")
+
+            # --- TARJETAS AMBAS VERSIONES ---
             st.divider()
             st.subheader("🟨 Disciplina y Tarjetas")
             cd1, cd2 = st.columns(2)
@@ -228,23 +304,24 @@ if menu == "Análisis del Día":
             with cd1:
                 st.markdown("#### **Media Amarillas**")
                 m1, m2 = st.columns(2)
-                m1.metric(f"{home_team[:12]}", f"{stats_h['HY']:.1f}")
-                m2.metric(f"{away_team[:12]}", f"{stats_a['AY']:.1f}")
+                m1.metric(f"{home_team[:12]}", f"{stats_h_dict['HY']:.1f}")
+                m2.metric(f"{away_team[:12]}", f"{stats_a_dict['AY']:.1f}")
 
             with cd2:
-                q_cards = f'SELECT Date, (HY + AY) as Total FROM historial_multiliga_ml WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
+                q_cards = f'SELECT Date, (HY + AY) as Total FROM {hist_table} WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") ORDER BY Date DESC LIMIT 5'
                 df_cards = pd.read_sql(q_cards, conn)
                 if not df_cards.empty:
                     fig_cards = px.bar(df_cards, x='Date', y='Total', color_discrete_sequence=['#f1c40f'])
                     fig_cards.update_layout(dragmode=False, xaxis={'fixedrange': True}, yaxis={'fixedrange': True})
                     st.plotly_chart(fig_cards, use_container_width=True, config=CONFIG_FIJA)
+                else:
+                    st.info("Sin datos suficientes de tarjetas para graficar H2H.")
                     
         else:
-            st.info("No hay partidos programados para hoy o los próximos días.")
+            st.info("No hay partidos programados en la base de datos.")
 
     except Exception as e:
         st.error(f"Error al cargar dashboard: {e}")
-
 elif menu == "Auditoría (Resultados)":
     st.title("🎯 Auditoría de Precisión (Flexible)")
     st.markdown("Audita las proyecciones de la IA incluyendo márgenes de error (⚠️) para resultados cercanos.")
