@@ -943,7 +943,7 @@ elif menu == "Portafolio de Picks":
                 
             st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
 elif menu == "Mundial 2026":
-    st.title("🏆 Oráculo Mundial 2026")
+    st.title("Simulacion Mundial 2026")
     st.markdown("Proyección oficial basada en formato FIFA 48 selecciones.")
 
     st.markdown("""
@@ -1118,7 +1118,7 @@ elif menu == "Mundial 2026":
                 else:
                     pts_n, val_n = 0.3, 0.05   # Equipo desconocido: valores bajos por defecto
                 conf = 1.0 if equipo in UEFA_ES or equipo in CONMEBOL_ES else 0.0
-                return 0.40 * pts_n + 0.40 * val_n + 0.20 * conf
+                return 0.43 * pts_n + 0.40 * val_n + 0.17 * conf
 
             score_h = _score_seleccion(h)
             score_a = _score_seleccion(a)
