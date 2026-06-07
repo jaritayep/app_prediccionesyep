@@ -946,200 +946,426 @@ elif menu == "Mundial 2026":
     st.title("🏆 Oráculo Mundial 2026")
     st.markdown("Proyección oficial basada en formato FIFA 48 selecciones.")
 
+    st.markdown("""
+    <style>
+    .wc-group-header {
+        font-size: 1rem; font-weight: 700; color: #fff;
+        background: #2c2f3a; padding: 6px 10px;
+        border-radius: 6px 6px 0 0; margin-bottom: 0;
+    }
+    .wc-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-bottom: 2px; }
+    .wc-table th { background: #1a1d26; color: #888; padding: 4px 7px; text-align: left; font-weight: 600; }
+    .wc-table td { padding: 5px 7px; border-bottom: 1px solid #2a2d3a; }
+    .wc-pos1  { background: #0d3320; }
+    .wc-pos2  { background: #0d3320; }
+    .wc-pos3  { background: #1a3310; }
+    .wc-pos4  { background: #1e2129; }
+    .wc-match { font-size: 0.8rem; padding: 3px 0; color: #ccc; border-bottom: 1px solid #2a2d3a; }
+    .wc-match:last-child { border-bottom: none; }
+    .wc-winner { color: #2ecc71; font-weight: 700; }
+    .bracket-round-title {
+        font-size: 0.78rem; font-weight: 700; color: #888;
+        text-transform: uppercase; letter-spacing: 1px;
+        margin: 0 0 8px 0; text-align: center;
+    }
+    .bracket-card {
+        background: #1e2129; border-radius: 8px;
+        border-left: 3px solid #2ecc71;
+        padding: 8px 12px; margin-bottom: 8px;
+    }
+    .bracket-label { font-size: 0.68rem; color: #666; margin-bottom: 3px; }
+    .bracket-score { font-size: 0.92rem; }
+    .bracket-card.final { border-left-color: #f1c40f; }
+    .bracket-card.champion { border-left-color: #f39c12; background: #1a1700; }
+    .champion-name { font-size: 1.3rem; font-weight: 700; color: #f1c40f; text-align: center; margin: 6px 0 2px; }
+    .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+    </style>
+    """, unsafe_allow_html=True)
+
     try:
-        modelo_wc = joblib.load('modelo_selecciones_rf.pkl')
+        modelo_wc  = joblib.load('modelo_selecciones_rf.pkl')
         encoder_wc = joblib.load('encoder_equipos_selecciones.pkl')
-        df_hist_wc = pd.read_sql("SELECT * FROM historial_selecciones_ml", conn)
         df_fixture_wc = pd.read_sql("SELECT * FROM fixture_mundial", conn)
 
-        # Diccionario de posiciones: clave "1A", "2B", etc. → nombre de selección
-        posiciones_oficiales = {}
-        # Diccionario de puntos de terceros: clave = nombre de selección → puntos
-        terceros_puntos = {}
+        # ── Normalizar columna Grupo ──────────────────────────────────────────
+        col_grupo = next(
+            (c for c in df_fixture_wc.columns
+             if c.strip().lower() in ('grupo', 'group', 'stage', 'fase')),
+            None
+        )
+        col_home = next(
+            (c for c in df_fixture_wc.columns
+             if c.strip().lower() in ('hometeam', 'home', 'local', 'home_team')),
+            None
+        )
+        col_away = next(
+            (c for c in df_fixture_wc.columns
+             if c.strip().lower() in ('awayteam', 'away', 'visita', 'away_team')),
+            None
+        )
 
-        # --- MOTOR DE PREDICCIÓN ---
-        def predecir_partido_mundial(h, a):
-            hst, hc = 4.0, 5.0
-            ast, ac = 3.5, 4.0
-            if h in encoder_wc.classes_ and a in encoder_wc.classes_:
-                h_c, a_c = encoder_wc.transform([h])[0], encoder_wc.transform([a])[0]
-                probs = modelo_wc.predict_proba(pd.DataFrame(
-                    [[h_c, a_c, hst, ast, hc, ac]],
-                    columns=['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC']
-                ))[0]
+        if not all([col_grupo, col_home, col_away]):
+            st.error(f"Columnas detectadas en fixture_mundial: {list(df_fixture_wc.columns)}")
+            st.stop()
+
+        df_fixture_wc['_grupo'] = df_fixture_wc[col_grupo].astype(str).str.strip().str.upper()
+        df_fixture_wc['_home']  = df_fixture_wc[col_home].astype(str).str.strip()
+        df_fixture_wc['_away']  = df_fixture_wc[col_away].astype(str).str.strip()
+
+        # ── Motor de predicción ───────────────────────────────────────────────
+        def predecir_wc(h, a):
+            """Devuelve dict con pts, goles y prob de cada equipo."""
+            hst, hc, ast, ac = 4.0, 5.0, 3.5, 4.0
+            classes = list(encoder_wc.classes_)
+            if h in classes and a in classes:
+                h_c = encoder_wc.transform([h])[0]
+                a_c = encoder_wc.transform([a])[0]
+                probs = modelo_wc.predict_proba(
+                    pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]],
+                                 columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                )[0]
+                # orden: A=0, D=1, H=2
                 p_h, p_d, p_a = probs[2], probs[1], probs[0]
-                pts_h, pts_a = (3, 0) if p_h > p_a else (0, 3) if p_a > p_h else (1, 1)
-                return {
-                    "Pts_H": pts_h, "Pts_A": pts_a,
-                    "Ganador": h if p_h > p_a else a,
-                    "Goles_H": int(p_h * 2), "Goles_A": int(p_a * 2),
-                    "p_h": p_h, "p_d": p_d, "p_a": p_a
-                }
-            return {"Pts_H": 1, "Pts_A": 1, "Ganador": "Empate", "Goles_H": 1, "Goles_A": 1, "p_h": 0.33, "p_d": 0.34, "p_a": 0.33}
+            else:
+                p_h, p_d, p_a = 0.34, 0.32, 0.34
+            pts_h, pts_a = (3, 0) if p_h > p_a else ((0, 3) if p_a > p_h else (1, 1))
+            ganador = h if p_h >= p_a else a          # en KO no hay empate → gana el más probable
+            return {
+                "Pts_H": pts_h, "Pts_A": pts_a,
+                "GH": max(0, round(p_h * 2.2)),
+                "GA": max(0, round(p_a * 2.2)),
+                "p_h": p_h, "p_a": p_a,
+                "Ganador": ganador
+            }
 
+        # ═════════════════════════════════════════════════════════════════════
+        #  CALCULAR GRUPOS — se hace ANTES de los tabs para alimentar tab_f
+        # ═════════════════════════════════════════════════════════════════════
+        grupos_keys = ['A','B','C','D','E','F','G','H','I','J','K','L']
+        posiciones   = {}          # "1A" → equipo
+        terceros_all = []          # (pts, goles_favor, grupo_letra, equipo)
+        grupos_data  = {}          # letra → {tabla_df, partidos_list}
+
+        for letra in grupos_keys:
+            df_g = df_fixture_wc[df_fixture_wc['_grupo'] == letra]
+            if df_g.empty:
+                # Fallback: buscar "Grupo A" o "Group A"
+                df_g = df_fixture_wc[df_fixture_wc['_grupo'].str.contains(f'\\b{letra}\\b', regex=True, na=False)]
+            if df_g.empty:
+                continue
+
+            tabla  = {}     # equipo → {pts, gf, gc}
+            partidos = []   # lista de dicts para mostrar
+
+            for _, p in df_g.iterrows():
+                h, a = p['_home'], p['_away']
+                res = predecir_wc(h, a)
+
+                for equipo in [h, a]:
+                    if equipo not in tabla:
+                        tabla[equipo] = {'Pts': 0, 'GF': 0, 'GC': 0, 'PJ': 0}
+
+                tabla[h]['Pts'] += res['Pts_H']
+                tabla[h]['GF']  += res['GH']
+                tabla[h]['GC']  += res['GA']
+                tabla[h]['PJ']  += 1
+                tabla[a]['Pts'] += res['Pts_A']
+                tabla[a]['GF']  += res['GA']
+                tabla[a]['GC']  += res['GH']
+                tabla[a]['PJ']  += 1
+                partidos.append({'H': h, 'A': a, 'GH': res['GH'], 'GA': res['GA'],
+                                 'Ganador': res['Ganador']})
+
+            df_t = pd.DataFrame([
+                {'Selección': eq, 'PJ': v['PJ'], 'Pts': v['Pts'],
+                 'GF': v['GF'], 'GC': v['GC'], 'DG': v['GF'] - v['GC']}
+                for eq, v in tabla.items()
+            ]).sort_values(['Pts', 'DG', 'GF'], ascending=False).reset_index(drop=True)
+
+            # Guardar posiciones 1° y 2°
+            for rank_i, row in df_t.iterrows():
+                posiciones[f"{rank_i+1}{letra}"] = row['Selección']
+            # Guardar 3° para ranking de mejores terceros
+            if len(df_t) >= 3:
+                t = df_t.iloc[2]
+                terceros_all.append((t['Pts'], t['DG'], t['GF'], letra, t['Selección']))
+
+            grupos_data[letra] = {'tabla': df_t, 'partidos': partidos}
+
+        # ── Elegir los 8 mejores terceros ─────────────────────────────────────
+        terceros_all.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+        mejores_terceros_set  = {x[4] for x in terceros_all[:8]}
+        tercero_por_grupo     = {x[3]: x[4] for x in terceros_all}   # letra → equipo 3°
+
+        def get_pos(clave):
+            return posiciones.get(clave, f"({clave})")
+
+        def mejor_3ro_de(grupos_str):
+            """Devuelve el mejor 3° entre los grupos indicados (ej: 'A/B/C')."""
+            candidatos = [g.strip() for g in grupos_str.split('/')]
+            for pts, dg, gf, grp, equipo in terceros_all:
+                if grp in candidatos and equipo in mejores_terceros_set:
+                    return equipo
+            return f"3°({grupos_str})"
+
+        # ═════════════════════════════════════════════════════════════════════
         tab_g, tab_f = st.tabs(["📊 Grupos", "⚔️ Ruta a la Copa"])
+        # ═════════════════════════════════════════════════════════════════════
 
         with tab_g:
-            grupos_keys = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']
-            cols = st.columns(3)
-
-            # CSS para colores de clasificación en las tablas de grupo
-            st.markdown("""
-            <style>
-            .tabla-grupo { border-collapse: collapse; width: 100%; font-size: 0.85rem; margin-bottom: 6px; }
-            .tabla-grupo th { background-color: #2c2f3a; color: #aaa; padding: 5px 8px; text-align: left; }
-            .tabla-grupo td { padding: 5px 8px; border-bottom: 1px solid #2c2f3a; }
-            .pos-1 { background-color: #1a4a2e; }
-            .pos-2 { background-color: #1a4020; }
-            .pos-3-mejor { background-color: #2a4a1a; }
-            .pos-otro { background-color: #1e2129; }
-            </style>
-            """, unsafe_allow_html=True)
-
-            for i, letra in enumerate(grupos_keys):
-                # Filtramos partidos del grupo por la columna Grupo de la DB
-                df_g = df_fixture_wc[df_fixture_wc['Grupo'].str.strip().str.upper() == letra]
-                if df_g.empty:
-                    # Fallback: buscar con contains por si hay texto extra
-                    df_g = df_fixture_wc[df_fixture_wc['Grupo'].str.contains(f'^{letra}$', na=False, case=False, regex=True)]
-                if df_g.empty:
-                    continue
-
-                tabla = {}
-                resultados_grupo = []
-
-                for _, p in df_g.iterrows():
-                    home, away = p['HomeTeam'], p['AwayTeam']
-                    res = predecir_partido_mundial(home, away)
-                    tabla[home] = tabla.get(home, 0) + res['Pts_H']
-                    tabla[away] = tabla.get(away, 0) + res['Pts_A']
-                    resultados_grupo.append((home, away, res['Goles_H'], res['Goles_A']))
-
-                df_t = (
-                    pd.DataFrame(list(tabla.items()), columns=['Selección', 'Pts'])
-                    .sort_values('Pts', ascending=False)
-                    .reset_index(drop=True)
-                )
-
-                # Guardar posiciones para el bracket
-                for rank_idx, row in df_t.iterrows():
-                    key = f"{rank_idx + 1}{letra}"
-                    posiciones_oficiales[key] = row['Selección']
-                    if rank_idx == 2:
-                        terceros_puntos[row['Selección']] = (row['Pts'], letra)
-
-                with cols[i % 3]:
-                    st.markdown(f"**Grupo {letra}**")
-
-                    # Tabla HTML con colores de clasificación
-                    filas_html = ""
-                    for rank_idx, row in df_t.iterrows():
-                        if rank_idx == 0:
-                            css = "pos-1"
-                            badge = "🟢"
-                        elif rank_idx == 1:
-                            css = "pos-2"
-                            badge = "🟢"
-                        elif rank_idx == 2:
-                            css = "pos-3-mejor"
-                            badge = "🟡"
-                        else:
-                            css = "pos-otro"
-                            badge = ""
-                        filas_html += f'<tr class="{css}"><td>{rank_idx+1}</td><td>{badge} {row["Selección"]}</td><td><b>{int(row["Pts"])}</b></td></tr>'
-
-                    st.markdown(f"""
-                    <table class="tabla-grupo">
-                      <thead><tr><th>#</th><th>Selección</th><th>Pts</th></tr></thead>
-                      <tbody>{filas_html}</tbody>
-                    </table>
-                    """, unsafe_allow_html=True)
-
-                    # Resultados simulados debajo de la tabla
-                    with st.expander("📋 Simulación de partidos"):
-                        for home, away, gh, ga in resultados_grupo:
-                            if gh > ga:
-                                linea = f"✅ **{home}** {gh} – {ga} {away}"
-                            elif ga > gh:
-                                linea = f"✅ {home} {gh} – {ga} **{away}**"
-                            else:
-                                linea = f"🤝 {home} {gh} – {ga} {away}"
-                            st.markdown(linea)
-
             # Leyenda
             st.markdown("""
-            <div style="margin-top:12px; font-size:0.8rem; color:#888;">
-            🟢 <b style="color:#2ecc71">Verde oscuro</b> = Clasificado directo (1º y 2º)&nbsp;&nbsp;
-            🟡 <b style="color:#f1c40f">Amarillo</b> = Posible mejor tercero
+            <div style="margin-bottom:14px; font-size:0.8rem; color:#aaa;">
+              <span style="background:#0d3320; padding:2px 8px; border-radius:4px; margin-right:6px;">■ 1° / 2°</span> Clasificado directo &nbsp;
+              <span style="background:#1a3310; padding:2px 8px; border-radius:4px; margin-right:6px;">■ 3°</span> Posible mejor tercero
             </div>
             """, unsafe_allow_html=True)
 
+            for fila_inicio in range(0, len(grupos_keys), 3):
+                lote = grupos_keys[fila_inicio:fila_inicio+3]
+                cols = st.columns(3)
+
+                for col_idx, letra in enumerate(lote):
+                    if letra not in grupos_data:
+                        continue
+                    df_t    = grupos_data[letra]['tabla']
+                    partidos = grupos_data[letra]['partidos']
+
+                    with cols[col_idx]:
+                        # ── Tabla del grupo ──────────────────────────────
+                        filas_html = ""
+                        for rank_i, row in df_t.iterrows():
+                            if rank_i < 2:
+                                css = "wc-pos1"
+                                ico = "🟢"
+                            elif rank_i == 2 and row['Selección'] in mejores_terceros_set:
+                                css = "wc-pos3"
+                                ico = "🟡"
+                            elif rank_i == 2:
+                                css = "wc-pos3"
+                                ico = "⚪"
+                            else:
+                                css = "wc-pos4"
+                                ico = ""
+                            dg_str = f"+{int(row['DG'])}" if row['DG'] > 0 else str(int(row['DG']))
+                            filas_html += (
+                                f'<tr class="{css}">'
+                                f'<td style="color:#888">{rank_i+1}</td>'
+                                f'<td>{ico} {row["Selección"]}</td>'
+                                f'<td style="text-align:center"><b>{int(row["Pts"])}</b></td>'
+                                f'<td style="text-align:center;color:#888">{dg_str}</td>'
+                                f'</tr>'
+                            )
+
+                        st.markdown(
+                            f'<div class="wc-group-header">Grupo {letra}</div>'
+                            f'<table class="wc-table">'
+                            f'<thead><tr>'
+                            f'<th>#</th><th>Selección</th><th style="text-align:center">Pts</th><th style="text-align:center">DG</th>'
+                            f'</tr></thead>'
+                            f'<tbody>{filas_html}</tbody>'
+                            f'</table>',
+                            unsafe_allow_html=True
+                        )
+
+                        # ── Resultados simulados ─────────────────────────
+                        match_html = '<div style="background:#161920;border-radius:0 0 6px 6px;padding:6px 10px;margin-bottom:14px;">'
+                        for m in partidos:
+                            if m['GH'] > m['GA']:
+                                score = f'<span class="wc-winner">{m["H"]} {m["GH"]}</span>–{m["GA"]} {m["A"]}'
+                            elif m['GA'] > m['GH']:
+                                score = f'{m["H"]} {m["GH"]}–<span class="wc-winner">{m["GA"]} {m["A"]}</span>'
+                            else:
+                                score = f'{m["H"]} <span style="color:#f1c40f">{m["GH"]}–{m["GA"]}</span> {m["A"]}'
+                            match_html += f'<div class="wc-match">{score}</div>'
+                        match_html += '</div>'
+                        st.markdown(match_html, unsafe_allow_html=True)
+
+        # ═════════════════════════════════════════════════════════════════════
         with tab_f:
-            def get_t(c):
-                return posiciones_oficiales.get(c, f"({c})")
+        # ═════════════════════════════════════════════════════════════════════
 
-            # Seleccionar los 8 mejores terceros de entre los 12 grupos
-            # (en el Mundial 2026 clasifican los 8 mejores terceros de 12 grupos)
-            terceros_ordenados = sorted(terceros_puntos.items(), key=lambda x: x[1][0], reverse=True)
-            mejores_terceros = [sel for sel, _ in terceros_ordenados[:8]]
-            grupos_con_mejor_tercero = set(info[1] for _, info in terceros_ordenados[:8])
-
-            def get_mejor_tercero(grupos_candidatos_str):
-                """Devuelve el mejor tercero clasificado de entre los grupos candidatos"""
-                grupos_candidatos = [g.strip() for g in grupos_candidatos_str.split('/')]
-                for sel, (pts, grp) in terceros_ordenados:
-                    if grp in grupos_candidatos and sel in mejores_terceros:
-                        return sel
-                return f"Mejor 3º ({grupos_candidatos_str})"
-
-            # Formato oficial de los 32avos de final del Mundial 2026
-            # (16 partidos de ronda de 32)
-            partidos_r32 = [
-                (get_t("2A"),  get_t("2B"),   "2º A vs 2º B"),
-                (get_t("1C"),  get_t("2F"),   "1º C vs 2º F"),
-                (get_t("1E"),  get_mejor_tercero("A/B/C/D/F"), "1º E vs 3º A/B/C/D/F"),
-                (get_t("1F"),  get_t("2C"),   "1º F vs 2º C"),
-                (get_t("2E"),  get_t("2I"),   "2º E vs 2º I"),
-                (get_t("1I"),  get_mejor_tercero("C/D/F/G/H"), "1º I vs 3º C/D/F/G/H"),
-                (get_t("1A"),  get_mejor_tercero("C/E/F/H/I"), "1º A vs 3º C/E/F/H/I"),
-                (get_t("1L"),  get_mejor_tercero("E/H/I/J/K"), "1º L vs 3º E/H/I/J/K"),
-                (get_t("1G"),  get_mejor_tercero("A/E/H/I/J"), "1º G vs 3º A/E/H/I/J"),
-                (get_t("1D"),  get_mejor_tercero("B/E/F/I/J"), "1º D vs 3º B/E/F/I/J"),
-                (get_t("1H"),  get_t("2J"),   "1º H vs 2º J"),
-                (get_t("2K"),  get_t("2L"),   "2º K vs 2º L"),
-                (get_t("1B"),  get_mejor_tercero("E/F/G/I/J"), "1º B vs 3º E/F/G/I/J"),
-                (get_t("2D"),  get_t("2G"),   "2º D vs 2º G"),
-                (get_t("1K"),  get_t("2H"),   "1º K vs 2º H"),
-                (get_t("1J"),  get_t("2E"),   "1º J vs 2º E"),
+            # ── RONDA DE 32 (16 partidos) ─────────────────────────────────
+            # Cruces oficiales FIFA 2026 con los mejores terceros según tabla oficial
+            cruces_r32_def = [
+                ("2A",  "2B",              "2°A vs 2°B"),
+                ("1C",  "2F",              "1°C vs 2°F"),
+                ("1E",  "3_A/B/C/D/F",     "1°E vs 3°(A/B/C/D/F)"),
+                ("1F",  "2C",              "1°F vs 2°C"),
+                ("2E",  "2I",              "2°E vs 2°I"),
+                ("1I",  "3_C/D/F/G/H",     "1°I vs 3°(C/D/F/G/H)"),
+                ("1A",  "3_C/E/F/H/I",     "1°A vs 3°(C/E/F/H/I)"),
+                ("1L",  "3_E/H/I/J/K",     "1°L vs 3°(E/H/I/J/K)"),
+                ("1G",  "3_A/E/H/I/J",     "1°G vs 3°(A/E/H/I/J)"),
+                ("1D",  "3_B/E/F/I/J",     "1°D vs 3°(B/E/F/I/J)"),
+                ("1H",  "2J",              "1°H vs 2°J"),
+                ("2K",  "2L",              "2°K vs 2°L"),
+                ("1B",  "3_E/F/G/I/J",     "1°B vs 3°(E/F/G/I/J)"),
+                ("2D",  "2G",              "2°D vs 2°G"),
+                ("1K",  "2H",              "1°K vs 2°H"),
+                ("1J",  "2E",              "1°J vs 2°E"),
             ]
 
-            st.subheader("⚔️ Ronda de 32 — Octavos de Final")
-            st.markdown("*Cruces basados en el formato oficial FIFA World Cup 2026*")
+            def resolver_equipo(clave):
+                if clave.startswith("3_"):
+                    return mejor_3ro_de(clave[2:])
+                return get_pos(clave)
+
+            def simular_ko(h, a, etiqueta=""):
+                """Simula un partido KO (sin empate). Devuelve dict."""
+                res = predecir_wc(h, a)
+                # Si empate → gana el de mayor prob
+                ganador = h if res['p_h'] >= res['p_a'] else a
+                # En KO ajustar marcador para que no haya empate en la línea
+                gh, ga = res['GH'], res['GA']
+                if gh == ga:
+                    if res['p_h'] >= res['p_a']: gh += 1
+                    else: ga += 1
+                return {'H': h, 'A': a, 'GH': gh, 'GA': ga,
+                        'Ganador': ganador, 'Label': etiqueta}
+
+            def render_partido(m, ronda_css=""):
+                h, a, gh, ga = m['H'], m['A'], m['GH'], m['GA']
+                lbl = m.get('Label', '')
+                if gh > ga:
+                    score_html = (f'<span class="wc-winner">{h}</span> '
+                                  f'<span style="color:#aaa">{gh}–{ga}</span> {a}')
+                elif ga > gh:
+                    score_html = (f'{h} <span style="color:#aaa">{gh}–{ga}</span> '
+                                  f'<span class="wc-winner">{a}</span>')
+                else:
+                    score_html = f'{h} <span style="color:#f1c40f">{gh}–{ga}</span> {a}'
+                return (
+                    f'<div class="bracket-card {ronda_css}">'
+                    f'  <div class="bracket-label">{lbl}</div>'
+                    f'  <div class="bracket-score">{score_html}</div>'
+                    f'</div>'
+                )
+
+            # ── Simular R32 ───────────────────────────────────────────────
+            r32_resultados = []
+            for c_h, c_a, etq in cruces_r32_def:
+                eq_h = resolver_equipo(c_h)
+                eq_a = resolver_equipo(c_a)
+                r32_resultados.append(simular_ko(eq_h, eq_a, etq))
+
+            # Ganadores R32 → R16
+            ganadores_r32 = [m['Ganador'] for m in r32_resultados]
+
+            # ── Simular R16 (8 partidos) ──────────────────────────────────
+            # Cruces por posición del bracket (pareados por bracket)
+            pares_r16 = [
+                (0,  1,  "Partido 1 bracket"),
+                (2,  3,  "Partido 2 bracket"),
+                (4,  5,  "Partido 3 bracket"),
+                (6,  7,  "Partido 4 bracket"),
+                (8,  9,  "Partido 5 bracket"),
+                (10, 11, "Partido 6 bracket"),
+                (12, 13, "Partido 7 bracket"),
+                (14, 15, "Partido 8 bracket"),
+            ]
+            r16_resultados = []
+            for i_h, i_a, etq in pares_r16:
+                h = ganadores_r32[i_h] if i_h < len(ganadores_r32) else "TBD"
+                a = ganadores_r32[i_a] if i_a < len(ganadores_r32) else "TBD"
+                r16_resultados.append(simular_ko(h, a, etq))
+
+            ganadores_r16 = [m['Ganador'] for m in r16_resultados]
+
+            # ── Simular Cuartos (4 partidos) ──────────────────────────────
+            qf_resultados = []
+            for k in range(0, 8, 2):
+                h = ganadores_r16[k]   if k   < len(ganadores_r16) else "TBD"
+                a = ganadores_r16[k+1] if k+1 < len(ganadores_r16) else "TBD"
+                qf_resultados.append(simular_ko(h, a, f"Cuartos {k//2+1}"))
+
+            ganadores_qf = [m['Ganador'] for m in qf_resultados]
+
+            # ── Simular Semis (2 partidos) ────────────────────────────────
+            sf_resultados = [
+                simular_ko(ganadores_qf[0], ganadores_qf[1], "Semifinal 1"),
+                simular_ko(ganadores_qf[2], ganadores_qf[3], "Semifinal 2"),
+            ] if len(ganadores_qf) >= 4 else []
+
+            ganadores_sf   = [m['Ganador'] for m in sf_resultados]
+            perdedores_sf  = [
+                (sf_resultados[0]['A'] if sf_resultados[0]['Ganador'] == sf_resultados[0]['H']
+                 else sf_resultados[0]['H']),
+                (sf_resultados[1]['A'] if sf_resultados[1]['Ganador'] == sf_resultados[1]['H']
+                 else sf_resultados[1]['H']),
+            ] if sf_resultados else []
+
+            # ── 3er puesto y Final ────────────────────────────────────────
+            tercer_puesto = (simular_ko(perdedores_sf[0], perdedores_sf[1], "3° Puesto")
+                             if len(perdedores_sf) == 2 else None)
+            final = (simular_ko(ganadores_sf[0], ganadores_sf[1], "⚽ FINAL")
+                     if len(ganadores_sf) == 2 else None)
+            campeon = final['Ganador'] if final else "—"
+
+            # ══════════════════════════════════════════════════════════════
+            #  RENDER BRACKET
+            # ══════════════════════════════════════════════════════════════
+
+            # ── Campeón arriba ────────────────────────────────────────────
+            if final:
+                st.markdown(
+                    f'<div class="bracket-card champion" style="max-width:360px;margin:0 auto 20px;">'
+                    f'  <div style="text-align:center;color:#888;font-size:0.75rem;">🏆 CAMPEÓN PROYECTADO</div>'
+                    f'  <div class="champion-name">🏆 {campeon}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+                st.markdown("---")
+
+            # ── Final + 3° puesto ─────────────────────────────────────────
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                st.markdown('<p class="bracket-round-title">⚽ Final</p>', unsafe_allow_html=True)
+                if final:
+                    st.markdown(render_partido(final, "final"), unsafe_allow_html=True)
+            with col_f2:
+                st.markdown('<p class="bracket-round-title">🥉 3° Puesto</p>', unsafe_allow_html=True)
+                if tercer_puesto:
+                    st.markdown(render_partido(tercer_puesto), unsafe_allow_html=True)
+
             st.markdown("---")
 
-            cols_r32 = st.columns(2)
-            for idx, (home, away, etiqueta) in enumerate(partidos_r32):
-                res = predecir_partido_mundial(home, away)
-                ganador = home if res['Pts_H'] > res['Pts_A'] else away if res['Pts_A'] > res['Pts_H'] else "Empate"
-                gh, ga = res['Goles_H'], res['Goles_A']
+            # ── Semifinales ───────────────────────────────────────────────
+            st.markdown('<p class="bracket-round-title">Semifinales</p>', unsafe_allow_html=True)
+            cols_sf = st.columns(2)
+            for idx, m in enumerate(sf_resultados):
+                with cols_sf[idx]:
+                    st.markdown(render_partido(m), unsafe_allow_html=True)
 
-                if gh > ga:
-                    score_html = f"<b style='color:#2ecc71'>{home}</b> <span style='color:white'>{gh}–{ga}</span> {away}"
-                elif ga > gh:
-                    score_html = f"{home} <span style='color:white'>{gh}–{ga}</span> <b style='color:#2ecc71'>{away}</b>"
-                else:
-                    score_html = f"{home} <span style='color:#f1c40f'>{gh}–{ga}</span> {away}"
+            st.markdown("---")
 
-                with cols_r32[idx % 2]:
-                    st.markdown(f"""
-                    <div style="background:#1e2129; border-radius:8px; padding:10px 14px; margin-bottom:10px; border-left:4px solid #2ecc71;">
-                      <div style="color:#888; font-size:0.72rem; margin-bottom:4px;">{etiqueta}</div>
-                      <div style="font-size:0.95rem;">{score_html}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+            # ── Cuartos ───────────────────────────────────────────────────
+            st.markdown('<p class="bracket-round-title">Cuartos de Final</p>', unsafe_allow_html=True)
+            cols_qf = st.columns(4)
+            for idx, m in enumerate(qf_resultados):
+                with cols_qf[idx]:
+                    st.markdown(render_partido(m), unsafe_allow_html=True)
+
+            st.markdown("---")
+
+            # ── Ronda de 16 ──────────────────────────────────────────────
+            st.markdown('<p class="bracket-round-title">Ronda de 16</p>', unsafe_allow_html=True)
+            cols_r16 = st.columns(4)
+            for idx, m in enumerate(r16_resultados):
+                with cols_r16[idx % 4]:
+                    st.markdown(render_partido(m), unsafe_allow_html=True)
+
+            st.markdown("---")
+
+            # ── Ronda de 32 ──────────────────────────────────────────────
+            with st.expander("▶ Ver Ronda de 32 (16 partidos)"):
+                cols_r32 = st.columns(4)
+                for idx, m in enumerate(r32_resultados):
+                    with cols_r32[idx % 4]:
+                        st.markdown(render_partido(m), unsafe_allow_html=True)
 
     except Exception as e:
-        st.error(f"Error en el Oráculo Mundial: {e}")
         import traceback
+        st.error(f"Error en Oráculo Mundial: {e}")
         st.code(traceback.format_exc())
 conn.close()
