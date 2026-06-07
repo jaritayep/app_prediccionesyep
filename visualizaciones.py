@@ -943,7 +943,7 @@ elif menu == "Portafolio de Picks":
                 
             st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
 elif menu == "Mundial 2026":
-    st.title("Simulacion Mundial 2026")
+    st.title("🏆 Oráculo Mundial 2026")
     st.markdown("Proyección oficial basada en formato FIFA 48 selecciones.")
 
     st.markdown("""
@@ -1118,7 +1118,7 @@ elif menu == "Mundial 2026":
                 else:
                     pts_n, val_n = 0.3, 0.05   # Equipo desconocido: valores bajos por defecto
                 conf = 1.0 if equipo in UEFA_ES or equipo in CONMEBOL_ES else 0.0
-                return 0.38 * pts_n + 0.45 * val_n + 0.17 * conf
+                return 0.40 * pts_n + 0.40 * val_n + 0.20 * conf
 
             score_h = _score_seleccion(h)
             score_a = _score_seleccion(a)
@@ -1141,15 +1141,7 @@ elif menu == "Mundial 2026":
             p_a = p_a_ajustada / suma_probs
             p_d = p_d_ajustada / suma_probs
 
-            # 3. Puntos según probabilidades ajustadas
-            if p_h > p_a and p_h > p_d:
-                pts_h, pts_a = 3, 0
-            elif p_a > p_h and p_a > p_d:
-                pts_h, pts_a = 0, 3
-            else:
-                pts_h, pts_a = 1, 1
-
-            # 4. Cálculo de goles (sincronizado con la jerarquía ajustada)
+            # 3. Cálculo de goles esperados (base para decidir resultado Y marcador)
             hist_h = df_hist_wc[df_hist_wc['HomeTeam'] == h]
             hist_a = df_hist_wc[df_hist_wc['AwayTeam'] == a]
 
@@ -1169,10 +1161,55 @@ elif menu == "Mundial 2026":
                 xg_away += 1.0
                 xg_home = max(0, xg_home - 0.5)
 
+            # 4. Resultado: el xG diferencial pondera si un empate es creíble.
+            #
+            # La diferencia de goles esperados mide cuánto separa realmente a los equipos.
+            # - Si la diferencia es pequeña (< 0.4): el empate compite con el favorito.
+            # - Si la diferencia es grande (> 0.9): el favorito gana con claridad.
+            # - En el rango intermedio: se pondera suavemente entre ambos extremos.
+            #
+            # Para evitar que el modelo siempre elija el argmax (que ignora p_d),
+            # boost_draw escala p_d según lo reñido que está el xG, y luego
+            # volvemos a normalizar antes de decidir.
+
+            xg_diff = abs(xg_home - xg_away)
+
+            if xg_diff < 0.4:
+                boost_draw = 1.6    # Partido muy igualado: el empate es muy probable
+            elif xg_diff < 0.9:
+                boost_draw = 1.2    # Ligera ventaja: el empate sigue siendo opción real
+            else:
+                boost_draw = 0.8    # Clara ventaja para uno: el empate pierde peso
+
+            p_h_w = p_h
+            p_a_w = p_a
+            p_d_w = p_d * boost_draw
+            total_w = p_h_w + p_a_w + p_d_w
+            p_h_w /= total_w
+            p_a_w /= total_w
+            p_d_w /= total_w
+
+            if p_d_w >= p_h_w and p_d_w >= p_a_w:
+                pts_h, pts_a = 1, 1
+            elif p_h_w >= p_a_w:
+                pts_h, pts_a = 3, 0
+            else:
+                pts_h, pts_a = 0, 3
+
+            # 5. Blindaje del marcador: ajustar xG flotantes antes de redondear
+            if pts_h == 3 and xg_home <= xg_away:
+                xg_home = xg_away + 0.6
+            elif pts_a == 3 and xg_away <= xg_home:
+                xg_away = xg_home + 0.6
+            elif pts_h == 1 and pts_a == 1:
+                avg = (xg_home + xg_away) / 2
+                xg_home = xg_away = avg
+
+            # Redondeamos una sola vez, al final, sobre los valores ya corregidos
             gh = int(round(xg_home))
             ga = int(round(xg_away))
 
-            # Blindaje final del marcador: que sea coherente con el ganador
+            # Garantía residual post-redondeo
             if pts_h == 3 and gh <= ga:
                 gh = ga + 1
             elif pts_a == 3 and ga <= gh:
