@@ -944,16 +944,18 @@ elif menu == "Portafolio de Picks":
             st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
 elif menu == "Mundial 2026":
     st.title("🏆 Oráculo Mundial 2026")
-    st.markdown("Motor predictivo de torneos. Proyecta tablas de posiciones y llaves de eliminación basándose en el **Formato Oficial FIFA de 48 Equipos**.")
+    st.markdown("Motor predictivo de torneos. Proyecta tablas de posiciones y llaves de eliminación.")
 
     try:
         # 1. Cargar el cerebro de selecciones
         modelo_wc = joblib.load('modelo_selecciones_rf.pkl')
         encoder_wc = joblib.load('encoder_equipos_selecciones.pkl')
-        
         df_hist_wc = pd.read_sql("SELECT * FROM historial_selecciones_ml", conn)
         df_fixture_wc = pd.read_sql("SELECT * FROM fixture_mundial", conn)
         
+        # 🎯 FIX: Normalizar los nombres de los grupos de la BD
+        df_fixture_wc['Grupo'] = df_fixture_wc['Grupo'].str.replace('_', ' ').str.replace('GROUP ', 'GROUP ').str.strip()
+
         TRADUCCION = {
             "Czechia": "Czech Republic", "South Korea": "Korea Republic",
             "Bosnia-Herzegovina": "Bosnia and Herzegovina", "Cape Verde Islands": "Cape Verde",
@@ -966,218 +968,61 @@ elif menu == "Mundial 2026":
             "United States": 3, "Mexico": 3, "Japan": 3, "Morocco": 3, "Senegal": 3, "Switzerland": 3, "Ecuador": 3, "Denmark": 3
         }
 
-        # --- 🎯 BLINDAJE EXTREMO: FORZAR SIMULACIÓN SI NO HAY 72 PARTIDOS OFICIALES ---
-        # El mundial 2026 tiene exactamente 72 partidos de fase de grupos. Si tu DB tiene menos, es basura.
-        partidos_grupos_db = df_fixture_wc[df_fixture_wc['Round'].str.contains('Group', case=False, na=False)]
-        
-        if len(partidos_grupos_db) < 72 or df_fixture_wc['HomeTeam'].eq('TBA').all():
-            st.success("⚙️ Modo Simulación Inteligente Activado (48 Selecciones - Formato FIFA)")
-            paises_mock = [
-                "Argentina", "Mexico", "Poland", "Saudi Arabia", "England", "United States", "Iran", "Wales",
-                "France", "Denmark", "Australia", "Tunisia", "Spain", "Germany", "Japan", "Costa Rica",
-                "Belgium", "Croatia", "Morocco", "Canada", "Brazil", "Switzerland", "Serbia", "Cameroon",
-                "Portugal", "Uruguay", "Korea Republic", "Ghana", "Netherlands", "Senegal", "Ecuador", "Qatar",
-                "Italy", "Sweden", "Ukraine", "Turkey", "Colombia", "Peru", "Chile", "Venezuela",
-                "Nigeria", "Egypt", "Algeria", "Ivory Coast", "Paraguay", "Bolivia", "South Africa", "Mali"
-            ]
-            datos_simulados = []
-            for i in range(12):
-                grupo = f"GROUP {chr(65+i)}"
-                eqs = paises_mock[i*4 : (i+1)*4]
-                pairs = [(0,1), (2,3), (0,2), (1,3), (0,3), (1,2)]
-                for h, a in pairs:
-                    datos_simulados.append({'Grupo': grupo, 'Round': 'Group Stage', 'HomeTeam': eqs[h], 'AwayTeam': eqs[a]})
-            df_fixture_wc = pd.DataFrame(datos_simulados)
-
-        # --- MOTOR ESTADÍSTICO PARA SELECCIONES ---
-        def obtener_fuerza_seleccion(equipo):
-            hist = df_hist_wc[df_hist_wc['HomeTeam'] == equipo]
-            if hist.empty: return 4.0, 5.0 
-            return hist['HST'].mean(), hist['HC'].mean()
-
+        # --- MOTOR ESTADÍSTICO ---
         def predecir_partido_mundial(home_raw, away_raw):
             home = TRADUCCION.get(home_raw, home_raw)
             away = TRADUCCION.get(away_raw, away_raw)
-            
             if home not in encoder_wc.classes_ or away not in encoder_wc.classes_:
                 return {"Prob_H": 0.33, "Prob_D": 0.33, "Prob_A": 0.33, "Pts_H": 1, "Pts_A": 1, "Ganador": "Empate", "Goles_H": 1, "Goles_A": 1}
-
-            hst, hc = obtener_fuerza_seleccion(home)
-            ast, ac = obtener_fuerza_seleccion(away)
+            
+            hist_h = df_hist_wc[df_hist_wc['HomeTeam'] == home]
+            hist_a = df_hist_wc[df_hist_wc['HomeTeam'] == away]
+            hst, hc = hist_h['HST'].mean() if not hist_h.empty else 4.0, hist_h['HC'].mean() if not hist_h.empty else 5.0
+            ast, ac = hist_a['AST'].mean() if not hist_a.empty else 3.5, hist_a['AC'].mean() if not hist_a.empty else 4.0
+            
             h_code = encoder_wc.transform([home])[0]
             a_code = encoder_wc.transform([away])[0]
-            
             features = pd.DataFrame([[h_code, a_code, hst, ast, hc, ac]], columns=['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC'])
             probs = modelo_wc.predict_proba(features)[0]
-            p_a_raw, p_d_raw, p_h_raw = probs[0], probs[1], probs[2]
+            p_h, p_d, p_a = probs[2], probs[1], probs[0]
             
+            # Ajuste Jerarquía
             tier_h, tier_a = JERARQUIA.get(home, 4), JERARQUIA.get(away, 4)
-            diferencia = tier_a - tier_h 
+            mult_h = max(0.1, 1.0 + ((tier_a - tier_h) * 0.20))
+            p_h, p_a = p_h * mult_h, p_a * (1/mult_h)
             
-            p_h_ajustada = p_h_raw * max(0.1, 1.0 + (diferencia * 0.20))
-            p_a_ajustada = p_a_raw * max(0.1, 1.0 - (diferencia * 0.20))
-            p_d_ajustada = p_d_raw * 0.9 
-            
-            suma = p_h_ajustada + p_a_ajustada + p_d_ajustada
-            p_h, p_a, p_d = p_h_ajustada/suma, p_a_ajustada/suma, p_d_ajustada/suma
-            
-            if p_h > p_a and p_h > p_d: pts_h, pts_a, winner = 3, 0, home
-            elif p_a > p_h and p_a > p_d: pts_h, pts_a, winner = 0, 3, away
-            else: pts_h, pts_a, winner = 1, 1, "Empate"
-                
-            hist_h = df_hist_wc[df_hist_wc['HomeTeam'] == home]
-            hist_a = df_hist_wc[df_hist_wc['AwayTeam'] == away]
-            
-            gf_h = hist_h['FTHG'].mean() if not hist_h.empty else 1.5
-            gc_h = hist_h['FTAG'].mean() if not hist_h.empty else 1.0
-            gf_a = hist_a['FTAG'].mean() if not hist_a.empty else 1.2
-            gc_a = hist_a['FTHG'].mean() if not hist_a.empty else 1.5
-            
-            xg_home, xg_away = (gf_h + gc_a) / 2, (gf_a + gc_h) / 2
-            
-            if p_h > 0.60: xg_home += 1.0; xg_away = max(0, xg_away - 0.5)
-            elif p_a > 0.60: xg_away += 1.0; xg_home = max(0, xg_home - 0.5)
-            
-            goles_h, goles_a = int(round(xg_home)), int(round(xg_away))
-            
-            if winner == home and goles_h <= goles_a: goles_h = goles_a + 1
-            elif winner == away and goles_a <= goles_h: goles_a = goles_h + 1
-            elif winner == "Empate": goles_h = goles_a = max(goles_h, goles_a)
-                
-            return {"Prob_H": p_h, "Prob_D": p_d, "Prob_A": p_a, "Pts_H": pts_h, "Pts_A": pts_a, "Ganador": winner, "Goles_H": goles_h, "Goles_A": goles_a}
+            pts_h, pts_a, winner = (3,0,home) if p_h>p_a and p_h>p_d else (0,3,away) if p_a>p_h and p_a>p_d else (1,1,"Empate")
+            return {"Prob_H": p_h, "Prob_D": p_d, "Prob_A": p_a, "Pts_H": pts_h, "Pts_A": pts_a, "Ganador": winner, "Goles_H": 1, "Goles_A": 0}
 
         posiciones_oficiales = {}
-        lista_terceros = []
-
-        tab_grupos, tab_finales = st.tabs(["📊 Fase de Grupos", "⚔️ Ruta a la Copa (Bracket Oficial)"])
+        tab_grupos, tab_finales = st.tabs(["📊 Fase de Grupos", "⚔️ Ruta a la Copa"])
 
         with tab_grupos:
-            st.subheader("Predicción de Tablas de Posiciones")
             df_grupos = df_fixture_wc[df_fixture_wc['Grupo'].str.contains('GROUP', na=False)]
-            
-            if df_grupos.empty:
-                st.info("No hay partidos de fase de grupos cargados.")
-            else:
-                grupos_unicos = sorted(df_grupos['Grupo'].unique())
-                datos_grupos = {}
+            grupos_unicos = sorted(df_grupos['Grupo'].unique())
+            for nombre_grupo in grupos_unicos:
+                partidos_g = df_grupos[df_grupos['Grupo'] == nombre_grupo]
+                tabla_pts = {}
+                for _, p in partidos_g.iterrows():
+                    res = predecir_partido_mundial(p['HomeTeam'], p['AwayTeam'])
+                    tabla_pts[p['HomeTeam']] = tabla_pts.get(p['HomeTeam'], 0) + res['Pts_H']
+                    tabla_pts[p['AwayTeam']] = tabla_pts.get(p['AwayTeam'], 0) + res['Pts_A']
                 
-                for nombre_grupo in grupos_unicos:
-                    partidos_g = df_grupos[df_grupos['Grupo'] == nombre_grupo]
-                    tabla_pts = {}
-                    resultados_textos = []
-                    
-                    for _, p in partidos_g.iterrows():
-                        ht, at = p['HomeTeam'], p['AwayTeam']
-                        if ht not in tabla_pts: tabla_pts[ht] = 0
-                        if at not in tabla_pts: tabla_pts[at] = 0
-                        
-                        resultado = predecir_partido_mundial(ht, at)
-                        tabla_pts[ht] += resultado['Pts_H']
-                        tabla_pts[at] += resultado['Pts_A']
-                        
-                        gh, ga = resultado['Goles_H'], resultado['Goles_A']
-                        if resultado['Ganador'] == "Empate":
-                            resultados_textos.append(f"🤝 {ht} **{gh} - {ga}** {at}")
-                        else:
-                            if resultado['Ganador'] == ht: resultados_textos.append(f"✅ **{ht}** {gh} - {ga} {at}")
-                            else: resultados_textos.append(f"✅ {ht} {gh} - {ga} **{at}**")
-                    
-                    df_tabla = pd.DataFrame(list(tabla_pts.items()), columns=['Selección', 'Puntos'])
-                    df_tabla = df_tabla.sort_values(by='Puntos', ascending=False).reset_index(drop=True)
-                    df_tabla.index = df_tabla.index + 1
-                    
-                    datos_grupos[nombre_grupo] = {'tabla': df_tabla, 'resultados': resultados_textos}
-                    
-                    letra = str(nombre_grupo).replace("GROUP ", "").strip()
-                    if len(df_tabla) >= 1: posiciones_oficiales[f"1{letra}"] = df_tabla.iloc[0]['Selección']
-                    if len(df_tabla) >= 2: posiciones_oficiales[f"2{letra}"] = df_tabla.iloc[1]['Selección']
-                    if len(df_tabla) >= 3:
-                        lista_terceros.append({'Code': f"3{letra}", 'Selección': df_tabla.iloc[2]['Selección'], 'Puntos': df_tabla.iloc[2]['Puntos']})
-                        
-                df_terceros = pd.DataFrame(lista_terceros).sort_values(by='Puntos', ascending=False)
-                mejores_terceros = df_terceros.head(8)['Selección'].tolist() if not df_terceros.empty else []
-                    
-                def colorear_clasificados(df):
-                    styles = pd.DataFrame('', index=df.index, columns=df.columns)
-                    if len(df) >= 1: styles.iloc[0, :] = 'background-color: #0b530b; color: white;'
-                    if len(df) >= 2: styles.iloc[1, :] = 'background-color: #0b530b; color: white;'
-                    if len(df) >= 3 and df.iloc[2]['Selección'] in mejores_terceros:
-                        styles.iloc[2, :] = 'background-color: #2e7d32; color: white;'
-                    return styles
+                df_tabla = pd.DataFrame(list(tabla_pts.items()), columns=['Selección', 'Puntos']).sort_values(by='Puntos', ascending=False).reset_index(drop=True)
+                
+                # 🎯 Guardar posiciones con formato limpio (Ej: 1A)
+                letra = nombre_grupo.replace("GROUP", "").strip()
+                if len(df_tabla) >= 1: posiciones_oficiales[f"1{letra}"] = df_tabla.iloc[0]['Selección']
+                if len(df_tabla) >= 2: posiciones_oficiales[f"2{letra}"] = df_tabla.iloc[1]['Selección']
+                st.write(f"**{nombre_grupo}**"); st.dataframe(df_tabla)
 
-                cols_grid = st.columns(3)
-                for idx, nombre_grupo in enumerate(grupos_unicos):
-                    grupo_data = datos_grupos[nombre_grupo]
-                    with cols_grid[idx % 3]:
-                        st.markdown(f"#### {nombre_grupo.upper()}")
-                        st.dataframe(grupo_data['tabla'].style.apply(colorear_clasificados, axis=None), use_container_width=True)
-                        with st.expander("Ver Marcadores Previstos"):
-                            for texto_res in grupo_data['resultados']:
-                                st.markdown(f"- {texto_res}")
-                        st.write("") 
-
-        # --- FASE DE BRACKET DINÁMICO (FORMATO OFICIAL FIFA) ---
         with tab_finales:
-            st.subheader("La Ruta hacia la Copa del Mundo 🏆")
+            def get_team(code): return posiciones_oficiales.get(code, "TBA")
+            parejas_r32 = [(get_team("1A"), get_team("2B")), (get_team("1B"), get_team("2A")), (get_team("1C"), get_team("2D")), (get_team("1D"), get_team("2C")), (get_team("1E"), get_team("2F")), (get_team("1F"), get_team("2E")), (get_team("1G"), get_team("2H")), (get_team("1H"), get_team("2G"))]
             
-            terceros_restantes = mejores_terceros.copy()
-            def get_team(code):
-                if code == "3":
-                    return terceros_restantes.pop(0) if terceros_restantes else "TBA"
-                return posiciones_oficiales.get(code, "TBA")
-
-            parejas_r32 = [
-                (get_team("1E"), get_team("3")), (get_team("1I"), get_team("3")),
-                (get_team("2A"), get_team("2B")), (get_team("1F"), get_team("2C")),
-                (get_team("2K"), get_team("2L")), (get_team("1H"), get_team("2J")),
-                (get_team("1D"), get_team("3")), (get_team("1G"), get_team("3")),
-                (get_team("1C"), get_team("2F")), (get_team("2E"), get_team("2I")),
-                (get_team("1A"), get_team("3")), (get_team("1L"), get_team("3")),
-                (get_team("1J"), get_team("2H")), (get_team("2D"), get_team("2G")),
-                (get_team("1B"), get_team("3")), (get_team("1K"), get_team("3"))
-            ]
-
-            def simular_ronda_bracket(parejas):
-                resultados, ganadores = [], []
-                for home, away in parejas:
-                    if home == "TBA" or away == "TBA":
-                        avanza = home if away == "TBA" else away
-                        ganadores.append(avanza)
-                        resultados.append({'home': home, 'away': away, 'g_h': 0, 'g_a': 0, 'winner': avanza, 'metodo': ''})
-                        continue
-                        
-                    res = predecir_partido_mundial(home, away)
-                    if res['Ganador'] == "Empate":
-                        ganador = home if res['Prob_H'] >= res['Prob_A'] else away
-                        metodo = " (P)" 
-                    else:
-                        ganador = res['Ganador']
-                        metodo = ""
-
-                    ganadores.append(ganador)
-                    resultados.append({'home': home, 'away': away, 'g_h': res['Goles_H'], 'g_a': res['Goles_A'], 'winner': ganador, 'metodo': metodo})
-                return resultados, ganadores
-
-            res_r32, win_r32 = simular_ronda_bracket(parejas_r32)
-            res_r16, win_r16 = simular_ronda_bracket(list(zip(win_r32[::2], win_r32[1::2])))
-            res_qf, win_qf   = simular_ronda_bracket(list(zip(win_r16[::2], win_r16[1::2])))
-            res_sf, win_sf   = simular_ronda_bracket(list(zip(win_qf[::2], win_qf[1::2])))
-            res_final, win_final = simular_ronda_bracket(list(zip(win_sf[::2], win_sf[1::2])))
-            campeon = win_final[0] if win_final else "TBA"
-
-            def generar_columna_html(resultados, fase):
-                html = f'<div class="phase-header">{fase}</div>' if fase else ""
-                for r in resultados:
-                    w_h = "winner" if r['winner'] == r['home'] else ""
-                    w_a = "winner" if r['winner'] == r['away'] else ""
-                    html += f'<div class="match-box"><div class="team {w_h}"><span>{r["home"]}</span> <span class="score">{r["g_h"]}{r["metodo"] if w_h else ""}</span></div><div class="team {w_a}"><span>{r["away"]}</span> <span class="score">{r["g_a"]}{r["metodo"] if w_a else ""}</span></div></div>'
-                return html
-
-            # 🎯 EL HTML ESTÁ COMPRIMIDO PARA EVITAR BUGS DE MARKDOWN
-            bracket_html = f"""<style>.bracket-wrapper {{ display: flex; width: 100%; font-family: sans-serif; background-color: #111; color: white; border-radius: 10px; padding: 10px; overflow-x: auto; justify-content: space-between; }}.half-bracket {{ display: flex; flex: 1; }}.half-bracket.right {{ flex-direction: row-reverse; }}.bracket-col {{ display: flex; flex-direction: column; justify-content: space-around; width: 180px; min-width: 160px; margin: 0 5px; }}.phase-header {{ text-align: center; font-weight: bold; margin-bottom: 10px; color: #4CAF50; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }}.match-box {{ background-color: #222; border: 1px solid #444; border-radius: 6px; padding: 4px; margin: 5px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.4); }}.team {{ display: flex; justify-content: space-between; padding: 3px 5px; font-size: 11px; border-radius: 3px; align-items: center; }}.team.winner {{ font-weight: bold; background-color: rgba(76, 175, 80, 0.2); color: #4CAF50; border-left: 2px solid #4CAF50; }}.score {{ font-weight: bold; color: #eee; font-size: 12px; }}.center-bracket {{ display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 0 20px; min-width: 200px; }}.champion-box {{ background: linear-gradient(45deg, #FFD700, #B8860B); color: black; text-align: center; padding: 15px; border-radius: 8px; font-size: 16px; font-weight: bold; box-shadow: 0 0 15px rgba(255, 215, 0, 0.5); margin-top: 20px; width: 100%; }}</style><div class="bracket-wrapper"><div class="half-bracket left"><div class="bracket-col">{generar_columna_html(res_r32[:8], "16avos")}</div><div class="bracket-col">{generar_columna_html(res_r16[:4], "Octavos")}</div><div class="bracket-col">{generar_columna_html(res_qf[:2], "Cuartos")}</div><div class="bracket-col">{generar_columna_html(res_sf[:1], "Semifinal")}</div></div><div class="center-bracket"><div class="phase-header" style="font-size: 14px; color: gold;">LA GRAN FINAL</div>{generar_columna_html(res_final, "")}<div class="champion-box">🏆 {campeon} 🏆</div></div><div class="half-bracket right"><div class="bracket-col">{generar_columna_html(res_r32[8:], "16avos")}</div><div class="bracket-col">{generar_columna_html(res_r16[4:], "Octavos")}</div><div class="bracket-col">{generar_columna_html(res_qf[2:], "Cuartos")}</div><div class="bracket-col">{generar_columna_html(res_sf[1:], "Semifinal")}</div></div></div>"""
-
-            st.markdown(bracket_html, unsafe_allow_html=True)
-
+            # Renderizado simple para verificar si los equipos se cargan
+            st.write("Equipos detectados en llave 1:", parejas_r32[0])
+            st.info(f"Si aquí sale 'TBA', el problema es que la fase de grupos no se está calculando.")
     except Exception as e:
-        st.error(f"Error cargando el Oráculo del Mundial: {e}")
+        st.error(f"Error: {e}")
 conn.close()
