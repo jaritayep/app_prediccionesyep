@@ -102,7 +102,7 @@ def obtener_dias_descanso(equipo, conn):
 conn = sqlite3.connect(DB_NAME)
 
 st.sidebar.title("⚽ Menú Principal")
-menu = st.sidebar.radio("Ir a:", ["Análisis del Día", "Auditoría (Resultados)", "BetBuilder Simulator", "Portafolio de Picks"])
+menu = st.sidebar.radio("Ir a:", ["Análisis del Día", "Auditoría (Resultados)", "Portafolio de Picks", "Mundial 2026"])
 st.sidebar.markdown("---")
 
 if menu == "Análisis del Día":
@@ -943,7 +943,7 @@ elif menu == "Portafolio de Picks":
                 
             st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
 elif menu == "Mundial 2026":
-    st.title("🏆 Oráculo Mundial 2026")
+    st.title("Prediccion Mundial 2026")
     st.markdown("Motor predictivo de torneos. Proyecta tablas de posiciones en fase de grupos y llaves de eliminación directa usando Machine Learning.")
 
     try:
