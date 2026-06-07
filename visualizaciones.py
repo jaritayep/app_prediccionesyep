@@ -943,55 +943,48 @@ elif menu == "Portafolio de Picks":
                 
             st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
 elif menu == "Mundial 2026":
-    st.title("🏆 Oráculo Mundial 2026")
-    st.markdown("Motor predictivo de torneos. Proyecta tablas de posiciones en fase de grupos y llaves de eliminación directa usando Machine Learning y Ajuste por Jerarquía.")
+    st.title("Simulacion Mundial 2026")
+    st.markdown("Motor predictivo de torneos. Proyecta tablas de posiciones y llaves de eliminación basándose en el **Formato Oficial FIFA de 48 Equipos**.")
 
     try:
         # 1. Cargar el cerebro de selecciones
         modelo_wc = joblib.load('modelo_selecciones_rf.pkl')
         encoder_wc = joblib.load('encoder_equipos_selecciones.pkl')
         
-        # 2. Cargar historial y fixture
         df_hist_wc = pd.read_sql("SELECT * FROM historial_selecciones_ml", conn)
         df_fixture_wc = pd.read_sql("SELECT * FROM fixture_mundial", conn)
         
-        # 3. Diccionario de Traducción 
         TRADUCCION = {
             "Czechia": "Czech Republic", "South Korea": "Korea Republic",
             "Bosnia-Herzegovina": "Bosnia and Herzegovina", "Cape Verde Islands": "Cape Verde",
             "Congo DR": "DR Congo", "USA": "United States"
         }
 
-        # 🎯 NUEVO: SISTEMA DE JERARQUÍA (EL "PESO DE LA CAMISETA")
-        # Tier 1: Élite Mundial | Tier 2: Potencias | Tier 3: Competitivos | Tier 4: Resto (Default)
         JERARQUIA = {
             "Argentina": 1, "France": 1, "Brazil": 1, "England": 1, "Spain": 1, "Germany": 1, "Portugal": 1,
             "Netherlands": 2, "Italy": 2, "Uruguay": 2, "Colombia": 2, "Belgium": 2, "Croatia": 2,
             "United States": 3, "Mexico": 3, "Japan": 3, "Morocco": 3, "Senegal": 3, "Switzerland": 3, "Ecuador": 3, "Denmark": 3
         }
 
-        # --- MODO SIMULACIÓN ---
+        # --- MODO SIMULACIÓN MASIVA (48 Equipos - 12 Grupos) ---
         equipos_validos = df_fixture_wc[(df_fixture_wc['HomeTeam'] != 'TBA') & (df_fixture_wc['AwayTeam'] != 'TBA')]
         if equipos_validos.empty:
-            st.warning("⚠️ La API aún no ha realizado el sorteo oficial del Mundial 2026. Activando **Modo Simulación**.")
-            datos_simulados = [
-                {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Argentina', 'AwayTeam': 'Mexico'},
-                {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Poland', 'AwayTeam': 'Saudi Arabia'},
-                {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Argentina', 'AwayTeam': 'Poland'},
-                {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Mexico', 'AwayTeam': 'Saudi Arabia'},
-                {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Saudi Arabia', 'AwayTeam': 'Argentina'},
-                {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Poland', 'AwayTeam': 'Mexico'},
-                
-                {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'England', 'AwayTeam': 'United States'},
-                {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'Iran', 'AwayTeam': 'Wales'},
-                {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'England', 'AwayTeam': 'Iran'},
-                {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'United States', 'AwayTeam': 'Wales'},
-                {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'Wales', 'AwayTeam': 'England'},
-                {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'United States', 'AwayTeam': 'Iran'},
-                
-                {'Grupo': 'TBA', 'Round': 'Round of 32', 'HomeTeam': 'France', 'AwayTeam': 'Ecuador'},
-                {'Grupo': 'TBA', 'Round': 'Quarter-finals', 'HomeTeam': 'Brazil', 'AwayTeam': 'Spain'}
+            st.warning("⚠️ Sorteo oficial pendiente. Activando **Modo Simulación Completa (48 Equipos)**.")
+            paises_mock = [
+                "Argentina", "Mexico", "Poland", "Saudi Arabia", "England", "United States", "Iran", "Wales",
+                "France", "Denmark", "Australia", "Tunisia", "Spain", "Germany", "Japan", "Costa Rica",
+                "Belgium", "Croatia", "Morocco", "Canada", "Brazil", "Switzerland", "Serbia", "Cameroon",
+                "Portugal", "Uruguay", "Korea Republic", "Ghana", "Netherlands", "Senegal", "Ecuador", "Qatar",
+                "Italy", "Sweden", "Ukraine", "Turkey", "Colombia", "Peru", "Chile", "Venezuela",
+                "Nigeria", "Egypt", "Algeria", "Ivory Coast", "Paraguay", "Bolivia", "South Africa", "Mali"
             ]
+            datos_simulados = []
+            for i in range(12):
+                grupo = f"GROUP {chr(65+i)}"
+                eqs = paises_mock[i*4 : (i+1)*4]
+                pairs = [(0,1), (2,3), (0,2), (1,3), (0,3), (1,2)]
+                for h, a in pairs:
+                    datos_simulados.append({'Grupo': grupo, 'Round': 'Group Stage', 'HomeTeam': eqs[h], 'AwayTeam': eqs[a]})
             df_fixture_wc = pd.DataFrame(datos_simulados)
 
         # --- MOTOR ESTADÍSTICO PARA SELECCIONES ---
@@ -1007,7 +1000,6 @@ elif menu == "Mundial 2026":
             if home not in encoder_wc.classes_ or away not in encoder_wc.classes_:
                 return {"Prob_H": 0.33, "Prob_D": 0.33, "Prob_A": 0.33, "Pts_H": 1, "Pts_A": 1, "Ganador": "Empate", "Goles_H": 1, "Goles_A": 1}
 
-            # 1. Predicción base de la IA (Estadística pura)
             hst, hc = obtener_fuerza_seleccion(home)
             ast, ac = obtener_fuerza_seleccion(away)
             
@@ -1018,33 +1010,26 @@ elif menu == "Mundial 2026":
             probs = modelo_wc.predict_proba(features)[0]
             p_a_raw, p_d_raw, p_h_raw = probs[0], probs[1], probs[2]
             
-            # 2. 🎯 AJUSTE CUANTITATIVO POR JERARQUÍA
-            tier_h = JERARQUIA.get(home, 4) # Si no está en la lista, es nivel 4 (Débil)
+            tier_h = JERARQUIA.get(home, 4)
             tier_a = JERARQUIA.get(away, 4)
-            
-            # Calculamos la diferencia (Ej: Local es Tier 1, Visita es Tier 4. Diferencia = +3 para el Local)
             diferencia_niveles = tier_a - tier_h 
             
-            # Cada nivel de diferencia aplica un multiplicador de 20% a favor del más grande
             multiplicador_h = max(0.1, 1.0 + (diferencia_niveles * 0.20))
             multiplicador_a = max(0.1, 1.0 - (diferencia_niveles * 0.20))
             
             p_h_ajustada = p_h_raw * multiplicador_h
             p_a_ajustada = p_a_raw * multiplicador_a
-            p_d_ajustada = p_d_raw * 0.9 # Reducimos ligeramente los empates cuando hay diferencia de nivel
+            p_d_ajustada = p_d_raw * 0.9 
             
-            # Normalizamos para que vuelvan a sumar 100%
             suma_probs = p_h_ajustada + p_a_ajustada + p_d_ajustada
             p_h = p_h_ajustada / suma_probs
             p_a = p_a_ajustada / suma_probs
             p_d = p_d_ajustada / suma_probs
             
-            # 3. Determinación de Puntos y Ganador
             if p_h > p_a and p_h > p_d: pts_h, pts_a, winner = 3, 0, home
             elif p_a > p_h and p_a > p_d: pts_h, pts_a, winner = 0, 3, away
             else: pts_h, pts_a, winner = 1, 1, "Empate"
                 
-            # 4. Cálculo de Goles (Sincronizado con la nueva jerarquía)
             hist_h = df_hist_wc[df_hist_wc['HomeTeam'] == home]
             hist_a = df_hist_wc[df_hist_wc['AwayTeam'] == away]
             
@@ -1056,27 +1041,26 @@ elif menu == "Mundial 2026":
             xg_home = (gf_h + gc_a) / 2
             xg_away = (gf_a + gc_h) / 2
             
-            # Si el equipo grande tiene una probabilidad aplastante (>60%), forzamos más goles a favor
             if p_h > 0.60: xg_home += 1.0; xg_away = max(0, xg_away - 0.5)
             elif p_a > 0.60: xg_away += 1.0; xg_home = max(0, xg_home - 0.5)
             
             goles_h = int(round(xg_home))
             goles_a = int(round(xg_away))
             
-            # Blindaje Final del marcador
             if winner == home and goles_h <= goles_a: goles_h = goles_a + 1
             elif winner == away and goles_a <= goles_h: goles_a = goles_h + 1
             elif winner == "Empate": goles_h = goles_a = max(goles_h, goles_a)
                 
             return {
-                "Prob_H": p_h, "Prob_D": p_d, "Prob_A": p_a, 
-                "Pts_H": pts_h, "Pts_A": pts_a, 
-                "Ganador": winner,
-                "Goles_H": goles_h, "Goles_A": goles_a
+                "Prob_H": p_h, "Prob_D": p_d, "Prob_A": p_a, "Pts_H": pts_h, "Pts_A": pts_a, 
+                "Ganador": winner, "Goles_H": goles_h, "Goles_A": goles_a
             }
 
-        # --- SEPARACIÓN DE FASES ---
-        tab_grupos, tab_finales = st.tabs(["📊 Fase de Grupos", "⚔️ Fases Finales (Knockout)"])
+        # --- DICCIONARIOS PARA BRACKET OFICIAL ---
+        posiciones_oficiales = {}
+        lista_terceros = []
+
+        tab_grupos, tab_finales = st.tabs(["📊 Fase de Grupos", "⚔️ Ruta a la Copa (Bracket Oficial)"])
 
         with tab_grupos:
             st.subheader("Predicción de Tablas de Posiciones")
@@ -1086,9 +1070,7 @@ elif menu == "Mundial 2026":
                 st.info("No hay partidos de fase de grupos cargados.")
             else:
                 grupos_unicos = sorted(df_grupos['Grupo'].unique())
-                
                 datos_grupos = {}
-                lista_terceros = []
                 
                 for nombre_grupo in grupos_unicos:
                     partidos_g = df_grupos[df_grupos['Grupo'] == nombre_grupo]
@@ -1104,37 +1086,33 @@ elif menu == "Mundial 2026":
                         tabla_pts[ht] += resultado['Pts_H']
                         tabla_pts[at] += resultado['Pts_A']
                         
-                        gh = resultado['Goles_H']
-                        ga = resultado['Goles_A']
-                        
+                        gh, ga = resultado['Goles_H'], resultado['Goles_A']
                         if resultado['Ganador'] == "Empate":
                             resultados_textos.append(f"🤝 {ht} **{gh} - {ga}** {at}")
                         else:
-                            if resultado['Ganador'] == ht:
-                                resultados_textos.append(f"✅ **{ht}** {gh} - {ga} {at}")
-                            else:
-                                resultados_textos.append(f"✅ {ht} {gh} - {ga} **{at}**")
+                            if resultado['Ganador'] == ht: resultados_textos.append(f"✅ **{ht}** {gh} - {ga} {at}")
+                            else: resultados_textos.append(f"✅ {ht} {gh} - {ga} **{at}**")
                     
                     df_tabla = pd.DataFrame(list(tabla_pts.items()), columns=['Selección', 'Puntos'])
                     df_tabla = df_tabla.sort_values(by='Puntos', ascending=False).reset_index(drop=True)
                     df_tabla.index = df_tabla.index + 1
                     
-                    datos_grupos[nombre_grupo] = {
-                        'tabla': df_tabla,
-                        'resultados': resultados_textos
-                    }
+                    datos_grupos[nombre_grupo] = {'tabla': df_tabla, 'resultados': resultados_textos}
                     
+                    # 🎯 ALMACENAR POSICIONES PARA EL BRACKET OFICIAL
+                    letra = nombre_grupo.replace("GROUP ", "")
+                    if len(df_tabla) >= 1: posiciones_oficiales[f"1{letra}"] = df_tabla.iloc[0]['Selección']
+                    if len(df_tabla) >= 2: posiciones_oficiales[f"2{letra}"] = df_tabla.iloc[1]['Selección']
                     if len(df_tabla) >= 3:
                         lista_terceros.append({
+                            'Code': f"3{letra}",
                             'Selección': df_tabla.iloc[2]['Selección'],
                             'Puntos': df_tabla.iloc[2]['Puntos']
                         })
                         
-                df_terceros = pd.DataFrame(lista_terceros)
-                mejores_terceros = []
-                if not df_terceros.empty:
-                    df_terceros = df_terceros.sort_values(by='Puntos', ascending=False)
-                    mejores_terceros = df_terceros.head(8)['Selección'].tolist()
+                # Seleccionar los 8 mejores terceros
+                df_terceros = pd.DataFrame(lista_terceros).sort_values(by='Puntos', ascending=False)
+                mejores_terceros = df_terceros.head(8)['Selección'].tolist() if not df_terceros.empty else []
                     
                 def colorear_clasificados(df):
                     styles = pd.DataFrame('', index=df.index, columns=df.columns)
@@ -1147,49 +1125,132 @@ elif menu == "Mundial 2026":
                 cols_grid = st.columns(3)
                 for idx, nombre_grupo in enumerate(grupos_unicos):
                     grupo_data = datos_grupos[nombre_grupo]
-                    df_render = grupo_data['tabla']
-                    
                     with cols_grid[idx % 3]:
                         st.markdown(f"#### {nombre_grupo.upper()}")
-                        st.dataframe(df_render.style.apply(colorear_clasificados, axis=None), use_container_width=True)
-                        
+                        st.dataframe(grupo_data['tabla'].style.apply(colorear_clasificados, axis=None), use_container_width=True)
                         with st.expander("Ver Marcadores Previstos"):
                             for texto_res in grupo_data['resultados']:
                                 st.markdown(f"- {texto_res}")
                         st.write("") 
 
+        # --- FASE DE BRACKET DINÁMICO (FORMATO OFICIAL FIFA) ---
         with tab_finales:
-            st.subheader("Predicción de Llaves Eliminatorias")
-            df_knockout = df_fixture_wc[~df_fixture_wc['Round'].str.contains('Group', case=False, na=False)]
+            st.subheader("La Ruta hacia la Copa del Mundo 🏆")
             
-            if df_knockout.empty:
-                st.info("Las llaves eliminatorias aún no están definidas.")
-            else:
-                fases_unicas = df_knockout['Round'].unique()
-                
-                for fase in fases_unicas:
-                    st.markdown(f"#### 🏆 {fase}")
-                    partidos_fase = df_knockout[df_knockout['Round'] == fase]
-                    
-                    for _, p in partidos_fase.iterrows():
-                        res = predecir_partido_mundial(p['HomeTeam'], p['AwayTeam'])
-                        
-                        if res['Ganador'] == "Empate":
-                            res['Ganador'] = p['HomeTeam'] if res['Prob_H'] >= res['Prob_A'] else p['AwayTeam']
-                            etiqueta_victoria = "(Por Penales)"
-                        else:
-                            etiqueta_victoria = ""
+            # Función para consumir terceros según el formato FIFA
+            terceros_restantes = mejores_terceros.copy()
+            def get_team(code):
+                if code == "3":
+                    return terceros_restantes.pop(0) if terceros_restantes else "TBA"
+                return posiciones_oficiales.get(code, "TBA")
 
-                        c_match1, c_match2, c_match3 = st.columns([2, 1, 2])
-                        with c_match1:
-                            st.write(f"🏠 **{p['HomeTeam']}** ({res['Prob_H']:.0%})")
-                        with c_match2:
-                            st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold;'>{res['Goles_H']} - {res['Goles_A']}</div>", unsafe_allow_html=True)
-                        with c_match3:
-                            st.write(f"✈️ **{p['AwayTeam']}** ({res['Prob_A']:.0%})")
-                            
-                        st.success(f"**Avanza:** {res['Ganador']} {etiqueta_victoria}")
-                        st.divider()
+            # 🎯 EMPAREJAMIENTOS OFICIALES DE 16AVOS (Basado en la estructura del Mundial 2026)
+            # Índices 0-7: Lado Izquierdo del Cuadro | Índices 8-15: Lado Derecho del Cuadro
+            parejas_r32 = [
+                # --- LLAVE IZQUIERDA ---
+                (get_team("1E"), get_team("3")),    # Match 74
+                (get_team("1I"), get_team("3")),    # Match 77
+                (get_team("2A"), get_team("2B")),   # Match 73
+                (get_team("1F"), get_team("2C")),   # Match 75
+                (get_team("2K"), get_team("2L")),   # Match 83
+                (get_team("1H"), get_team("2J")),   # Match 84
+                (get_team("1D"), get_team("3")),    # Match 81
+                (get_team("1G"), get_team("3")),    # Match 82
+                # --- LLAVE DERECHA ---
+                (get_team("1C"), get_team("2F")),   # Match 76
+                (get_team("2E"), get_team("2I")),   # Match 78
+                (get_team("1A"), get_team("3")),    # Match 79
+                (get_team("1L"), get_team("3")),    # Match 80
+                (get_team("1J"), get_team("2H")),   # Match 86
+                (get_team("2D"), get_team("2G")),   # Match 88
+                (get_team("1B"), get_team("3")),    # Match 85
+                (get_team("1K"), get_team("3"))     # Match 87
+            ]
+
+            def simular_ronda_bracket(parejas):
+                resultados, ganadores = [], []
+                for home, away in parejas:
+                    if home == "TBA" or away == "TBA":
+                        avanza = home if away == "TBA" else away
+                        ganadores.append(avanza)
+                        resultados.append({'home': home, 'away': away, 'g_h': 0, 'g_a': 0, 'winner': avanza, 'metodo': ''})
+                        continue
+                        
+                    res = predecir_partido_mundial(home, away)
+                    if res['Ganador'] == "Empate":
+                        ganador = home if res['Prob_H'] >= res['Prob_A'] else away
+                        metodo = " (P)" # Ganó por penales
+                    else:
+                        ganador = res['Ganador']
+                        metodo = ""
+
+                    ganadores.append(ganador)
+                    resultados.append({
+                        'home': home, 'away': away, 'g_h': res['Goles_H'], 'g_a': res['Goles_A'], 
+                        'winner': ganador, 'metodo': metodo
+                    })
+                return resultados, ganadores
+
+            # Simulamos ronda por ronda
+            res_r32, win_r32 = simular_ronda_bracket(parejas_r32)
+            res_r16, win_r16 = simular_ronda_bracket(list(zip(win_r32[::2], win_r32[1::2])))
+            res_qf, win_qf   = simular_ronda_bracket(list(zip(win_r16[::2], win_r16[1::2])))
+            res_sf, win_sf   = simular_ronda_bracket(list(zip(win_qf[::2], win_qf[1::2])))
+            res_final, win_final = simular_ronda_bracket(list(zip(win_sf[::2], win_sf[1::2])))
+            campeon = win_final[0] if win_final else "TBA"
+
+            # 🎯 GENERADOR DE HTML/CSS CON DISEÑO CONVERGENTE (Izquierda vs Derecha)
+            def generar_columna_html(resultados, fase):
+                html = f'<div class="phase-header">{fase}</div>' if fase else ""
+                for r in resultados:
+                    w_h = "winner" if r['winner'] == r['home'] else ""
+                    w_a = "winner" if r['winner'] == r['away'] else ""
+                    html += f"""
+                    <div class="match-box">
+                        <div class="team {w_h}"><span>{r['home']}</span> <span class="score">{r['g_h']}{r['metodo'] if w_h else ''}</span></div>
+                        <div class="team {w_a}"><span>{r['away']}</span> <span class="score">{r['g_a']}{r['metodo'] if w_a else ''}</span></div>
+                    </div>
+                    """
+                return html
+
+            bracket_html = f"""
+            <style>
+                .bracket-wrapper {{ display: flex; width: 100%; font-family: sans-serif; background-color: #111; color: white; border-radius: 10px; padding: 10px; overflow-x: auto; justify-content: space-between; }}
+                .half-bracket {{ display: flex; flex: 1; }}
+                .half-bracket.right {{ flex-direction: row-reverse; }}
+                .bracket-col {{ display: flex; flex-direction: column; justify-content: space-around; width: 180px; min-width: 160px; margin: 0 5px; }}
+                .phase-header {{ text-align: center; font-weight: bold; margin-bottom: 10px; color: #4CAF50; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }}
+                .match-box {{ background-color: #222; border: 1px solid #444; border-radius: 6px; padding: 4px; margin: 5px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.4); }}
+                .team {{ display: flex; justify-content: space-between; padding: 3px 5px; font-size: 11px; border-radius: 3px; align-items: center; }}
+                .team.winner {{ font-weight: bold; background-color: rgba(76, 175, 80, 0.2); color: #4CAF50; border-left: 2px solid #4CAF50; }}
+                .score {{ font-weight: bold; color: #eee; font-size: 12px; }}
+                .center-bracket {{ display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 0 20px; min-width: 200px; }}
+                .champion-box {{ background: linear-gradient(45deg, #FFD700, #B8860B); color: black; text-align: center; padding: 15px; border-radius: 8px; font-size: 16px; font-weight: bold; box-shadow: 0 0 15px rgba(255, 215, 0, 0.5); margin-top: 20px; width: 100%; }}
+            </style>
+            
+            <div class="bracket-wrapper">
+                <div class="half-bracket left">
+                    <div class="bracket-col">{generar_columna_html(res_r32[:8], "16avos")}</div>
+                    <div class="bracket-col">{generar_columna_html(res_r16[:4], "Octavos")}</div>
+                    <div class="bracket-col">{generar_columna_html(res_qf[:2], "Cuartos")}</div>
+                    <div class="bracket-col">{generar_columna_html(res_sf[:1], "Semifinal")}</div>
+                </div>
+                
+                <div class="center-bracket">
+                    <div class="phase-header" style="font-size: 14px; color: gold;">LA GRAN FINAL</div>
+                    {generar_columna_html(res_final, "")}
+                    <div class="champion-box">🏆 {campeon} 🏆</div>
+                </div>
+                
+                <div class="half-bracket right">
+                    <div class="bracket-col">{generar_columna_html(res_r32[8:], "16avos")}</div>
+                    <div class="bracket-col">{generar_columna_html(res_r16[4:], "Octavos")}</div>
+                    <div class="bracket-col">{generar_columna_html(res_qf[2:], "Cuartos")}</div>
+                    <div class="bracket-col">{generar_columna_html(res_sf[1:], "Semifinal")}</div>
+                </div>
+            </div>
+            """
+            st.markdown(bracket_html, unsafe_allow_html=True)
 
     except Exception as e:
         st.error(f"Error cargando el Oráculo del Mundial: {e}")
