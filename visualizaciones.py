@@ -944,7 +944,7 @@ elif menu == "Portafolio de Picks":
             st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
 elif menu == "Mundial 2026":
     st.title("🏆 Oráculo Mundial 2026")
-    st.markdown("Motor predictivo de torneos. Proyecta tablas de posiciones en fase de grupos y llaves de eliminación directa usando Machine Learning.")
+    st.markdown("Motor predictivo de torneos. Proyecta tablas de posiciones en fase de grupos y llaves de eliminación directa usando Machine Learning y Ajuste por Jerarquía.")
 
     try:
         # 1. Cargar el cerebro de selecciones
@@ -955,14 +955,22 @@ elif menu == "Mundial 2026":
         df_hist_wc = pd.read_sql("SELECT * FROM historial_selecciones_ml", conn)
         df_fixture_wc = pd.read_sql("SELECT * FROM fixture_mundial", conn)
         
-        # 3. Diccionario de Traducción (Normalización de nombres API vs DB)
+        # 3. Diccionario de Traducción 
         TRADUCCION = {
             "Czechia": "Czech Republic", "South Korea": "Korea Republic",
             "Bosnia-Herzegovina": "Bosnia and Herzegovina", "Cape Verde Islands": "Cape Verde",
             "Congo DR": "DR Congo", "USA": "United States"
         }
 
-        # --- MODO SIMULACIÓN (Si el fixture oficial aún dice TBA) ---
+        # 🎯 NUEVO: SISTEMA DE JERARQUÍA (EL "PESO DE LA CAMISETA")
+        # Tier 1: Élite Mundial | Tier 2: Potencias | Tier 3: Competitivos | Tier 4: Resto (Default)
+        JERARQUIA = {
+            "Argentina": 1, "France": 1, "Brazil": 1, "England": 1, "Spain": 1, "Germany": 1, "Portugal": 1,
+            "Netherlands": 2, "Italy": 2, "Uruguay": 2, "Colombia": 2, "Belgium": 2, "Croatia": 2,
+            "United States": 3, "Mexico": 3, "Japan": 3, "Morocco": 3, "Senegal": 3, "Switzerland": 3, "Ecuador": 3, "Denmark": 3
+        }
+
+        # --- MODO SIMULACIÓN ---
         equipos_validos = df_fixture_wc[(df_fixture_wc['HomeTeam'] != 'TBA') & (df_fixture_wc['AwayTeam'] != 'TBA')]
         if equipos_validos.empty:
             st.warning("⚠️ La API aún no ha realizado el sorteo oficial del Mundial 2026. Activando **Modo Simulación**.")
@@ -974,14 +982,13 @@ elif menu == "Mundial 2026":
                 {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Saudi Arabia', 'AwayTeam': 'Argentina'},
                 {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Poland', 'AwayTeam': 'Mexico'},
                 
-                {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'England', 'AwayTeam': 'USA'},
+                {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'England', 'AwayTeam': 'United States'},
                 {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'Iran', 'AwayTeam': 'Wales'},
                 {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'England', 'AwayTeam': 'Iran'},
-                {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'USA', 'AwayTeam': 'Wales'},
+                {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'United States', 'AwayTeam': 'Wales'},
                 {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'Wales', 'AwayTeam': 'England'},
-                {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'USA', 'AwayTeam': 'Iran'},
+                {'Grupo': 'GROUP B', 'Round': 'Group Stage', 'HomeTeam': 'United States', 'AwayTeam': 'Iran'},
                 
-                # Simulación Fases Finales
                 {'Grupo': 'TBA', 'Round': 'Round of 32', 'HomeTeam': 'France', 'AwayTeam': 'Ecuador'},
                 {'Grupo': 'TBA', 'Round': 'Quarter-finals', 'HomeTeam': 'Brazil', 'AwayTeam': 'Spain'}
             ]
@@ -990,7 +997,7 @@ elif menu == "Mundial 2026":
         # --- MOTOR ESTADÍSTICO PARA SELECCIONES ---
         def obtener_fuerza_seleccion(equipo):
             hist = df_hist_wc[df_hist_wc['HomeTeam'] == equipo]
-            if hist.empty: return 4.0, 5.0 # Valores por defecto si no hay data
+            if hist.empty: return 4.0, 5.0 
             return hist['HST'].mean(), hist['HC'].mean()
 
         def predecir_partido_mundial(home_raw, away_raw):
@@ -998,8 +1005,9 @@ elif menu == "Mundial 2026":
             away = TRADUCCION.get(away_raw, away_raw)
             
             if home not in encoder_wc.classes_ or away not in encoder_wc.classes_:
-                return {"Prob_H": 0.33, "Prob_D": 0.33, "Prob_A": 0.33, "Pts_H": 1, "Pts_A": 1, "Ganador": "Empate"}
+                return {"Prob_H": 0.33, "Prob_D": 0.33, "Prob_A": 0.33, "Pts_H": 1, "Pts_A": 1, "Ganador": "Empate", "Goles_H": 1, "Goles_A": 1}
 
+            # 1. Predicción base de la IA (Estadística pura)
             hst, hc = obtener_fuerza_seleccion(home)
             ast, ac = obtener_fuerza_seleccion(away)
             
@@ -1008,14 +1016,64 @@ elif menu == "Mundial 2026":
             
             features = pd.DataFrame([[h_code, a_code, hst, ast, hc, ac]], columns=['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC'])
             probs = modelo_wc.predict_proba(features)[0]
+            p_a_raw, p_d_raw, p_h_raw = probs[0], probs[1], probs[2]
             
-            p_a, p_d, p_h = probs[0], probs[1], probs[2]
+            # 2. 🎯 AJUSTE CUANTITATIVO POR JERARQUÍA
+            tier_h = JERARQUIA.get(home, 4) # Si no está en la lista, es nivel 4 (Débil)
+            tier_a = JERARQUIA.get(away, 4)
             
+            # Calculamos la diferencia (Ej: Local es Tier 1, Visita es Tier 4. Diferencia = +3 para el Local)
+            diferencia_niveles = tier_a - tier_h 
+            
+            # Cada nivel de diferencia aplica un multiplicador de 20% a favor del más grande
+            multiplicador_h = max(0.1, 1.0 + (diferencia_niveles * 0.20))
+            multiplicador_a = max(0.1, 1.0 - (diferencia_niveles * 0.20))
+            
+            p_h_ajustada = p_h_raw * multiplicador_h
+            p_a_ajustada = p_a_raw * multiplicador_a
+            p_d_ajustada = p_d_raw * 0.9 # Reducimos ligeramente los empates cuando hay diferencia de nivel
+            
+            # Normalizamos para que vuelvan a sumar 100%
+            suma_probs = p_h_ajustada + p_a_ajustada + p_d_ajustada
+            p_h = p_h_ajustada / suma_probs
+            p_a = p_a_ajustada / suma_probs
+            p_d = p_d_ajustada / suma_probs
+            
+            # 3. Determinación de Puntos y Ganador
             if p_h > p_a and p_h > p_d: pts_h, pts_a, winner = 3, 0, home
             elif p_a > p_h and p_a > p_d: pts_h, pts_a, winner = 0, 3, away
             else: pts_h, pts_a, winner = 1, 1, "Empate"
                 
-            return {"Prob_H": p_h, "Prob_D": p_d, "Prob_A": p_a, "Pts_H": pts_h, "Pts_A": pts_a, "Ganador": winner}
+            # 4. Cálculo de Goles (Sincronizado con la nueva jerarquía)
+            hist_h = df_hist_wc[df_hist_wc['HomeTeam'] == home]
+            hist_a = df_hist_wc[df_hist_wc['AwayTeam'] == away]
+            
+            gf_h = hist_h['FTHG'].mean() if not hist_h.empty else 1.5
+            gc_h = hist_h['FTAG'].mean() if not hist_h.empty else 1.0
+            gf_a = hist_a['FTAG'].mean() if not hist_a.empty else 1.2
+            gc_a = hist_a['FTHG'].mean() if not hist_a.empty else 1.5
+            
+            xg_home = (gf_h + gc_a) / 2
+            xg_away = (gf_a + gc_h) / 2
+            
+            # Si el equipo grande tiene una probabilidad aplastante (>60%), forzamos más goles a favor
+            if p_h > 0.60: xg_home += 1.0; xg_away = max(0, xg_away - 0.5)
+            elif p_a > 0.60: xg_away += 1.0; xg_home = max(0, xg_home - 0.5)
+            
+            goles_h = int(round(xg_home))
+            goles_a = int(round(xg_away))
+            
+            # Blindaje Final del marcador
+            if winner == home and goles_h <= goles_a: goles_h = goles_a + 1
+            elif winner == away and goles_a <= goles_h: goles_a = goles_h + 1
+            elif winner == "Empate": goles_h = goles_a = max(goles_h, goles_a)
+                
+            return {
+                "Prob_H": p_h, "Prob_D": p_d, "Prob_A": p_a, 
+                "Pts_H": pts_h, "Pts_A": pts_a, 
+                "Ganador": winner,
+                "Goles_H": goles_h, "Goles_A": goles_a
+            }
 
         # --- SEPARACIÓN DE FASES ---
         tab_grupos, tab_finales = st.tabs(["📊 Fase de Grupos", "⚔️ Fases Finales (Knockout)"])
@@ -1029,7 +1087,6 @@ elif menu == "Mundial 2026":
             else:
                 grupos_unicos = sorted(df_grupos['Grupo'].unique())
                 
-                # 1. Pre-calcular todos los grupos en memoria primero
                 datos_grupos = {}
                 lista_terceros = []
                 
@@ -1047,48 +1104,46 @@ elif menu == "Mundial 2026":
                         tabla_pts[ht] += resultado['Pts_H']
                         tabla_pts[at] += resultado['Pts_A']
                         
-                        # Guardar la narrativa del partido
+                        gh = resultado['Goles_H']
+                        ga = resultado['Goles_A']
+                        
                         if resultado['Ganador'] == "Empate":
-                            resultados_textos.append(f"🤝 Empate: {ht} - {at}")
+                            resultados_textos.append(f"🤝 {ht} **{gh} - {ga}** {at}")
                         else:
-                            perdedor = at if resultado['Ganador'] == ht else ht
-                            resultados_textos.append(f"✅ **{resultado['Ganador']}** vence a {perdedor}")
+                            if resultado['Ganador'] == ht:
+                                resultados_textos.append(f"✅ **{ht}** {gh} - {ga} {at}")
+                            else:
+                                resultados_textos.append(f"✅ {ht} {gh} - {ga} **{at}**")
                     
                     df_tabla = pd.DataFrame(list(tabla_pts.items()), columns=['Selección', 'Puntos'])
                     df_tabla = df_tabla.sort_values(by='Puntos', ascending=False).reset_index(drop=True)
-                    df_tabla.index = df_tabla.index + 1 # Índice desde 1
+                    df_tabla.index = df_tabla.index + 1
                     
                     datos_grupos[nombre_grupo] = {
                         'tabla': df_tabla,
                         'resultados': resultados_textos
                     }
                     
-                    # Extraer al 3er lugar para comparar
                     if len(df_tabla) >= 3:
                         lista_terceros.append({
                             'Selección': df_tabla.iloc[2]['Selección'],
                             'Puntos': df_tabla.iloc[2]['Puntos']
                         })
                         
-                # 2. Identificar a los 8 mejores terceros
                 df_terceros = pd.DataFrame(lista_terceros)
                 mejores_terceros = []
                 if not df_terceros.empty:
                     df_terceros = df_terceros.sort_values(by='Puntos', ascending=False)
                     mejores_terceros = df_terceros.head(8)['Selección'].tolist()
                     
-                # Función de coloreado para Pandas Styling
                 def colorear_clasificados(df):
                     styles = pd.DataFrame('', index=df.index, columns=df.columns)
-                    # 1ro y 2do en Verde Oscuro
                     if len(df) >= 1: styles.iloc[0, :] = 'background-color: #0b530b; color: white;'
                     if len(df) >= 2: styles.iloc[1, :] = 'background-color: #0b530b; color: white;'
-                    # 3ro en Verde Claro SOLO si está en la lista de los mejores 8
                     if len(df) >= 3 and df.iloc[2]['Selección'] in mejores_terceros:
-                        styles.iloc[2, :] = 'background-color: #2e7d32; color: white;' # Verde medio-claro legible
+                        styles.iloc[2, :] = 'background-color: #2e7d32; color: white;'
                     return styles
 
-                # 3. Renderizar las tablas finales con color y predicciones
                 cols_grid = st.columns(3)
                 for idx, nombre_grupo in enumerate(grupos_unicos):
                     grupo_data = datos_grupos[nombre_grupo]
@@ -1098,11 +1153,10 @@ elif menu == "Mundial 2026":
                         st.markdown(f"#### {nombre_grupo.upper()}")
                         st.dataframe(df_render.style.apply(colorear_clasificados, axis=None), use_container_width=True)
                         
-                        # Acordeón con los resultados
-                        with st.expander("Ver resultados previstos"):
+                        with st.expander("Ver Marcadores Previstos"):
                             for texto_res in grupo_data['resultados']:
                                 st.markdown(f"- {texto_res}")
-                        st.write("") # Margen inferior
+                        st.write("") 
 
         with tab_finales:
             st.subheader("Predicción de Llaves Eliminatorias")
@@ -1122,7 +1176,7 @@ elif menu == "Mundial 2026":
                         
                         if res['Ganador'] == "Empate":
                             res['Ganador'] = p['HomeTeam'] if res['Prob_H'] >= res['Prob_A'] else p['AwayTeam']
-                            etiqueta_victoria = "(Por Penales/Prórroga)"
+                            etiqueta_victoria = "(Por Penales)"
                         else:
                             etiqueta_victoria = ""
 
@@ -1130,7 +1184,7 @@ elif menu == "Mundial 2026":
                         with c_match1:
                             st.write(f"🏠 **{p['HomeTeam']}** ({res['Prob_H']:.0%})")
                         with c_match2:
-                            st.markdown(f"<div style='text-align: center; color: #888;'>VS</div>", unsafe_allow_html=True)
+                            st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold;'>{res['Goles_H']} - {res['Goles_A']}</div>", unsafe_allow_html=True)
                         with c_match3:
                             st.write(f"✈️ **{p['AwayTeam']}** ({res['Prob_A']:.0%})")
                             
