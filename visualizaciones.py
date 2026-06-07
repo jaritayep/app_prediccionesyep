@@ -1038,22 +1038,40 @@ elif menu == "Mundial 2026":
             else:
                 p_h_raw, p_d_raw, p_a_raw = 0.33, 0.33, 0.33
 
-            # 2. Ajuste cuantitativo por Ranking FIFA
+            # 2. Ajuste cuantitativo por Ranking FIFA + bono de confederación
             # Ranking más bajo = mejor equipo (ej: 1 es el mejor)
             rank_h = RANKING_FIFA_WC.get(h, 50)
             rank_a = RANKING_FIFA_WC.get(a, 50)
 
-            # Diferencia de rankings: positivo = local tiene peor ranking (rival más fuerte)
-            diferencia_ranking = rank_h - rank_a
+            # Bono de confederación: UEFA y CONMEBOL históricamente dominan los mundiales.
+            # Se aplica un bono aditivo al ranking efectivo (rank más bajo = más fuerte).
+            UEFA = {
+                "France", "Spain", "England", "Germany", "Portugal", "Netherlands",
+                "Italy", "Belgium", "Croatia", "Switzerland", "Denmark", "Austria",
+                "Poland", "Serbia", "Ukraine", "Czech Republic", "Hungary", "Slovakia",
+                "Romania", "Turkey", "Scotland", "Wales", "Greece", "Slovenia",
+                "Albania", "Georgia", "Norway", "Sweden", "Finland", "Bosnia and Herzegovina"
+            }
+            CONMEBOL = {
+                "Argentina", "Brazil", "Uruguay", "Colombia", "Chile",
+                "Ecuador", "Peru", "Paraguay", "Venezuela", "Bolivia"
+            }
+            BONO_CONFEDERACION = 8  # Equivale a escalar 8 puestos en el ranking
 
-            # Normalizamos la diferencia: cada 10 puestos de diferencia equivalen a un ~10% de ajuste
-            ajuste = min(abs(diferencia_ranking) / 10, 2.0) * 0.10
+            rank_h_eff = rank_h - (BONO_CONFEDERACION if h in UEFA or h in CONMEBOL else 0)
+            rank_a_eff = rank_a - (BONO_CONFEDERACION if a in UEFA or a in CONMEBOL else 0)
+
+            # Diferencia de rankings efectivos: positivo = local es más débil
+            diferencia_ranking = rank_h_eff - rank_a_eff
+
+            # Curva de ajuste más agresiva: cada 10 puestos → 15% de ajuste, techo en 60%
+            ajuste = min(abs(diferencia_ranking) / 10, 4.0) * 0.15
             if diferencia_ranking > 0:
-                # El equipo local tiene peor ranking → favorecemos al visitante
+                # El equipo local es más débil → favorecemos al visitante
                 multiplicador_h = max(0.1, 1.0 - ajuste)
                 multiplicador_a = max(0.1, 1.0 + ajuste)
             else:
-                # El equipo local tiene mejor ranking → lo favorecemos
+                # El equipo local es más fuerte → lo favorecemos
                 multiplicador_h = max(0.1, 1.0 + ajuste)
                 multiplicador_a = max(0.1, 1.0 - ajuste)
 
