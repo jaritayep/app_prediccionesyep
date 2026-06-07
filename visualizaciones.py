@@ -1099,6 +1099,147 @@ elif menu == "Portafolio de Picks":
                 return ''
                 
             st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
+elif menu == "Mundial 2026":
+    st.title("🏆 Oráculo Mundial 2026")
+    st.markdown("Motor predictivo de torneos. Proyecta tablas de posiciones en fase de grupos y llaves de eliminación directa usando Machine Learning.")
 
+    try:
+        # 1. Cargar el cerebro de selecciones
+        modelo_wc = joblib.load('modelo_selecciones_rf.pkl')
+        encoder_wc = joblib.load('encoder_equipos_selecciones.pkl')
+        
+        # 2. Cargar historial y fixture
+        df_hist_wc = pd.read_sql("SELECT * FROM historial_selecciones_ml", conn)
+        df_fixture_wc = pd.read_sql("SELECT * FROM fixture_mundial", conn)
+        
+        # 3. Diccionario de Traducción (Normalización de nombres API vs DB)
+        TRADUCCION = {
+            "Czechia": "Czech Republic", "South Korea": "Korea Republic",
+            "Bosnia-Herzegovina": "Bosnia and Herzegovina", "Cape Verde Islands": "Cape Verde",
+            "Congo DR": "DR Congo", "USA": "United States"
+        }
+
+        # --- MODO SIMULACIÓN (Si el fixture oficial aún dice TBA) ---
+        equipos_validos = df_fixture_wc[(df_fixture_wc['HomeTeam'] != 'TBA') & (df_fixture_wc['AwayTeam'] != 'TBA')]
+        if equipos_validos.empty:
+            st.warning("⚠️ La API aún no ha realizado el sorteo oficial del Mundial 2026. Activando **Modo Simulación** con un grupo de prueba.")
+            datos_simulados = [
+                {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Argentina', 'AwayTeam': 'Mexico'},
+                {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Poland', 'AwayTeam': 'Saudi Arabia'},
+                {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Argentina', 'AwayTeam': 'Poland'},
+                {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Mexico', 'AwayTeam': 'Saudi Arabia'},
+                {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Saudi Arabia', 'AwayTeam': 'Argentina'},
+                {'Grupo': 'GROUP A', 'Round': 'Group Stage', 'HomeTeam': 'Poland', 'AwayTeam': 'Mexico'},
+                # Simulación Fases Finales
+                {'Grupo': 'TBA', 'Round': 'Round of 32', 'HomeTeam': 'France', 'AwayTeam': 'Ecuador'},
+                {'Grupo': 'TBA', 'Round': 'Quarter-finals', 'HomeTeam': 'Brazil', 'AwayTeam': 'Spain'}
+            ]
+            df_fixture_wc = pd.DataFrame(datos_simulados)
+
+        # --- MOTOR ESTADÍSTICO PARA SELECCIONES ---
+        def obtener_fuerza_seleccion(equipo):
+            hist = df_hist_wc[df_hist_wc['HomeTeam'] == equipo]
+            if hist.empty: return 4.0, 5.0 # Valores por defecto si no hay data
+            return hist['HST'].mean(), hist['HC'].mean()
+
+        def predecir_partido_mundial(home_raw, away_raw):
+            home = TRADUCCION.get(home_raw, home_raw)
+            away = TRADUCCION.get(away_raw, away_raw)
+            
+            if home not in encoder_wc.classes_ or away not in encoder_wc.classes_:
+                return {"Prob_H": 0.33, "Prob_D": 0.33, "Prob_A": 0.33, "Pts_H": 1, "Pts_A": 1, "Ganador": "Empate"}
+
+            hst, hc = obtener_fuerza_seleccion(home)
+            ast, ac = obtener_fuerza_seleccion(away)
+            
+            h_code = encoder_wc.transform([home])[0]
+            a_code = encoder_wc.transform([away])[0]
+            
+            # Formato exacto que espera tu Random Forest
+            features = pd.DataFrame([[h_code, a_code, hst, ast, hc, ac]], columns=['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC'])
+            probs = modelo_wc.predict_proba(features)[0]
+            
+            p_a, p_d, p_h = probs[0], probs[1], probs[2]
+            
+            # Determinación determinística de puntos
+            if p_h > p_a and p_h > p_d: pts_h, pts_a, winner = 3, 0, home
+            elif p_a > p_h and p_a > p_d: pts_h, pts_a, winner = 0, 3, away
+            else: pts_h, pts_a, winner = 1, 1, "Empate"
+                
+            return {"Prob_H": p_h, "Prob_D": p_d, "Prob_A": p_a, "Pts_H": pts_h, "Pts_A": pts_a, "Ganador": winner}
+
+        # --- SEPARACIÓN DE FASES ---
+        tab_grupos, tab_finales = st.tabs(["📊 Fase de Grupos", "⚔️ Fases Finales (Knockout)"])
+
+        with tab_grupos:
+            st.subheader("Predicción de Tablas de Posiciones")
+            df_grupos = df_fixture_wc[df_fixture_wc['Grupo'].str.contains('GROUP', na=False)]
+            
+            if df_grupos.empty:
+                st.info("No hay partidos de fase de grupos cargados.")
+            else:
+                grupos_unicos = sorted(df_grupos['Grupo'].unique())
+                cols_grid = st.columns(3) # Mostrar 3 grupos por fila
+                
+                for idx, nombre_grupo in enumerate(grupos_unicos):
+                    partidos_g = df_grupos[df_grupos['Grupo'] == nombre_grupo]
+                    
+                    # Diccionario para acumular puntos
+                    tabla_pts = {}
+                    for _, p in partidos_g.iterrows():
+                        if p['HomeTeam'] not in tabla_pts: tabla_pts[p['HomeTeam']] = 0
+                        if p['AwayTeam'] not in tabla_pts: tabla_pts[p['AwayTeam']] = 0
+                        
+                        resultado = predecir_partido_mundial(p['HomeTeam'], p['AwayTeam'])
+                        tabla_pts[p['HomeTeam']] += resultado['Pts_H']
+                        tabla_pts[p['AwayTeam']] += resultado['Pts_A']
+                    
+                    # Formatear la tabla
+                    df_tabla = pd.DataFrame(list(tabla_pts.items()), columns=['Selección', 'Puntos'])
+                    df_tabla = df_tabla.sort_values(by='Puntos', ascending=False).reset_index(drop=True)
+                    df_tabla.index = df_tabla.index + 1 # Índice desde 1
+                    
+                    with cols_grid[idx % 3]:
+                        st.markdown(f"**{nombre_grupo.upper()}**")
+                        st.dataframe(df_tabla, use_container_width=True)
+
+        with tab_finales:
+            st.subheader("Predicción de Llaves Eliminatorias")
+            # Filtramos todo lo que NO sea fase de grupos
+            df_knockout = df_fixture_wc[~df_fixture_wc['Round'].str.contains('Group', case=False, na=False)]
+            
+            if df_knockout.empty:
+                st.info("Las llaves eliminatorias aún no están definidas.")
+            else:
+                fases_unicas = df_knockout['Round'].unique()
+                
+                for fase in fases_unicas:
+                    st.markdown(f"#### 🏆 {fase}")
+                    partidos_fase = df_knockout[df_knockout['Round'] == fase]
+                    
+                    for _, p in partidos_fase.iterrows():
+                        res = predecir_partido_mundial(p['HomeTeam'], p['AwayTeam'])
+                        
+                        # Manejo de desempates en rondas eliminatorias (IA decide por mayor probabilidad neta)
+                        if res['Ganador'] == "Empate":
+                            res['Ganador'] = p['HomeTeam'] if res['Prob_H'] >= res['Prob_A'] else p['AwayTeam']
+                            etiqueta_victoria = "(Por Penales/Prórroga)"
+                        else:
+                            etiqueta_victoria = ""
+
+                        # Renderizado visual del partido
+                        c_match1, c_match2, c_match3 = st.columns([2, 1, 2])
+                        with c_match1:
+                            st.write(f"🏠 **{p['HomeTeam']}** ({res['Prob_H']:.0%})")
+                        with c_match2:
+                            st.markdown(f"<div style='text-align: center; color: #888;'>VS</div>", unsafe_allow_html=True)
+                        with c_match3:
+                            st.write(f"✈️ **{p['AwayTeam']}** ({res['Prob_A']:.0%})")
+                            
+                        st.success(f"**Avanza:** {res['Ganador']} {etiqueta_victoria}")
+                        st.divider()
+
+    except Exception as e:
+        st.error(f"Error cargando el Oráculo del Mundial: {e}")
 
 conn.close()
