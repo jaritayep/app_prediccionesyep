@@ -552,6 +552,7 @@ elif menu == "Portafolio de Picks":
                 with st.spinner(f"Analizando los partidos del {fecha_seleccionada} con IA..."):
                     df_pinnacle = df_master_odds[df_master_odds['Fecha_Match'] == fecha_seleccionada]
                     oportunidades = []
+                    mercados_evaluados_completos = []
                     log_debug = []
                     
                     def buscar_cuota_segura(row, posibles_columnas):
@@ -721,6 +722,9 @@ elif menu == "Portafolio de Picks":
                                 cuota_flt = float(cuota)
                                 edge = prob_ia - (1 / cuota_flt)
                                 log_debug.append(f"📊 Evaluando: {h_db} - {mercado_nombre} | Cuota: {cuota_flt} | Prob IA: {prob_ia:.1%} | Edge: {edge:.2%}")
+                                # Pool completo: cualquier mercado con edge positivo y cuota razonable
+                                if edge > 0 and cuota_flt < 8.0:
+                                    mercados_evaluados_completos.append((fecha_partido, h_db, a_db, mercado_nombre, cuota_flt, prob_ia, edge))
                                 if 0.02 <= edge <= 0.15:
                                     oportunidades.append((fecha_partido, h_db, a_db, mercado_nombre, cuota_flt, prob_ia, edge))
                                     log_debug.append(f"   ✨ ¡AÑADIDO AL PORTAFOLIO! Edge válido: {edge:.2%}")
@@ -735,6 +739,7 @@ elif menu == "Portafolio de Picks":
                     if oportunidades:
                         df_ops = pd.DataFrame(oportunidades, columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob_IA', 'Edge'])
                         st.session_state['portafolio_escaneado'] = df_ops.sort_values(by='Edge', ascending=False).drop_duplicates(subset=['Home', 'Away', 'Mercado']).reset_index(drop=True)
+                        st.session_state['pool_mercados'] = mercados_evaluados_completos
                     else:
                         st.warning("📊 No se encontraron ineficiencias dentro del rango rentable (2% a 15%).")
 
@@ -789,52 +794,56 @@ elif menu == "Portafolio de Picks":
                     for idx in idxs: add_pick(idx, '🟢 Bajo (<1.90)')
 
                 # ── Fase 2: relleno si hay menos de TARGET_PICKS ────────────
+                # Usamos df_ops (pool completo del escaneo, ya en session_state) +
+                # pool_mercados (todos con edge positivo, guardado durante el escaneo).
+                # Esto evita el error "oportunidades is not defined" que ocurría porque
+                # esa variable solo existe dentro del bloque st.button().
+
                 if len(df_top_10_list) < TARGET_PICKS:
-                    # Paso 2a: ampliar rango de edge (0.01 - 0.20) con cualquier cuota < CUOTA_MAX_FALLBACK
-                    # Necesitamos re-escanear oportunidades con edge extendido
-                    oportunidades_extendidas = []
-                    for fecha_p, h, a, mkt, cuota_f, prob_ia_f, edge_f in oportunidades:
-                        extended_edge = prob_ia_f - (1 / cuota_f)
-                        if 0.01 <= extended_edge <= 0.20 and cuota_f < CUOTA_MAX_FALLBACK:
-                            oportunidades_extendidas.append((fecha_p, h, a, mkt, cuota_f, prob_ia_f, extended_edge))
+                    # Paso 2a: picks de df_ops con edge ampliado (0.01-0.20), cuota < CUOTA_MAX
+                    # Permitimos un mismo partido si el mercado es distinto a los ya elegidos
+                    pool_2a = df_ops[
+                        (df_ops['Edge'] >= 0.01) &
+                        (df_ops['Edge'] <= 0.20) &
+                        (df_ops['Cuota'] < CUOTA_MAX_FALLBACK)
+                    ].sort_values(by='Edge', ascending=False)
 
-                    if oportunidades_extendidas:
-                        df_ext = pd.DataFrame(oportunidades_extendidas, columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob_IA', 'Edge'])
-                        df_ext['Partido'] = df_ext['Home'] + " vs " + df_ext['Away']
-                        df_ext = df_ext.sort_values(by='Edge', ascending=False).drop_duplicates(subset=['Home', 'Away', 'Mercado']).reset_index(drop=True)
+                    for idx, ext_row in pool_2a.iterrows():
+                        if len(df_top_10_list) >= TARGET_PICKS:
+                            break
+                        partido = ext_row['Partido']
+                        mercados_ya_elegidos = {
+                            r.iloc[0]['Mercado'] for r in df_top_10_list
+                            if r.iloc[0]['Partido'] == partido
+                        }
+                        if ext_row['Mercado'] not in mercados_ya_elegidos:
+                            used_matches.add(partido)
+                            df_top_10_list.append(
+                                pd.DataFrame([{
+                                    'Date': ext_row['Date'], 'Home': ext_row['Home'], 'Away': ext_row['Away'],
+                                    'Partido': partido, 'Mercado': ext_row['Mercado'],
+                                    'Cuota': ext_row['Cuota'], 'Prob_IA': ext_row['Prob_IA'], 'Edge': ext_row['Edge'],
+                                    'Prob_IA_Str': ext_row['Prob_IA_Str'], 'Edge_Str': ext_row['Edge_Str'],
+                                    'Nivel': '🔵 Relleno (edge ampliado)'
+                                }])
+                            )
 
-                        for _, ext_row in df_ext.iterrows():
-                            if len(df_top_10_list) >= TARGET_PICKS:
-                                break
-                            partido = ext_row['Partido']
-                            if partido not in used_matches:
-                                used_matches.add(partido)
-                                selected_indices.append(ext_row.name)
-                                df_top_10_list.append(
-                                    pd.DataFrame([{
-                                        'Date': ext_row['Date'], 'Home': ext_row['Home'], 'Away': ext_row['Away'],
-                                        'Partido': partido, 'Mercado': ext_row['Mercado'],
-                                        'Cuota': ext_row['Cuota'], 'Prob_IA': ext_row['Prob_IA'], 'Edge': ext_row['Edge'],
-                                        'Prob_IA_Str': f"{ext_row['Prob_IA']*100:.1f}%",
-                                        'Edge_Str': f"{ext_row['Edge']*100:.2f}%",
-                                        'Nivel': '🔵 Relleno (edge ampliado)'
-                                    }])
-                                )
-
-                    # Paso 2b: si sigue sin llegar a 10, tomar cualquier pick con cuota < CUOTA_MAX_FALLBACK
-                    # (incluso si el edge es < 0.01, pero positivo) ordenados por edge desc
+                    # Paso 2b: pool_mercados guardado en session_state durante el escaneo
+                    # Contiene TODOS los mercados con edge > 0 y cuota < 8.0
                     if len(df_top_10_list) < TARGET_PICKS:
-                        todos_validos = [
-                            (fp, h, a, mkt, cf, pi, pi - (1/cf))
-                            for fp, h, a, mkt, cf, pi, _ in oportunidades
-                            if cf < CUOTA_MAX_FALLBACK and (pi - (1/cf)) > 0
-                        ]
-                        todos_validos.sort(key=lambda x: x[6], reverse=True)
-                        for fp, h, a, mkt, cf, pi, eg in todos_validos:
+                        pool_guardado = st.session_state.get('pool_mercados', [])
+                        pool_guardado_sorted = sorted(pool_guardado, key=lambda x: x[6], reverse=True)
+                        for fp, h, a, mkt, cf, pi, eg in pool_guardado_sorted:
                             if len(df_top_10_list) >= TARGET_PICKS:
                                 break
+                            if cf >= CUOTA_MAX_FALLBACK:
+                                continue
                             partido = f"{h} vs {a}"
-                            if partido not in used_matches:
+                            mercados_ya_elegidos = {
+                                r.iloc[0]['Mercado'] for r in df_top_10_list
+                                if r.iloc[0]['Partido'] == partido
+                            }
+                            if mkt not in mercados_ya_elegidos:
                                 used_matches.add(partido)
                                 df_top_10_list.append(
                                     pd.DataFrame([{
@@ -846,6 +855,7 @@ elif menu == "Portafolio de Picks":
                                         'Nivel': '⚪ Complementario'
                                     }])
                                 )
+
 
                 faltantes = TARGET_PICKS - len(df_top_10_list)
                 if faltantes > 0:
