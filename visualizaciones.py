@@ -531,7 +531,7 @@ elif menu == "Portafolio de Picks":
 
             c1, c2 = st.columns(2)
             with c1:
-                inversion_total = st.number_input("💰 Inversión TOTAL Portafolio ($)", min_value=1000, value=50000, step=500)
+                inversion_total = st.number_input("💰 Inversión TOTAL Portafolio ($)", min_value=1000, value=5000, step=500)
             with c2:
                 if fechas_disponibles:
                     fecha_seleccionada = st.selectbox("📅 Seleccionar Día del Portafolio:", fechas_disponibles)
@@ -734,7 +734,7 @@ elif menu == "Portafolio de Picks":
 
                     if oportunidades:
                         df_ops = pd.DataFrame(oportunidades, columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob_IA', 'Edge'])
-                        st.session_state['portafolio_escaneado'] = df_ops.sort_values(by='Edge', ascending=False).drop_duplicates(subset=['Home', 'Mercado']).reset_index(drop=True)
+                        st.session_state['portafolio_escaneado'] = df_ops.sort_values(by='Edge', ascending=False).drop_duplicates(subset=['Home', 'Away', 'Mercado']).reset_index(drop=True)
                     else:
                         st.warning("📊 No se encontraron ineficiencias dentro del rango rentable (2% a 15%).")
 
@@ -836,12 +836,32 @@ elif menu == "Portafolio de Picks":
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob_IA'], row['Edge'], stake_por_pick))
                         conn.commit()
-                        st.toast(f"¡{len(df_final_a_guardar)} picks guardados! (Inversión por pick: ${stake_por_pick:,.0f})")
+                        st.success(f"✅ ¡{len(df_final_a_guardar)} picks guardados en el portafolio activo! (Inversión por pick: ${stake_por_pick:,.0f})")
                         del st.session_state['portafolio_escaneado']
-                        st.rerun()
 
         except Exception as e:
             st.error(f"Error en la aplicación: {e}")
+
+        # ── PORTAFOLIO ACTIVO (siempre visible, no requiere re-escanear) ──
+        st.divider()
+        st.markdown("### 📋 Portafolio Activo (Picks Pendientes)")
+        df_activos = pd.read_sql("SELECT * FROM portafolio_historico WHERE Estado = 'Pendiente' ORDER BY Date ASC", conn)
+        if df_activos.empty:
+            st.info("No hay picks pendientes guardados. Escanea el mercado y guarda tu portafolio para verlo aquí.")
+        else:
+            # Agrupar por fecha para visualizar días distintos
+            fechas_activas = sorted(df_activos['Date'].unique())
+            for fecha in fechas_activas:
+                df_dia = df_activos[df_activos['Date'] == fecha].copy()
+                stake_dia = df_dia['Stake'].sum()
+                retorno_potencial = (df_dia['Cuota'] * df_dia['Stake']).sum()
+                with st.expander(f"📅 {fecha}  —  {len(df_dia)} picks  |  Invertido: ${stake_dia:,.0f}  |  Retorno potencial: ${retorno_potencial:,.0f}", expanded=(fecha == fechas_activas[-1])):
+                    df_mostrar_activos = df_dia[['HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Prob_IA', 'Edge', 'Stake']].copy()
+                    df_mostrar_activos['Prob_IA'] = (df_mostrar_activos['Prob_IA'] * 100).round(1).astype(str) + "%"
+                    df_mostrar_activos['Edge'] = (df_mostrar_activos['Edge'] * 100).round(2).astype(str) + "%"
+                    df_mostrar_activos['Partido'] = df_mostrar_activos['HomeTeam'] + " vs " + df_mostrar_activos['AwayTeam']
+                    df_mostrar_activos = df_mostrar_activos[['Partido', 'Mercado', 'Cuota', 'Prob_IA', 'Edge', 'Stake']]
+                    st.dataframe(df_mostrar_activos, hide_index=True, use_container_width=True)
 
     with tab2:
         c_tit, c_btn = st.columns([0.75, 0.25])
