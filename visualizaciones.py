@@ -444,11 +444,10 @@ elif menu == "Auditoría (Resultados)":
         else:
             st.info("No se pudieron calcular proyecciones (Faltan datos históricos de los equipos).")
 elif menu == "Portafolio de Picks":
-    st.title("📈 Portafolio de Inversión (Flat Staking)")
+    st.title("📈 Portafolio de Inversión (Flat Staking Híbrido)")
     
-    API_KEY = "3ec28dbd498ab9985e9792b3f50a8902" # <--- Tu llave
+    API_KEY = "3ec28dbd498ab9985e9792b3f50a8902" 
     
-    # 1. Crear tabla de historial si no existe
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS portafolio_historico (
@@ -467,18 +466,16 @@ elif menu == "Portafolio de Picks":
     """)
     conn.commit()
 
-    # Tabs para organizar la UI
     tab1, tab2 = st.tabs(["🔍 Escáner en Vivo", "🏦 Rendimiento Histórico"])
 
     with tab1:
         st.markdown("### 🔍 Escáner de Ineficiencias vs Pinnacle")
-        st.caption("Cruzando modelo ML, Poisson (Goles, Córners, Tiros) contra líneas de Pinnacle. (Edge 2% - 15%)")
+        st.caption("Cruzando modelos ML (Clubes y Selecciones) y Poisson contra líneas de Pinnacle. (Edge 2% - 15%)")
         
         try:
-            # 1. Cargamos tu Base de Datos de Equipos
-            equipos_db = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
+            equipos_clubes = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
+            equipos_wc = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_selecciones_ml", conn)['HomeTeam'].tolist()
             
-            # --- AUTOMATIZACIÓN DE CARPETA Y CONSOLIDACIÓN DE FECHAS ---
             directorio_odds = Path("odds_data")
             archivos_csv = list(directorio_odds.glob("*.csv")) if directorio_odds.exists() else []
             
@@ -493,7 +490,9 @@ elif menu == "Portafolio de Picks":
                         if df_temp.empty:
                             continue
                         
-                        # 🔍 1. DETECTAR FECHA EN EL NOMBRE DEL ARCHIVO (Regex Infalible)
+                        # 🎯 DETECCIÓN HÍBRIDA: Saber si el archivo es del Mundial
+                        df_temp['Es_Mundial'] = 'worldcup' in f.name.lower()
+                        
                         import re
                         match_dash = re.search(r'(\d{4})-(\d{2})-(\d{2})', f.name)
                         match_pure = re.search(r'(\d{4})(\d{2})(\d{2})', f.name)
@@ -508,16 +507,12 @@ elif menu == "Portafolio de Picks":
                             from datetime import datetime
                             fecha_fallback = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d')
 
-                        # 🔍 2. EVITAR CONFLICTOS DE MAYÚSCULAS/MINÚSCULAS
                         df_temp.columns = [c.lower() for c in df_temp.columns]
+                        if 'es_mundial' in df_temp.columns: df_temp = df_temp.rename(columns={'es_mundial': 'Es_Mundial'})
 
-                        # Mapeo de compatibilidad por si cambiaste nombres de columnas en el tiempo
-                        if 'hometeam' in df_temp.columns and 'home' not in df_temp.columns:
-                            df_temp = df_temp.rename(columns={'hometeam': 'home'})
-                        if 'awayteam' in df_temp.columns and 'away' not in df_temp.columns:
-                            df_temp = df_temp.rename(columns={'awayteam': 'away'})
+                        if 'hometeam' in df_temp.columns and 'home' not in df_temp.columns: df_temp = df_temp.rename(columns={'hometeam': 'home'})
+                        if 'awayteam' in df_temp.columns and 'away' not in df_temp.columns: df_temp = df_temp.rename(columns={'awayteam': 'away'})
 
-                        # 🔍 3. NORMALIZAR O INYECTAR COLUMNA DE TIEMPO
                         if 'inicio_local' not in df_temp.columns or df_temp['inicio_local'].isna().all():
                             df_temp['inicio_local'] = fecha_fallback + " 12:00"
                         else:
@@ -530,15 +525,10 @@ elif menu == "Portafolio de Picks":
                 if lista_dfs:
                     df_master_odds = pd.concat(lista_dfs, ignore_index=True)
                     df_master_odds = df_master_odds.drop_duplicates(subset=['home', 'away', 'inicio_local'])
-                    
-                    # Cortamos estrictamente los primeros 10 caracteres (YYYY-MM-DD)
                     df_master_odds['Fecha_Match'] = df_master_odds['inicio_local'].astype(str).str.strip().str.slice(0, 10)
-                    
-                    # Filtramos filas que mantengan la estructura de fecha real
                     df_master_odds = df_master_odds[df_master_odds['Fecha_Match'].str.match(r'^\d{4}-\d{2}-\d{2}$', na=False)]
                     fechas_disponibles = sorted(df_master_odds['Fecha_Match'].unique())
 
-            # --- INTERFAZ VISUAL DE CONTROL ---
             c1, c2 = st.columns(2)
             with c1:
                 inversion_total = st.number_input("💰 Inversión TOTAL Portafolio ($)", min_value=1000, value=50000, step=500)
@@ -552,15 +542,15 @@ elif menu == "Portafolio de Picks":
             boton_disabled = fecha_seleccionada is None
 
             if st.button("🔍 Escanear Mercado", type="primary", disabled=boton_disabled):
-                model = cargar_modelo()
-                if not model:
-                    st.error("⚠️ No se encontró el archivo 'modelo_ia.pkl'.")
-                    st.stop()
+                modelo_clubes = cargar_modelo()
+                try:
+                    modelo_wc = joblib.load('modelo_selecciones_rf.pkl')
+                    encoder_wc = joblib.load('encoder_equipos_selecciones.pkl')
+                except:
+                    modelo_wc = None
 
-                with st.spinner(f"Analizando los partidos del {fecha_seleccionada} con Inteligencia Artificial..."):
-                    # Filtramos las cuotas maestras para quedarnos solo con el día elegido
+                with st.spinner(f"Analizando los partidos del {fecha_seleccionada} con IA..."):
                     df_pinnacle = df_master_odds[df_master_odds['Fecha_Match'] == fecha_seleccionada]
-                    
                     oportunidades = []
                     log_debug = []
                     
@@ -570,26 +560,15 @@ elif menu == "Portafolio de Picks":
                                 return row[col]
                         return None
 
-                    def prob_under(promedio, umbral):
-                        return 1 - prob_over(promedio, umbral)
-                        
-                    def prob_handicap(prom_favor, prom_contra, linea_hdp):
-                        prob_acum = 0.0
-                        for gf in range(15):
-                            for gc in range(15):
-                                if (gf + linea_hdp) > gc:
-                                    p_gf = (math.exp(-prom_favor) * (prom_favor**gf)) / math.factorial(gf)
-                                    p_gc = (math.exp(-prom_contra) * (prom_contra**gc)) / math.factorial(gc)
-                                    prob_acum += (p_gf * p_gc)
-                        return prob_acum
-
                     for index, row in df_pinnacle.iterrows():
                         h_csv = str(row['home'])
                         a_csv = str(row['away'])
+                        es_mundial = row.get('Es_Mundial', False)
                         fecha_partido = str(row['inicio_local']).split()[0] if pd.notna(row['inicio_local']) else str(pd.Timestamp.now().date())
                         
-                        h_db_match = process.extractOne(h_csv, equipos_db)
-                        a_db_match = process.extractOne(a_csv, equipos_db)
+                        lista_referencia = equipos_wc if es_mundial else equipos_clubes
+                        h_db_match = process.extractOne(h_csv, lista_referencia)
+                        a_db_match = process.extractOne(a_csv, lista_referencia)
                         
                         if not h_db_match or not a_db_match or h_db_match[1] < 80 or a_db_match[1] < 80:
                             continue
@@ -597,39 +576,73 @@ elif menu == "Portafolio de Picks":
                         h_db = h_db_match[0]
                         a_db = a_db_match[0]
 
-                        # --- CÁLCULO DE VARIABLES DESDE TU DB ---
-                        stats_h = get_recent_stats(h_db, conn)
-                        stats_a = get_recent_stats(a_db, conn)
-                        
-                        xg_h = stats_h.get('xG_home', 1.0) 
-                        xg_a = stats_a.get('xG_away', 1.0)
-                        xg_diff = xg_h - xg_a
-                        pts_h = obtener_puntos_temporada(h_db, conn)
-                        pts_a = obtener_puntos_temporada(a_db, conn)
-                        dif_tabla = pts_h - pts_a
-                        descanso_h = obtener_dias_descanso(h_db, conn)
-                        descanso_a = obtener_dias_descanso(a_db, conn)
-                        ventaja_fisica = descanso_h - descanso_a
-                        eff_h = stats_h['FTHG'] / (xg_h + 0.01)
-                        eff_a = stats_a['FTAG'] / (xg_a + 0.01)
+                        # --- MOTOR HÍBRIDO DE IA ---
+                        if es_mundial:
+                            if not modelo_wc:
+                                log_debug.append(f"⚠️ Omitiendo {h_db} vs {a_db}: No se encontró modelo_selecciones_rf.pkl")
+                                continue
+                                
+                            df_sh = pd.read_sql(f'SELECT * FROM historial_selecciones_ml WHERE HomeTeam="{h_db}" OR AwayTeam="{h_db}" ORDER BY Date DESC LIMIT 6', conn)
+                            df_sa = pd.read_sql(f'SELECT * FROM historial_selecciones_ml WHERE HomeTeam="{a_db}" OR AwayTeam="{a_db}" ORDER BY Date DESC LIMIT 6', conn)
+                            
+                            def seguro_mean(df, col, default):
+                                return df[col].mean() if not df.empty and col in df.columns and pd.notna(df[col].mean()) else default
 
-                        input_data = [[
-                            stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], 
-                            stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], 
-                            stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff, 
-                            dif_tabla, ventaja_fisica
-                        ]]
-                        
-                        pred_probs = model.predict_proba(input_data)[0]
-                        prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
+                            hst, hc = seguro_mean(df_sh, 'HST', 4.0), seguro_mean(df_sh, 'HC', 4.5)
+                            ast, ac = seguro_mean(df_sa, 'AST', 3.5), seguro_mean(df_sa, 'AC', 4.0)
+                            gf_h, gc_h = seguro_mean(df_sh, 'FTHG', 1.5), seguro_mean(df_sh, 'FTAG', 1.0)
+                            gf_a, gc_a = seguro_mean(df_sa, 'FTHG', 1.2), seguro_mean(df_sa, 'FTAG', 1.3)
+                            
+                            if h_db in encoder_wc.classes_ and a_db in encoder_wc.classes_:
+                                h_c = encoder_wc.transform([h_db])[0]
+                                a_c = encoder_wc.transform([a_db])[0]
+                                X_input = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                                probs = modelo_wc.predict_proba(X_input)[0]
+                                prob_visita, prob_empate, prob_local = probs[0], probs[1], probs[2]
+                            else:
+                                prob_visita, prob_empate, prob_local = 0.33, 0.34, 0.33
+                                
+                            pred_goles_home = (gf_h + gc_a) / 2
+                            pred_goles_away = (gf_a + gc_h) / 2
+                            prom_goles_total = pred_goles_home + pred_goles_away
+                            prom_corners_total = (hc + ac) / 2
+                            prom_shots_total = (hst + ast) / 2
+                            
+                            stats_h = {'HC': hc, 'HST': hst}
+                            stats_a = {'AC': ac, 'AST': ast}
+                            
+                        else:
+                            if not modelo_clubes: continue
+                            stats_h = get_recent_stats(h_db, conn)
+                            stats_a = get_recent_stats(a_db, conn)
+                            
+                            xg_h = stats_h.get('xG_home', 1.0) 
+                            xg_a = stats_a.get('xG_away', 1.0)
+                            xg_diff = xg_h - xg_a
+                            pts_h = obtener_puntos_temporada(h_db, conn)
+                            pts_a = obtener_puntos_temporada(a_db, conn)
+                            dif_tabla = pts_h - pts_a
+                            descanso_h = obtener_dias_descanso(h_db, conn)
+                            descanso_a = obtener_dias_descanso(a_db, conn)
+                            ventaja_fisica = descanso_h - descanso_a
+                            eff_h = stats_h['FTHG'] / (xg_h + 0.01)
+                            eff_a = stats_a['FTAG'] / (xg_a + 0.01)
 
-                        # Promedios Base
-                        pred_goles_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
-                        pred_goles_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
-                        prom_goles_total = pred_goles_home + pred_goles_away
+                            input_data = [[
+                                stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], 
+                                stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], 
+                                stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff, 
+                                dif_tabla, ventaja_fisica
+                            ]]
+                            
+                            pred_probs = modelo_clubes.predict_proba(input_data)[0]
+                            prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
 
-                        prom_corners_total = (stats_h['HC'] + stats_a['AC']) / 2
-                        prom_shots_total = (stats_h['HST'] + stats_a['AST']) / 2
+                            pred_goles_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
+                            pred_goles_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+                            prom_goles_total = pred_goles_home + pred_goles_away
+                            prom_corners_total = (stats_h['HC'] + stats_a['AC']) / 2
+                            prom_shots_total = (stats_h['HST'] + stats_a['AST']) / 2
 
                         mercados_a_evaluar = [
                             ("Ganador (Local)", buscar_cuota_segura(row, ['1x2_home']), prob_local),
@@ -637,48 +650,40 @@ elif menu == "Portafolio de Picks":
                             ("Ganador (Visita)", buscar_cuota_segura(row, ['1x2_away']), prob_visita)
                         ]
 
-                        # --- ESCÁNER DINÁMICO TOTAL (Goles, Hándicaps, Córners, Tiros, BTTS) ---
+                        def prob_under(promedio, umbral): return 1 - prob_over(promedio, umbral)
+                        def prob_handicap(prom_favor, prom_contra, linea_hdp):
+                            prob_acum = 0.0
+                            for gf in range(15):
+                                for gc in range(15):
+                                    if (gf + linea_hdp) > gc:
+                                        p_gf = (math.exp(-prom_favor) * (prom_favor**gf)) / math.factorial(gf)
+                                        p_gc = (math.exp(-prom_contra) * (prom_contra**gc)) / math.factorial(gc)
+                                        prob_acum += (p_gf * p_gc)
+                            return prob_acum
+
                         for col_name, val in row.items():
-                            if pd.isna(val) or str(val).strip() == '':
-                                continue
-                            
+                            if pd.isna(val) or str(val).strip() == '': continue
                             col_str = str(col_name).lower()
-                            
-                            if col_str in ['liga', 'pais', 'partido_id', 'home', 'away', 'inicio_utc', 'inicio_local']:
-                                continue
+                            if col_str in ['es_mundial', 'liga', 'pais', 'partido_id', 'home', 'away', 'inicio_utc', 'inicio_local', 'fecha_match']: continue
                                 
                             try:
                                 val_num = float(val)
                                 if val_num <= 1.0: continue
-                            except ValueError:
-                                continue 
+                            except ValueError: continue 
                                 
-                            # 🎯 RADAR 1: Mercados de Texto (BTTS / Ambos Anotan)
                             if 'btts' in col_str or 'ambos' in col_str:
-                                # Probabilidad Poisson de que AMBOS hagan al menos 1 gol
                                 prob_btts_si = (1 - math.exp(-pred_goles_home)) * (1 - math.exp(-pred_goles_away))
-                                
-                                if 'yes' in col_str or 'si' in col_str:
-                                    mercados_a_evaluar.append(("Ambos Anotan (Sí)", val_num, prob_btts_si))
-                                elif 'no' in col_str:
-                                    mercados_a_evaluar.append(("Ambos Anotan (No)", val_num, 1 - prob_btts_si))
-                                continue # Terminamos con esta columna, pasamos a la siguiente
-
-                            # 🎯 RADAR 2: Mercados Asiáticos / Totales (Busca el .5)
-                            match = re.search(r'(-?\d+\.5)', col_str)
-                            if not match:
+                                if 'yes' in col_str or 'si' in col_str: mercados_a_evaluar.append(("Ambos Anotan (Sí)", val_num, prob_btts_si))
+                                elif 'no' in col_str: mercados_a_evaluar.append(("Ambos Anotan (No)", val_num, 1 - prob_btts_si))
                                 continue
-                                
+
+                            match = re.search(r'(-?\d+\.5)', col_str)
+                            if not match: continue
                             linea = float(match.group(1))
                             
-                            # 1. HÁNDICAP ASIÁTICO
                             if 'hdp' in col_str or 'handicap' in col_str:
-                                if 'home' in col_str:
-                                    mercados_a_evaluar.append((f"Hándicap Local ({linea:+})", val_num, prob_handicap(pred_goles_home, pred_goles_away, linea)))
-                                elif 'away' in col_str:
-                                    mercados_a_evaluar.append((f"Hándicap Visita ({linea:+})", val_num, prob_handicap(pred_goles_away, pred_goles_home, linea)))
-                                    
-                            # 2. CÓRNERS (Totales y Por Equipo)
+                                if 'home' in col_str: mercados_a_evaluar.append((f"Hándicap Local ({linea:+})", val_num, prob_handicap(pred_goles_home, pred_goles_away, linea)))
+                                elif 'away' in col_str: mercados_a_evaluar.append((f"Hándicap Visita ({linea:+})", val_num, prob_handicap(pred_goles_away, pred_goles_home, linea)))
                             elif 'corners' in col_str:
                                 if 'home' in col_str:
                                     if 'over' in col_str: mercados_a_evaluar.append((f"Córners Local (+{linea})", val_num, prob_over(stats_h['HC'], linea)))
@@ -689,8 +694,6 @@ elif menu == "Portafolio de Picks":
                                 elif 'total' in col_str:
                                     if 'over' in col_str: mercados_a_evaluar.append((f"Córners Totales (+{linea})", val_num, prob_over(prom_corners_total, linea)))
                                     elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Totales (-{linea})", val_num, prob_under(prom_corners_total, linea)))
-
-                            # 3. TIROS A PUERTA (Totales y Por Equipo)
                             elif 'shots' in col_str:
                                 if 'home' in col_str:
                                     if 'over' in col_str: mercados_a_evaluar.append((f"Tiros Local (+{linea})", val_num, prob_over(stats_h['HST'], linea)))
@@ -701,8 +704,6 @@ elif menu == "Portafolio de Picks":
                                 elif 'total' in col_str:
                                     if 'over' in col_str: mercados_a_evaluar.append((f"Tiros a Puerta Totales (+{linea})", val_num, prob_over(prom_shots_total, linea)))
                                     elif 'under' in col_str: mercados_a_evaluar.append((f"Tiros a Puerta Totales (-{linea})", val_num, prob_under(prom_shots_total, linea)))
-
-                            # 4. GOLES (Totales y Por Equipo)
                             elif 'goles' in col_str or 'total' in col_str:
                                 if 'tt_home' in col_str:
                                     if 'over' in col_str: mercados_a_evaluar.append((f"Goles Local (+{linea})", val_num, prob_over(pred_goles_home, linea)))
@@ -719,20 +720,15 @@ elif menu == "Portafolio de Picks":
                             try:
                                 cuota_flt = float(cuota)
                                 edge = prob_ia - (1 / cuota_flt)
-                                
                                 log_debug.append(f"📊 Evaluando: {h_db} - {mercado_nombre} | Cuota: {cuota_flt} | Prob IA: {prob_ia:.1%} | Edge: {edge:.2%}")
-                                
-                                # 🚨 FILTRO OPTIMIZADO: Edge entre 2% y 15%
                                 if 0.02 <= edge <= 0.15:
                                     oportunidades.append((fecha_partido, h_db, a_db, mercado_nombre, cuota_flt, prob_ia, edge))
                                     log_debug.append(f"   ✨ ¡AÑADIDO AL PORTAFOLIO! Edge válido: {edge:.2%}")
-                            except Exception as e:
-                                pass
+                            except Exception: pass
 
                         for nombre_mkt, cuota_val, prob_ia in mercados_a_evaluar:
                             evaluar_edge(nombre_mkt, prob_ia, cuota_val)
 
-                    # --- RENDERS ---
                     with st.expander("🛠️ Ver Diagnóstico Completo del Robot Evaluador"):
                         for log_msg in log_debug: st.text(log_msg)
 
@@ -742,10 +738,8 @@ elif menu == "Portafolio de Picks":
                     else:
                         st.warning("📊 No se encontraron ineficiencias dentro del rango rentable (2% a 15%).")
 
-            # --- TABLA INTERACTIVA (ESTRUCTURA 3-3-3-1) ---
             if 'portafolio_escaneado' in st.session_state:
                 df_ops = st.session_state['portafolio_escaneado'].copy()
-                
                 df_ops['Partido'] = df_ops['Home'] + " vs " + df_ops['Away']
                 df_ops['Edge_Str'] = (df_ops['Edge'] * 100).round(2).astype(str) + "%"
                 df_ops['Prob_IA_Str'] = (df_ops['Prob_IA'] * 100).round(1).astype(str) + "%"
@@ -753,37 +747,29 @@ elif menu == "Portafolio de Picks":
                 columnas_base = ['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str', 'Date', 'Home', 'Away', 'Prob_IA', 'Edge']
                 df_ops = df_ops[columnas_base]
 
-                # 🧠 🎯 CAMBIO 1: LÓGICA DE PARTIDOS ÚNICOS
                 selected_indices = []
-                used_matches = set() # Aquí guardaremos la memoria de los partidos ya elegidos
+                used_matches = set() 
                 df_top_10_list = []
                 
                 def add_pick(idx, nivel_label):
                     partido = df_ops.loc[idx, 'Partido']
-                    # Si el partido ya tiene un pick, LO IGNORAMOS
                     if partido not in used_matches:
                         selected_indices.append(idx)
-                        used_matches.add(partido) # Lo registramos para no volver a usarlo
+                        used_matches.add(partido) 
                         df_top_10_list.append(df_ops.loc[[idx]].assign(Nivel=nivel_label))
                         return True
                     return False
 
                 def get_available_pool(min_c, max_c):
-                    # Filtra las cuotas y ELIMINA los partidos que ya están en el portafolio
                     disponibles = df_ops[~df_ops['Partido'].isin(used_matches) & (df_ops['Cuota'] >= min_c) & (df_ops['Cuota'] < max_c)]
-                    # Elimina duplicados del MISMO partido dentro de esta piscina (se queda con el de mayor edge)
                     return disponibles.drop_duplicates(subset=['Partido'], keep='first')
 
-                # 1. ⭐ Golden Pick 
                 for idx in df_ops.index:
                     if add_pick(idx, '⭐ Golden Pick'): break
                 
-                # 2. 🔴 Alto Riesgo (Cuotas >= 2.50) -> Top 3
                 pool_high = get_available_pool(2.50, 999.0)
-                for idx in pool_high.head(3).index:
-                    add_pick(idx, '🔴 Alto (>2.50)')
+                for idx in pool_high.head(3).index: add_pick(idx, '🔴 Alto (>2.50)')
                     
-                # 3. 🟡 Medio Riesgo (Cuotas 1.90 - 2.49) -> Top, Medio, Bajo
                 pool_med = get_available_pool(1.90, 2.50)
                 if not pool_med.empty:
                     idxs = [pool_med.index[0]]
@@ -791,7 +777,6 @@ elif menu == "Portafolio de Picks":
                     elif len(pool_med) == 2: idxs.append(pool_med.index[-1])
                     for idx in idxs: add_pick(idx, '🟡 Medio (1.90-2.49)')
 
-                # 4. 🟢 Bajo Riesgo (Cuotas < 1.90) -> Top, Medio, Bajo
                 pool_low = get_available_pool(0.0, 1.90)
                 if not pool_low.empty:
                     idxs = [pool_low.index[0]]
@@ -799,23 +784,19 @@ elif menu == "Portafolio de Picks":
                     elif len(pool_low) == 2: idxs.append(pool_low.index[-1])
                     for idx in idxs: add_pick(idx, '🟢 Bajo (<1.90)')
 
-                # --- ENSAMBLAJE ---
                 df_top_10 = pd.concat(df_top_10_list).reset_index(drop=True) if df_top_10_list else pd.DataFrame()
                 cols_mostrar = ['Nivel', 'Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']
                 
                 df_mostrar_top = df_top_10[cols_mostrar].copy()
-                df_mostrar_top.insert(0, "✅ Añadir", True) # Estos vienen pre-marcados
+                df_mostrar_top.insert(0, "✅ Añadir", True) 
                 
-                # Tabla 2: El banquillo de suplentes (Reserva)
                 df_reserva = df_ops[~df_ops.index.isin(selected_indices)].reset_index(drop=True)
                 df_mostrar_reserva = df_reserva[['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']].copy()
-                df_mostrar_reserva.insert(0, "✅ Añadir", False) # Estos vienen desmarcados
+                df_mostrar_reserva.insert(0, "✅ Añadir", False) 
 
-                # --- RENDERIZADO VISUAL ---
                 st.success(f"Escaneo listo. Se construyó un portafolio equilibrado usando {len(df_top_10)} picks recomendados.")
                 st.markdown("### 🎯 Portafolio (3-3-3-1)")
                 
-                # Mostramos la tabla principal
                 edit_top10 = st.data_editor(
                     df_mostrar_top,
                     hide_index=True,
@@ -824,7 +805,6 @@ elif menu == "Portafolio de Picks":
                     column_config={"✅ Añadir": st.column_config.CheckboxColumn(required=True)}
                 )
                 
-                # Mostramos la tabla de reserva minimizada
                 with st.expander(f"📂 Ver el resto de picks válidos ({len(df_reserva)} en Reserva)"):
                     if not df_mostrar_reserva.empty:
                         st.caption("Si desmarcaste algún pick de arriba, puedes seleccionar reemplazos desde aquí.")
@@ -838,7 +818,6 @@ elif menu == "Portafolio de Picks":
                     else:
                         st.info("No hay más picks de reserva. Se utilizaron todos los disponibles.")
 
-                # --- BOTÓN DE GUARDADO UNIFICADO ---
                 if st.button("💾 Guardar Portafolio Seleccionado", type="primary"):
                     indices_top = edit_top10[edit_top10["✅ Añadir"] == True].index
                     indices_res = edit_reserva[edit_reserva["✅ Añadir"] == True].index if not df_mostrar_reserva.empty else []
@@ -850,9 +829,7 @@ elif menu == "Portafolio de Picks":
                     if df_final_a_guardar.empty:
                         st.warning("No seleccionaste ningún pick.")
                     else:
-                        # 🎯 CAMBIO 3: División exacta del dinero total entre los picks seleccionados
                         stake_por_pick = inversion_total / len(df_final_a_guardar)
-                        
                         for _, row in df_final_a_guardar.iterrows():
                             cursor.execute("""
                                 INSERT INTO portafolio_historico (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
@@ -867,7 +844,6 @@ elif menu == "Portafolio de Picks":
             st.error(f"Error en la aplicación: {e}")
 
     with tab2:
-        # 🎯 CAMBIO 2: Botón rojo para limpiar toda la tabla de rendimiento
         c_tit, c_btn = st.columns([0.75, 0.25])
         c_tit.subheader("🏦 Rendimiento Acumulado")
         
@@ -877,8 +853,6 @@ elif menu == "Portafolio de Picks":
             st.toast("¡Historial borrado con éxito! Portafolio limpio.")
             st.rerun()
             
-        # 1.Liquidar apuestas pendientes
-        # 1. BOTÓN MÁGICO: Liquidar apuestas pendientes
         if st.button("⚖️ Liquidar Apuestas Pendientes", type="primary"):
             df_pendientes = pd.read_sql("SELECT * FROM portafolio_historico WHERE Estado = 'Pendiente'", conn)
             liquidadas = 0
@@ -890,7 +864,6 @@ elif menu == "Portafolio de Picks":
             from datetime import datetime, timedelta
             
             for _, pick in df_pendientes.iterrows():
-                # 🛡️ 1. Margen de Fecha (Buscamos el partido entre ayer, hoy y mañana)
                 try:
                     fecha_dt = datetime.strptime(pick['Date'], '%Y-%m-%d')
                     fecha_inicio = (fecha_dt - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -899,15 +872,23 @@ elif menu == "Portafolio de Picks":
                     fecha_inicio = pick['Date']
                     fecha_fin = pick['Date']
 
-                q_res = f"SELECT * FROM historial_multiliga_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'"
-                res_real = pd.read_sql(q_res, conn)
+                # 🎯 LIQUIDADOR HÍBRIDO: Busca en ambas bases de datos unificadas
+                q_res = f"""
+                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST FROM historial_multiliga_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
+                UNION ALL
+                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST FROM historial_selecciones_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
+                """
+                
+                try:
+                    res_real = pd.read_sql(q_res, conn)
+                except Exception:
+                    # Fallback por si la tabla de selecciones no tiene algunas columnas menores
+                    res_real = pd.DataFrame()
                 
                 if not res_real.empty:
-                    # 🛡️ 2. Fuzzy Matching para Nombres de Equipos (M'gladbach == Borussia Monchengladbach)
                     equipos_posibles = res_real['HomeTeam'].tolist()
                     match_fuzz = process.extractOne(pick['HomeTeam'], equipos_posibles)
                     
-                    # Si hay coincidencia de al menos 75% de similitud de texto
                     if match_fuzz and match_fuzz[1] >= 75:
                         equipo_db_real = match_fuzz[0]
                         row = res_real[res_real['HomeTeam'] == equipo_db_real].iloc[0]
@@ -915,8 +896,7 @@ elif menu == "Portafolio de Picks":
                         hg = row['FTHG'] if pd.notna(row.get('FTHG')) else None
                         ag = row['FTAG'] if pd.notna(row.get('FTAG')) else None
                         
-                        if hg is None or ag is None:
-                            continue
+                        if hg is None or ag is None: continue
                             
                         hc = row['HC'] if 'HC' in row and pd.notna(row['HC']) else 0
                         ac = row['AC'] if 'AC' in row and pd.notna(row['AC']) else 0
@@ -926,7 +906,6 @@ elif menu == "Portafolio de Picks":
                         mkt = pick['Mercado']
                         ganada = False
                         
-                        # --- MOTOR DE RESOLUCIÓN ---
                         if mkt == "Ganador (Local)": ganada = (hg > ag)
                         elif mkt == "Empate": ganada = (hg == ag)
                         elif mkt == "Ganador (Visita)": ganada = (ag > hg)
@@ -957,7 +936,6 @@ elif menu == "Portafolio de Picks":
                                     if signo == '+': ganada = (score > valor_linea)
                                     elif signo == '-': ganada = (score < valor_linea)
 
-                        # --- CÁLCULO DE LIQUIDACIÓN ---
                         estado = 'Ganada' if ganada else 'Perdida'
                         beneficio = (pick['Stake'] * pick['Cuota']) - pick['Stake'] if ganada else -pick['Stake']
                         
@@ -974,13 +952,12 @@ elif menu == "Portafolio de Picks":
                 st.success(f"¡Se liquidaron {liquidadas} partidos! 📈 Beneficio de esta tanda: **${beneficio_reciente:,.0f}** (Yield: **{yield_tanda:.2f}%**)")
             else: 
                 st.info("No hay partidos nuevos terminados para liquidar.")
-        # 2. Mostrar Resultados Globales
+                
         df_hist = pd.read_sql("SELECT * FROM portafolio_historico", conn)
         
         if not df_hist.empty:
             df_cerradas = df_hist[df_hist['Estado'] != 'Pendiente']
             
-            # Ampliamos a 4 columnas para agregar el Yield
             c_res1, c_res2, c_res3, c_res4 = st.columns(4)
             with c_res1:
                 st.metric("Picks Cerrados", len(df_cerradas))
@@ -989,7 +966,6 @@ elif menu == "Portafolio de Picks":
                 win_rate = (ganadas / len(df_cerradas) * 100) if len(df_cerradas) > 0 else 0
                 st.metric("Win Rate", f"{win_rate:.1f}%")
             with c_res3:
-                # Matemáticas del Yield Global: (Ganancia Neta Total / Dinero Total Invertido) * 100
                 beneficio_total = df_cerradas['Beneficio_Neto'].sum()
                 inversion_total = df_cerradas['Stake'].sum()
                 yield_global = (beneficio_total / inversion_total * 100) if inversion_total > 0 else 0
