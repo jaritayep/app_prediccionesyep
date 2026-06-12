@@ -534,7 +534,9 @@ elif menu == "Portafolio de Picks":
                 inversion_total = st.number_input("💰 Inversión TOTAL Portafolio ($)", min_value=1000, value=5000, step=500)
             with c2:
                 if fechas_disponibles:
-                    fecha_seleccionada = st.selectbox("📅 Seleccionar Día del Portafolio:", fechas_disponibles)
+                    hoy_str = str(pd.Timestamp.now().date())
+                    idx_hoy = fechas_disponibles.index(hoy_str) if hoy_str in fechas_disponibles else max(0, len(fechas_disponibles) - 1)
+                    fecha_seleccionada = st.selectbox("📅 Seleccionar Día del Portafolio:", fechas_disponibles, index=idx_hoy)
                 else:
                     st.error("⚠️ No se encontraron partidos en la carpeta 'odds_data/'. ¡Corre el scraper primero!")
                     fecha_seleccionada = None
@@ -753,108 +755,153 @@ elif menu == "Portafolio de Picks":
                 df_ops = df_ops[columnas_base]
 
                 TARGET_PICKS = 10
-                CUOTA_MAX_FALLBACK = 6.0  # Techo de cuota para picks de relleno
+                CUOTA_MAX_FALLBACK = 6.0
 
                 selected_indices = []
                 used_matches = set()
                 df_top_10_list = []
 
-                def add_pick(idx, nivel_label):
-                    partido = df_ops.loc[idx, 'Partido']
-                    if partido not in used_matches:
-                        selected_indices.append(idx)
+                # ── helpers ───────────────────────────────────────────────
+                def _mercados_elegidos(partido):
+                    return {r.iloc[0]['Mercado'] for r in df_top_10_list if r.iloc[0]['Partido'] == partido}
+
+                def add_pick(row_or_idx, nivel_label, from_df=True):
+                    """Agrega pick; from_df=True usa índice de df_ops, False recibe dict."""
+                    if from_df:
+                        row = df_ops.loc[row_or_idx]
+                        partido = row['Partido']
+                        if partido in used_matches:
+                            return False
                         used_matches.add(partido)
-                        df_top_10_list.append(df_ops.loc[[idx]].assign(Nivel=nivel_label))
-                        return True
-                    return False
+                        selected_indices.append(row_or_idx)
+                        df_top_10_list.append(df_ops.loc[[row_or_idx]].assign(Nivel=nivel_label))
+                    else:
+                        d = row_or_idx
+                        partido = d['Partido']
+                        if mkt_already_added(partido, d['Mercado']):
+                            return False
+                        used_matches.add(partido)
+                        df_top_10_list.append(pd.DataFrame([d]))
+                    return True
 
-                def get_available_pool(min_c, max_c):
-                    disponibles = df_ops[~df_ops['Partido'].isin(used_matches) & (df_ops['Cuota'] >= min_c) & (df_ops['Cuota'] < max_c)]
-                    return disponibles.drop_duplicates(subset=['Partido'], keep='first')
+                def mkt_already_added(partido, mercado):
+                    return mercado in _mercados_elegidos(partido)
 
-                # ── Fase 1: construcción normal por niveles de riesgo ──────
+                def get_pool(min_c, max_c, edge_min=0.02, edge_max=0.15):
+                    """Pool de df_ops filtrado por cuota y edge, excluyendo partidos ya usados."""
+                    mask = (
+                        ~df_ops['Partido'].isin(used_matches) &
+                        (df_ops['Cuota'] >= min_c) & (df_ops['Cuota'] < max_c) &
+                        (df_ops['Edge'] >= edge_min) & (df_ops['Edge'] <= edge_max)
+                    )
+                    return df_ops[mask].drop_duplicates(subset=['Partido'], keep='first')
+
+                def fill_bucket(min_c, max_c, target_n, nivel_label, edge_min=0.02, edge_max=0.15):
+                    """Intenta llenar un bucket hasta target_n picks dentro del rango de cuota."""
+                    added = 0
+                    pool = get_pool(min_c, max_c, edge_min, edge_max)
+                    # Selección diversificada: primero, medio, último (para los 3 slots)
+                    if pool.empty:
+                        return 0
+                    idxs = [pool.index[0]]
+                    if target_n >= 3:
+                        if len(pool) >= 3:
+                            idxs = [pool.index[0], pool.index[len(pool)//2], pool.index[-1]]
+                        elif len(pool) == 2:
+                            idxs = [pool.index[0], pool.index[-1]]
+                    elif target_n == 2 and len(pool) >= 2:
+                        idxs = [pool.index[0], pool.index[-1]]
+                    for idx in idxs:
+                        if add_pick(idx, nivel_label):
+                            added += 1
+                    return added
+
+                # ══════════════════════════════════════════════════════════
+                # FASE 1 — estructura 3-3-3-1 con edge estándar (2%-15%)
+                # ══════════════════════════════════════════════════════════
+
+                # Golden Pick: mejor edge general
                 for idx in df_ops.index:
                     if add_pick(idx, '⭐ Golden Pick'): break
 
-                pool_high = get_available_pool(2.50, 999.0)
-                for idx in pool_high.head(3).index: add_pick(idx, '🔴 Alto (>2.50)')
+                # Buckets: Alto 3, Medio 3, Bajo 3
+                n_high = fill_bucket(2.50, 999.0, 3, '🔴 Alto (>2.50)')
+                n_med  = fill_bucket(1.90, 2.50,  3, '🟡 Medio (1.90-2.49)')
+                n_low  = fill_bucket(0.0,  1.90,  3, '🟢 Bajo (<1.90)')
 
-                pool_med = get_available_pool(1.90, 2.50)
-                if not pool_med.empty:
-                    idxs = [pool_med.index[0]]
-                    if len(pool_med) >= 3: idxs.extend([pool_med.index[len(pool_med)//2], pool_med.index[-1]])
-                    elif len(pool_med) == 2: idxs.append(pool_med.index[-1])
-                    for idx in idxs: add_pick(idx, '🟡 Medio (1.90-2.49)')
+                # ══════════════════════════════════════════════════════════
+                # FASE 2 — ampliar edge MANTENIENDO estructura 3-3-3-1
+                # Solo si algún bucket quedó corto; se amplía ese bucket específico
+                # antes de romper la estructura.
+                # ══════════════════════════════════════════════════════════
+                EDGE_AMPLIADO_MIN = 0.01
+                EDGE_AMPLIADO_MAX = 0.20
 
-                pool_low = get_available_pool(0.0, 1.90)
-                if not pool_low.empty:
-                    idxs = [pool_low.index[0]]
-                    if len(pool_low) >= 3: idxs.extend([pool_low.index[len(pool_low)//2], pool_low.index[-1]])
-                    elif len(pool_low) == 2: idxs.append(pool_low.index[-1])
-                    for idx in idxs: add_pick(idx, '🟢 Bajo (<1.90)')
-
-                # ── Fase 2: relleno si hay menos de TARGET_PICKS ────────────
-                # Usamos df_ops (pool completo del escaneo, ya en session_state) +
-                # pool_mercados (todos con edge positivo, guardado durante el escaneo).
-                # Esto evita el error "oportunidades is not defined" que ocurría porque
-                # esa variable solo existe dentro del bloque st.button().
+                def faltantes_bucket(conteo_actual, target=3):
+                    return max(0, target - conteo_actual)
 
                 if len(df_top_10_list) < TARGET_PICKS:
-                    # Paso 2a: picks de df_ops con edge ampliado (0.01-0.20), cuota < CUOTA_MAX
-                    # Permitimos un mismo partido si el mercado es distinto a los ya elegidos
-                    pool_2a = df_ops[
-                        (df_ops['Edge'] >= 0.01) &
-                        (df_ops['Edge'] <= 0.20) &
+                    falt_high = faltantes_bucket(n_high)
+                    falt_med  = faltantes_bucket(n_med)
+                    falt_low  = faltantes_bucket(n_low)
+
+                    if falt_high:
+                        added = fill_bucket(2.50, 999.0, falt_high, '🔴 Alto — edge ampliado', EDGE_AMPLIADO_MIN, EDGE_AMPLIADO_MAX)
+                        n_high += added
+                    if falt_med:
+                        added = fill_bucket(1.90, 2.50, falt_med, '🟡 Medio — edge ampliado', EDGE_AMPLIADO_MIN, EDGE_AMPLIADO_MAX)
+                        n_med += added
+                    if falt_low:
+                        added = fill_bucket(0.0, 1.90, falt_low, '🟢 Bajo — edge ampliado', EDGE_AMPLIADO_MIN, EDGE_AMPLIADO_MAX)
+                        n_low += added
+
+                # ══════════════════════════════════════════════════════════
+                # FASE 3 — romper estructura: completar con cualquier pick
+                # válido (cuota < CUOTA_MAX_FALLBACK) si aún faltan picks.
+                # Primero df_ops (edge 0.01+), luego pool_mercados completo.
+                # ══════════════════════════════════════════════════════════
+                if len(df_top_10_list) < TARGET_PICKS:
+                    pool_libre = df_ops[
+                        (df_ops['Edge'] >= EDGE_AMPLIADO_MIN) &
                         (df_ops['Cuota'] < CUOTA_MAX_FALLBACK)
                     ].sort_values(by='Edge', ascending=False)
 
-                    for idx, ext_row in pool_2a.iterrows():
+                    for idx, ext_row in pool_libre.iterrows():
                         if len(df_top_10_list) >= TARGET_PICKS:
                             break
                         partido = ext_row['Partido']
-                        mercados_ya_elegidos = {
-                            r.iloc[0]['Mercado'] for r in df_top_10_list
-                            if r.iloc[0]['Partido'] == partido
-                        }
-                        if ext_row['Mercado'] not in mercados_ya_elegidos:
+                        if not mkt_already_added(partido, ext_row['Mercado']):
                             used_matches.add(partido)
-                            df_top_10_list.append(
-                                pd.DataFrame([{
-                                    'Date': ext_row['Date'], 'Home': ext_row['Home'], 'Away': ext_row['Away'],
-                                    'Partido': partido, 'Mercado': ext_row['Mercado'],
-                                    'Cuota': ext_row['Cuota'], 'Prob_IA': ext_row['Prob_IA'], 'Edge': ext_row['Edge'],
-                                    'Prob_IA_Str': ext_row['Prob_IA_Str'], 'Edge_Str': ext_row['Edge_Str'],
-                                    'Nivel': '🔵 Relleno (edge ampliado)'
-                                }])
-                            )
+                            df_top_10_list.append(pd.DataFrame([{
+                                'Date': ext_row['Date'], 'Home': ext_row['Home'], 'Away': ext_row['Away'],
+                                'Partido': partido, 'Mercado': ext_row['Mercado'],
+                                'Cuota': ext_row['Cuota'], 'Prob_IA': ext_row['Prob_IA'], 'Edge': ext_row['Edge'],
+                                'Prob_IA_Str': ext_row['Prob_IA_Str'], 'Edge_Str': ext_row['Edge_Str'],
+                                'Nivel': '🔵 Libre (sin estructura)'
+                            }]))
 
-                    # Paso 2b: pool_mercados guardado en session_state durante el escaneo
-                    # Contiene TODOS los mercados con edge > 0 y cuota < 8.0
+                    # Último recurso: pool_mercados de session_state (captura edge > 0)
                     if len(df_top_10_list) < TARGET_PICKS:
-                        pool_guardado = st.session_state.get('pool_mercados', [])
-                        pool_guardado_sorted = sorted(pool_guardado, key=lambda x: x[6], reverse=True)
-                        for fp, h, a, mkt, cf, pi, eg in pool_guardado_sorted:
+                        pool_guardado = sorted(
+                            st.session_state.get('pool_mercados', []),
+                            key=lambda x: x[6], reverse=True
+                        )
+                        for fp, h, a, mkt, cf, pi, eg in pool_guardado:
                             if len(df_top_10_list) >= TARGET_PICKS:
                                 break
                             if cf >= CUOTA_MAX_FALLBACK:
                                 continue
                             partido = f"{h} vs {a}"
-                            mercados_ya_elegidos = {
-                                r.iloc[0]['Mercado'] for r in df_top_10_list
-                                if r.iloc[0]['Partido'] == partido
-                            }
-                            if mkt not in mercados_ya_elegidos:
+                            if not mkt_already_added(partido, mkt):
                                 used_matches.add(partido)
-                                df_top_10_list.append(
-                                    pd.DataFrame([{
-                                        'Date': fp, 'Home': h, 'Away': a,
-                                        'Partido': partido, 'Mercado': mkt,
-                                        'Cuota': cf, 'Prob_IA': pi, 'Edge': eg,
-                                        'Prob_IA_Str': f"{pi*100:.1f}%",
-                                        'Edge_Str': f"{eg*100:.2f}%",
-                                        'Nivel': '⚪ Complementario'
-                                    }])
-                                )
+                                df_top_10_list.append(pd.DataFrame([{
+                                    'Date': fp, 'Home': h, 'Away': a,
+                                    'Partido': partido, 'Mercado': mkt,
+                                    'Cuota': cf, 'Prob_IA': pi, 'Edge': eg,
+                                    'Prob_IA_Str': f"{pi*100:.1f}%",
+                                    'Edge_Str': f"{eg*100:.2f}%",
+                                    'Nivel': '⚪ Complementario'
+                                }]))
 
 
                 faltantes = TARGET_PICKS - len(df_top_10_list)
@@ -1062,7 +1109,64 @@ elif menu == "Portafolio de Picks":
                 st.info("No hay partidos nuevos terminados para liquidar.")
                 
         df_hist = pd.read_sql("SELECT * FROM portafolio_historico", conn)
-        
+
+        # ── Importar portafolio externo ───────────────────────────
+        st.subheader("📥 Importar Portafolio Guardado")
+        with st.expander("Cargar archivo CSV o JSON para fusionar con el portafolio actual"):
+            archivo_importar = st.file_uploader(
+                "Sube un portafolio exportado (.csv o .json)",
+                type=["csv", "json"],
+                key="importar_portafolio"
+            )
+            if archivo_importar is not None:
+                try:
+                    if archivo_importar.name.endswith(".json"):
+                        df_import = pd.read_json(archivo_importar)
+                    else:
+                        df_import = pd.read_csv(archivo_importar)
+
+                    COLS_REQUERIDAS = {'Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado'}
+                    if not COLS_REQUERIDAS.issubset(set(df_import.columns)):
+                        st.error(f"❌ El archivo no tiene las columnas requeridas: {COLS_REQUERIDAS - set(df_import.columns)}")
+                    else:
+                        # Rellenar columnas opcionales si no vienen
+                        if 'Beneficio_Neto' not in df_import.columns:
+                            df_import['Beneficio_Neto'] = 0.0
+                        if 'Prob_IA' not in df_import.columns:
+                            df_import['Prob_IA'] = None
+                        if 'Edge' not in df_import.columns:
+                            df_import['Edge'] = None
+
+                        # Preview
+                        st.dataframe(df_import[['Date','HomeTeam','AwayTeam','Mercado','Cuota','Stake','Estado']].head(10), hide_index=True, use_container_width=True)
+                        st.caption(f"Total filas en archivo: {len(df_import)}")
+
+                        if st.button("⬆️ Fusionar con portafolio actual", type="primary"):
+                            nuevos = 0
+                            for _, row_i in df_import.iterrows():
+                                # Evitar duplicados exactos (mismo partido + mercado + fecha)
+                                existe = pd.read_sql(
+                                    "SELECT COUNT(*) as n FROM portafolio_historico WHERE Date=? AND HomeTeam=? AND AwayTeam=? AND Mercado=?",
+                                    conn,
+                                    params=(str(row_i['Date']), str(row_i['HomeTeam']), str(row_i['AwayTeam']), str(row_i['Mercado']))
+                                ).iloc[0]['n']
+                                if existe == 0:
+                                    cursor.execute(
+                                        "INSERT INTO portafolio_historico (Date, HomeTeam, AwayTeam, Mercado, Cuota, Stake, Estado, Beneficio_Neto, Prob_IA, Edge) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                        (str(row_i['Date']), str(row_i['HomeTeam']), str(row_i['AwayTeam']), str(row_i['Mercado']),
+                                         float(row_i['Cuota']), float(row_i['Stake']),
+                                         str(row_i.get('Estado', 'Pendiente')), float(row_i.get('Beneficio_Neto', 0)),
+                                         row_i.get('Prob_IA', None), row_i.get('Edge', None))
+                                    )
+                                    nuevos += 1
+                            conn.commit()
+                            st.success(f"✅ {nuevos} picks importados. {len(df_import) - nuevos} ya existían y se omitieron.")
+                            st.rerun()
+                except Exception as e:
+                    st.error(f"Error al importar: {e}")
+
+        st.divider()
+
         if not df_hist.empty:
             df_cerradas = df_hist[df_hist['Estado'] != 'Pendiente']
             
@@ -1075,14 +1179,35 @@ elif menu == "Portafolio de Picks":
                 st.metric("Win Rate", f"{win_rate:.1f}%")
             with c_res3:
                 beneficio_total = df_cerradas['Beneficio_Neto'].sum()
-                inversion_total = df_cerradas['Stake'].sum()
-                yield_global = (beneficio_total / inversion_total * 100) if inversion_total > 0 else 0
+                inversion_total_hist = df_cerradas['Stake'].sum()
+                yield_global = (beneficio_total / inversion_total_hist * 100) if inversion_total_hist > 0 else 0
                 st.metric("Yield (ROI)", f"{yield_global:.2f}%")
             with c_res4:
                 st.metric("Ganancia Neta Global", f"${beneficio_total:,.0f}")
-                
+
             st.divider()
+
+            # ── Descarga del portafolio ───────────────────────────
             st.write("📋 **Historial de Picks**")
+            col_dl1, col_dl2, col_dl3 = st.columns([2, 1, 1])
+            df_dl = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto', 'Prob_IA', 'Edge']].copy()
+
+            with col_dl2:
+                csv_bytes = df_dl.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="⬇️ Descargar CSV",
+                    data=csv_bytes,
+                    file_name=f"portafolio_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
+            with col_dl3:
+                json_bytes = df_dl.to_json(orient='records', force_ascii=False, indent=2).encode('utf-8')
+                st.download_button(
+                    label="⬇️ Descargar JSON",
+                    data=json_bytes,
+                    file_name=f"portafolio_{pd.Timestamp.now().strftime('%Y%m%d')}.json",
+                    mime="application/json"
+                )
             
             df_mostrar = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto']].copy()
             df_mostrar['Es_Pendiente'] = df_mostrar['Estado'] == 'Pendiente'
