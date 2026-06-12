@@ -755,7 +755,6 @@ elif menu == "Portafolio de Picks":
                 df_ops = df_ops[columnas_base]
 
                 TARGET_PICKS = 10
-                CUOTA_MAX_FALLBACK = 6.0
 
                 selected_indices = []
                 used_matches = set()
@@ -830,9 +829,8 @@ elif menu == "Portafolio de Picks":
                 n_low  = fill_bucket(0.0,  1.90,  3, '🟢 Bajo (<1.90)')
 
                 # ══════════════════════════════════════════════════════════
-                # FASE 2 — ampliar edge MANTENIENDO estructura 3-3-3-1
-                # Solo si algún bucket quedó corto; se amplía ese bucket específico
-                # antes de romper la estructura.
+                # FASE 2 — ampliar edge MANTENIENDO estructura 3-3-3-1 ESTRICTA
+                # Solo si algún bucket quedó corto; se amplía ese bucket específico.
                 # ══════════════════════════════════════════════════════════
                 EDGE_AMPLIADO_MIN = 0.01
                 EDGE_AMPLIADO_MAX = 0.20
@@ -855,58 +853,11 @@ elif menu == "Portafolio de Picks":
                         added = fill_bucket(0.0, 1.90, falt_low, '🟢 Bajo — edge ampliado', EDGE_AMPLIADO_MIN, EDGE_AMPLIADO_MAX)
                         n_low += added
 
-                # ══════════════════════════════════════════════════════════
-                # FASE 3 — romper estructura: completar con cualquier pick
-                # válido (cuota < CUOTA_MAX_FALLBACK) si aún faltan picks.
-                # Primero df_ops (edge 0.01+), luego pool_mercados completo.
-                # ══════════════════════════════════════════════════════════
-                if len(df_top_10_list) < TARGET_PICKS:
-                    pool_libre = df_ops[
-                        (df_ops['Edge'] >= EDGE_AMPLIADO_MIN) &
-                        (df_ops['Cuota'] < CUOTA_MAX_FALLBACK)
-                    ].sort_values(by='Edge', ascending=False)
-
-                    for idx, ext_row in pool_libre.iterrows():
-                        if len(df_top_10_list) >= TARGET_PICKS:
-                            break
-                        partido = ext_row['Partido']
-                        if not mkt_already_added(partido, ext_row['Mercado']):
-                            used_matches.add(partido)
-                            df_top_10_list.append(pd.DataFrame([{
-                                'Date': ext_row['Date'], 'Home': ext_row['Home'], 'Away': ext_row['Away'],
-                                'Partido': partido, 'Mercado': ext_row['Mercado'],
-                                'Cuota': ext_row['Cuota'], 'Prob_IA': ext_row['Prob_IA'], 'Edge': ext_row['Edge'],
-                                'Prob_IA_Str': ext_row['Prob_IA_Str'], 'Edge_Str': ext_row['Edge_Str'],
-                                'Nivel': '🔵 Libre (sin estructura)'
-                            }]))
-
-                    # Último recurso: pool_mercados de session_state (captura edge > 0)
-                    if len(df_top_10_list) < TARGET_PICKS:
-                        pool_guardado = sorted(
-                            st.session_state.get('pool_mercados', []),
-                            key=lambda x: x[6], reverse=True
-                        )
-                        for fp, h, a, mkt, cf, pi, eg in pool_guardado:
-                            if len(df_top_10_list) >= TARGET_PICKS:
-                                break
-                            if cf >= CUOTA_MAX_FALLBACK:
-                                continue
-                            partido = f"{h} vs {a}"
-                            if not mkt_already_added(partido, mkt):
-                                used_matches.add(partido)
-                                df_top_10_list.append(pd.DataFrame([{
-                                    'Date': fp, 'Home': h, 'Away': a,
-                                    'Partido': partido, 'Mercado': mkt,
-                                    'Cuota': cf, 'Prob_IA': pi, 'Edge': eg,
-                                    'Prob_IA_Str': f"{pi*100:.1f}%",
-                                    'Edge_Str': f"{eg*100:.2f}%",
-                                    'Nivel': '⚪ Complementario'
-                                }]))
-
+                # (La Fase 3 que rellenaba con picks al azar ha sido eliminada por completo)
 
                 faltantes = TARGET_PICKS - len(df_top_10_list)
                 if faltantes > 0:
-                    st.info(f"ℹ️ Se encontraron {len(df_top_10_list)} picks con edge positivo y cuota < {CUOTA_MAX_FALLBACK}. No se pudo completar el objetivo de {TARGET_PICKS}.")
+                    st.info(f"ℹ️ Estructura estricta: Se encontraron {len(df_top_10_list)} picks que encajan en el modelo 3-3-3-1. Quedaron {faltantes} espacios vacíos para proteger tu estrategia.")
 
                 df_top_10 = pd.concat(df_top_10_list).reset_index(drop=True) if df_top_10_list else pd.DataFrame()
 
