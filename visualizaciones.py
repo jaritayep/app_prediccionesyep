@@ -816,48 +816,103 @@ elif menu == "Portafolio de Picks":
                     return added
 
                 # ══════════════════════════════════════════════════════════
-                # FASE 1 — estructura 3-3-3-1 con edge estándar (2%-15%)
+                # FASE 1 — estructura 3-3-3-1 con edge ESTÁNDAR (2%-15%)
                 # ══════════════════════════════════════════════════════════
 
-                # Golden Pick: mejor edge general
+                # Golden Pick: mejor edge general (cuota cualquiera)
                 for idx in df_ops.index:
                     if add_pick(idx, '⭐ Golden Pick'): break
 
-                # Buckets: Alto 3, Medio 3, Bajo 3
+                # Buckets estándar: Alto 3, Medio 3, Bajo 3
                 n_high = fill_bucket(2.50, 999.0, 3, '🔴 Alto (>2.50)')
                 n_med  = fill_bucket(1.90, 2.50,  3, '🟡 Medio (1.90-2.49)')
                 n_low  = fill_bucket(0.0,  1.90,  3, '🟢 Bajo (<1.90)')
 
                 # ══════════════════════════════════════════════════════════
                 # FASE 2 — ampliar edge MANTENIENDO estructura 3-3-3-1 ESTRICTA
-                # Solo si algún bucket quedó corto; se amplía ese bucket específico.
+                # Se expande progresivamente hasta llenar cada bucket corto.
                 # ══════════════════════════════════════════════════════════
-                EDGE_AMPLIADO_MIN = 0.01
-                EDGE_AMPLIADO_MAX = 0.20
+                # Pasos de expansión: primero suavizamos el filtro (1%-20%),
+                # luego lo abrimos más (0.5%-25%) si aún faltan picks.
+                EDGE_PASOS = [
+                    (0.01, 0.20),
+                    (0.005, 0.25),
+                ]
 
                 def faltantes_bucket(conteo_actual, target=3):
                     return max(0, target - conteo_actual)
 
                 if len(df_top_10_list) < TARGET_PICKS:
-                    falt_high = faltantes_bucket(n_high)
-                    falt_med  = faltantes_bucket(n_med)
-                    falt_low  = faltantes_bucket(n_low)
+                    for edge_min_exp, edge_max_exp in EDGE_PASOS:
+                        if len(df_top_10_list) >= TARGET_PICKS:
+                            break
+                        falt_high = faltantes_bucket(n_high)
+                        falt_med  = faltantes_bucket(n_med)
+                        falt_low  = faltantes_bucket(n_low)
 
-                    if falt_high:
-                        added = fill_bucket(2.50, 999.0, falt_high, '🔴 Alto — edge ampliado', EDGE_AMPLIADO_MIN, EDGE_AMPLIADO_MAX)
-                        n_high += added
-                    if falt_med:
-                        added = fill_bucket(1.90, 2.50, falt_med, '🟡 Medio — edge ampliado', EDGE_AMPLIADO_MIN, EDGE_AMPLIADO_MAX)
-                        n_med += added
-                    if falt_low:
-                        added = fill_bucket(0.0, 1.90, falt_low, '🟢 Bajo — edge ampliado', EDGE_AMPLIADO_MIN, EDGE_AMPLIADO_MAX)
-                        n_low += added
+                        if falt_high:
+                            added = fill_bucket(2.50, 999.0, falt_high,
+                                                f'🔴 Alto — edge ampliado ({edge_min_exp:.1%}/{edge_max_exp:.0%})',
+                                                edge_min_exp, edge_max_exp)
+                            n_high += added
+                        if falt_med:
+                            added = fill_bucket(1.90, 2.50, falt_med,
+                                                f'🟡 Medio — edge ampliado ({edge_min_exp:.1%}/{edge_max_exp:.0%})',
+                                                edge_min_exp, edge_max_exp)
+                            n_med += added
+                        if falt_low:
+                            added = fill_bucket(0.0, 1.90, falt_low,
+                                                f'🟢 Bajo — edge ampliado ({edge_min_exp:.1%}/{edge_max_exp:.0%})',
+                                                edge_min_exp, edge_max_exp)
+                            n_low += added
 
-                # (La Fase 3 que rellenaba con picks al azar ha sido eliminada por completo)
+                # ══════════════════════════════════════════════════════════
+                # FASE 3 — romper la estructura 3-3-3-1 si aún faltan picks
+                # Se relajan los límites de cuota de cada bucket para
+                # absorber picks que no caben en ningún rango estricto.
+                # Orden: primero el bucket con más picks disponibles en el pool.
+                # ══════════════════════════════════════════════════════════
+                if len(df_top_10_list) < TARGET_PICKS:
+                    faltantes_f3 = TARGET_PICKS - len(df_top_10_list)
+
+                    # Pool amplio: edge 0.5%-25%, cuota 1.01-30, excluyendo ya usados
+                    pool_f3 = df_ops[
+                        (~df_ops['Partido'].isin(used_matches)) &
+                        (df_ops['Edge'] >= 0.005) & (df_ops['Edge'] <= 0.25) &
+                        (df_ops['Cuota'] >= 1.01) & (df_ops['Cuota'] < 30.0)
+                    ].drop_duplicates(subset=['Partido'], keep='first')
+
+                    # Ordenar por edge desc para elegir los mejores disponibles
+                    pool_f3 = pool_f3.sort_values('Edge', ascending=False)
+
+                    picks_f3 = 0
+                    for idx in pool_f3.index:
+                        if picks_f3 >= faltantes_f3:
+                            break
+                        cuota_f3 = pool_f3.loc[idx, 'Cuota']
+                        if cuota_f3 >= 2.50:
+                            nivel_f3 = '🔴 Alto — estructura flexible'
+                        elif cuota_f3 >= 1.90:
+                            nivel_f3 = '🟡 Medio — estructura flexible'
+                        else:
+                            nivel_f3 = '🟢 Bajo — estructura flexible'
+                        if add_pick(idx, nivel_f3):
+                            picks_f3 += 1
+
+                    if picks_f3 > 0:
+                        st.warning(
+                            f"⚠️ **Estructura flexible activada:** Se añadieron {picks_f3} pick(s) "
+                            f"rompiendo el esquema 3-3-3-1 para completar el portafolio. "
+                            f"Revisa el nivel '— estructura flexible' en la tabla."
+                        )
 
                 faltantes = TARGET_PICKS - len(df_top_10_list)
                 if faltantes > 0:
-                    st.info(f"ℹ️ Estructura estricta: Se encontraron {len(df_top_10_list)} picks que encajan en el modelo 3-3-3-1. Quedaron {faltantes} espacios vacíos para proteger tu estrategia.")
+                    st.info(
+                        f"ℹ️ Portafolio parcial: Se encontraron **{len(df_top_10_list)} picks** "
+                        f"con edge positivo en toda la jornada. "
+                        f"Quedaron {faltantes} espacios vacíos — no hay suficiente mercado hoy para los 10 picks."
+                    )
 
                 df_top_10 = pd.concat(df_top_10_list).reset_index(drop=True) if df_top_10_list else pd.DataFrame()
 
