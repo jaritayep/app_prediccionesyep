@@ -126,6 +126,9 @@ if menu == "Análisis del Día":
             st.info("🌍 **Modo Internacional Automático:** No hay partidos de clubes programados. Mostrando Fixture del Mundial.")
 
         if not df_jornada.empty:
+            # 🎯 FIX: Ordenar cronológicamente antes de crear las etiquetas
+            df_jornada = df_jornada.sort_values(by='Date', ascending=True)
+            
             df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m')
 
             # 3. Selección en la sidebar
