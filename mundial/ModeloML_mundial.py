@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import classification_report, accuracy_score
 import joblib
@@ -14,22 +15,30 @@ def cargar_datos_limpios():
     print("📥 Extrayendo datos de la base local...")
     conn = sqlite3.connect('database_partidos.db')
     
-    # Seleccionamos explícitamente las columnas, IGNORANDO los xG
+    # Seleccionamos explícitamente las columnas, incluyendo xG
     query = """
-        SELECT Date, Torneo, HomeTeam, AwayTeam, FTHG, FTAG, FTR, HST, AST, HC, AC 
+        SELECT Date, Torneo, HomeTeam, AwayTeam, FTHG, FTAG, FTR, HST, AST, HC, AC,
+               xG_home, xG_away
         FROM historial_selecciones_ml
     """
     df = pd.read_sql(query, conn)
     conn.close()
 
+    # Rellenamos xG nulos con 0 antes de filtrar
+    df['xG_home'] = df['xG_home'].fillna(0)
+    df['xG_away'] = df['xG_away'].fillna(0)
+
     # Eliminamos cualquier fila que todavía tenga valores nulos en tiros o córners
     df = df.dropna(subset=['HST', 'AST', 'HC', 'AC'])
+
+    # Filtramos solo filas con datos reales de tiros (descartamos partidos sin estadísticas)
+    df = df[(df['HST'] + df['AST']) > 0]
     
     # Convertimos la fecha para ordenar cronológicamente
     df['Date'] = pd.to_datetime(df['Date'])
     df = df.sort_values('Date').reset_index(drop=True)
     
-    print(f"✅ Datos cargados: {len(df)} partidos 100% limpios y sin xG.")
+    print(f"✅ Datos cargados: {len(df)} partidos 100% limpios con datos de tiros reales.")
     return df
 
 # ==========================================
@@ -53,8 +62,8 @@ def preparar_features(df):
     df['Target'] = df['FTR'].map(mapa_resultados)
 
     # Variables de entrada para el modelo
-    # Utilizamos los códigos de los equipos y las estadísticas de fuerza ofensiva
-    features = ['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC']
+    # Utilizamos los códigos de los equipos y las estadísticas de fuerza ofensiva + xG
+    features = ['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC', 'xG_home', 'xG_away']
     
     X = df[features]
     y = df['Target']
@@ -74,7 +83,12 @@ def entrenar_modelo():
     
     print("🧠 Entrenando Random Forest Classifier...")
     # Configuración del modelo: 200 árboles de decisión para evitar sobreajuste (overfitting)
-    modelo = RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1)
+    # class_weight='balanced' corrige el desbalance de clases (47% local vs 30% visitante)
+    modelo_rf = RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1, class_weight='balanced')
+    modelo_rf.fit(X_train, y_train)
+
+    # Calibración isotónica para mejorar la calidad de las probabilidades
+    modelo = CalibratedClassifierCV(modelo_rf, method='isotonic', cv=5)
     modelo.fit(X_train, y_train)
     
     # Evaluamos el rendimiento en los datos de prueba (el futuro que el modelo no ha visto)

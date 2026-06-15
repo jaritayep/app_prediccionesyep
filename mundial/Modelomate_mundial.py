@@ -71,15 +71,19 @@ def predecir_fixture():
         hist_away = df_historial[df_historial['AwayTeam'] == away]
         avg_ast = hist_away['AST'].mean() if not hist_away.empty else 3.5
         avg_ac = hist_away['AC'].mean() if not hist_away.empty else 4.0
+
+        # Calcular xG promedio para local y visita
+        avg_xg_h = hist_home['xG_home'].mean() if not hist_home.empty and 'xG_home' in hist_home.columns and hist_home['xG_home'].mean() > 0 else 1.2
+        avg_xg_a = hist_away['xG_away'].mean() if not hist_away.empty and 'xG_away' in hist_away.columns and hist_away['xG_away'].mean() > 0 else 1.0
         
         # Codificar los nombres a números para la IA
         home_code = encoder.transform([home])[0]
         away_code = encoder.transform([away])[0]
         
         # Ensamblar las variables exactas que espera el modelo
-        # ['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC']
-        features_entrada = pd.DataFrame([[home_code, away_code, avg_hst, avg_ast, avg_hc, avg_ac]], 
-                                        columns=['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC'])
+        # ['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC', 'xG_home', 'xG_away']
+        features_entrada = pd.DataFrame([[home_code, away_code, avg_hst, avg_ast, avg_hc, avg_ac, avg_xg_h, avg_xg_a]],
+                                        columns=['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC', 'xG_home', 'xG_away'])
         
         # 🎯 LA MAGIA: predict_proba devuelve [Prob_Visita, Prob_Empate, Prob_Local]
         probabilidades = modelo.predict_proba(features_entrada)[0]

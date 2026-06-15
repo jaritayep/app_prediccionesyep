@@ -191,6 +191,8 @@ if menu == "Análisis del Día":
 
                         hst, hc = seguro_mean(df_sh, 'HST', 4.0), seguro_mean(df_sh, 'HC', 4.5)
                         ast, ac = seguro_mean(df_sa, 'AST', 3.5), seguro_mean(df_sa, 'AC', 4.0)
+                        xg_h = seguro_mean(df_sh, 'xG_home', 1.2)
+                        xg_a = seguro_mean(df_sa, 'xG_away', 1.0)
                         
                         gf_h, gc_h = seguro_mean(df_sh, 'FTHG', 1.5), seguro_mean(df_sh, 'FTAG', 1.0)
                         gf_a, gc_a = seguro_mean(df_sa, 'FTHG', 1.2), seguro_mean(df_sa, 'FTAG', 1.3)
@@ -198,7 +200,7 @@ if menu == "Análisis del Día":
                         if home_team in encoder_intl.classes_ and away_team in encoder_intl.classes_:
                             h_c = encoder_intl.transform([home_team])[0]
                             a_c = encoder_intl.transform([away_team])[0]
-                            X_input = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                            X_input = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac, xg_h, xg_a]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC','xG_home','xG_away'])
                             probs = modelo_intl.predict_proba(X_input)[0]
                             prob_visita, prob_empate, prob_local = probs[0], probs[1], probs[2]
                         else:
@@ -1370,10 +1372,13 @@ elif menu == "Mundial 2026":
         df_hist_wc = pd.read_sql("SELECT * FROM historial_selecciones_ml", conn)
 
         def _fuerza_seleccion(equipo):
-            hist = df_hist_wc[df_hist_wc['HomeTeam'] == equipo]
-            if hist.empty:
+            df_h = df_hist_wc[df_hist_wc['HomeTeam'] == equipo]
+            df_a = df_hist_wc[df_hist_wc['AwayTeam'] == equipo]
+            if df_h.empty and df_a.empty:
                 return 4.0, 5.0
-            return hist['HST'].mean(), hist['HC'].mean()
+            hst = pd.concat([df_h['HST'], df_a['AST']]).mean() if not (df_h.empty and df_a.empty) else 4.0
+            hc  = pd.concat([df_h['HC'],  df_a['AC']]).mean()  if not (df_h.empty and df_a.empty) else 5.0
+            return hst, hc
 
         def predecir_wc(h_raw, a_raw):
             h = TRADUCCION_WC.get(h_raw, h_raw)
@@ -1387,11 +1392,23 @@ elif menu == "Mundial 2026":
                 ast, ac = _fuerza_seleccion(a)
                 h_c = encoder_wc.transform([h])[0]
                 a_c = encoder_wc.transform([a])[0]
-                X = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]],
-                                  columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                # xG: promedio de partidos como local/visita, con defaults neutrales
+                hist_h_home = df_hist_wc[df_hist_wc['HomeTeam'] == h]
+                hist_a_away = df_hist_wc[df_hist_wc['AwayTeam'] == a]
+                xg_h = hist_h_home['xG_home'].mean() if not hist_h_home.empty and hist_h_home['xG_home'].mean() > 0 else 1.2
+                xg_a = hist_a_away['xG_away'].mean() if not hist_a_away.empty and hist_a_away['xG_away'].mean() > 0 else 1.0
+                X = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac, xg_h, xg_a]],
+                                  columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC','xG_home','xG_away'])
                 probs = modelo_wc.predict_proba(X)[0]
                 # sklearn RandomForest ordena clases alfabéticamente: A(way)=0, D(raw)=1, H(ome)=2
                 p_a_raw, p_d_raw, p_h_raw = float(probs[0]), float(probs[1]), float(probs[2])
+
+                # Neutral venue correction: flatten home advantage (World Cup on neutral ground)
+                NEUTRAL_FACTOR = 0.15  # reduces home advantage by 15%
+                p_h_raw = p_h_raw * (1 - NEUTRAL_FACTOR) + p_d_raw * (NEUTRAL_FACTOR / 2)
+                p_a_raw = p_a_raw * (1 - NEUTRAL_FACTOR) + p_d_raw * (NEUTRAL_FACTOR / 2)
+                total = p_h_raw + p_d_raw + p_a_raw
+                p_h_raw, p_d_raw, p_a_raw = p_h_raw/total, p_d_raw/total, p_a_raw/total
             else:
                 p_h_raw, p_d_raw, p_a_raw = 0.33, 0.33, 0.33
 
