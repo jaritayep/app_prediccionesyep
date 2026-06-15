@@ -189,22 +189,28 @@ if menu == "Análisis del Día":
                         def seguro_mean(df, col, default):
                             return df[col].mean() if not df.empty and col in df.columns and pd.notna(df[col].mean()) else default
 
-                        hst, hc = seguro_mean(df_sh, 'HST', 4.0), seguro_mean(df_sh, 'HC', 4.5)
-                        ast, ac = seguro_mean(df_sa, 'AST', 3.5), seguro_mean(df_sa, 'AC', 4.0)
-                        xg_h = seguro_mean(df_sh, 'xG_home', 1.2)
-                        xg_a = seguro_mean(df_sa, 'xG_away', 1.0)
-                        
-                        # Separar partidos por rol para calcular goles correctamente
+                        def concat_mean(s1, s2, default):
+                            combined = pd.concat([s1, s2])
+                            v = combined.mean()
+                            return v if not combined.empty and pd.notna(v) else default
+
+                        # Separar partidos por rol (columnas HST/AST/HC/AC/xG son posicionales)
                         df_sh_home = df_sh[df_sh['HomeTeam'] == home_team]
                         df_sh_away = df_sh[df_sh['AwayTeam'] == home_team]
                         df_sa_home = df_sa[df_sa['HomeTeam'] == away_team]
                         df_sa_away = df_sa[df_sa['AwayTeam'] == away_team]
 
-                        def concat_mean(s1, s2, default):
-                            combined = pd.concat([s1, s2])
-                            return combined.mean() if not combined.empty and pd.notna(combined.mean()) else default
+                        # Tiros al arco del equipo (HST cuando es local, AST cuando es visita)
+                        hst = concat_mean(df_sh_home['HST'], df_sh_away['AST'], 4.0)
+                        hc  = concat_mean(df_sh_home['HC'],  df_sh_away['AC'],  4.5)
+                        ast = concat_mean(df_sa_home['AST'], df_sa_away['HST'], 3.5)
+                        ac  = concat_mean(df_sa_home['AC'],  df_sa_away['HC'],  4.0)
 
-                        # Goles anotados y recibidos de cada equipo (combinando ambos roles)
+                        # xG del equipo (xG_home cuando es local, xG_away cuando es visita)
+                        xg_h = concat_mean(df_sh_home['xG_home'], df_sh_away['xG_away'], 1.2)
+                        xg_a = concat_mean(df_sa_home['xG_away'], df_sa_away['xG_home'], 1.0)
+
+                        # Goles anotados y recibidos por cada equipo (combinando ambos roles)
                         gf_h = concat_mean(df_sh_home['FTHG'], df_sh_away['FTAG'], 1.5)
                         gc_h = concat_mean(df_sh_home['FTAG'], df_sh_away['FTHG'], 1.0)
                         gf_a = concat_mean(df_sa_home['FTHG'], df_sa_away['FTAG'], 1.2)
