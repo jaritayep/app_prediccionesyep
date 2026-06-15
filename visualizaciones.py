@@ -194,9 +194,22 @@ if menu == "Análisis del Día":
                         xg_h = seguro_mean(df_sh, 'xG_home', 1.2)
                         xg_a = seguro_mean(df_sa, 'xG_away', 1.0)
                         
-                        gf_h, gc_h = seguro_mean(df_sh, 'FTHG', 1.5), seguro_mean(df_sh, 'FTAG', 1.0)
-                        gf_a, gc_a = seguro_mean(df_sa, 'FTHG', 1.2), seguro_mean(df_sa, 'FTAG', 1.3)
-                        
+                        # Separar partidos por rol para calcular goles correctamente
+                        df_sh_home = df_sh[df_sh['HomeTeam'] == home_team]
+                        df_sh_away = df_sh[df_sh['AwayTeam'] == home_team]
+                        df_sa_home = df_sa[df_sa['HomeTeam'] == away_team]
+                        df_sa_away = df_sa[df_sa['AwayTeam'] == away_team]
+
+                        def concat_mean(s1, s2, default):
+                            combined = pd.concat([s1, s2])
+                            return combined.mean() if not combined.empty and pd.notna(combined.mean()) else default
+
+                        # Goles anotados y recibidos de cada equipo (combinando ambos roles)
+                        gf_h = concat_mean(df_sh_home['FTHG'], df_sh_away['FTAG'], 1.5)
+                        gc_h = concat_mean(df_sh_home['FTAG'], df_sh_away['FTHG'], 1.0)
+                        gf_a = concat_mean(df_sa_home['FTHG'], df_sa_away['FTAG'], 1.2)
+                        gc_a = concat_mean(df_sa_home['FTAG'], df_sa_away['FTHG'], 1.3)
+
                         if home_team in encoder_intl.classes_ and away_team in encoder_intl.classes_:
                             h_c = encoder_intl.transform([home_team])[0]
                             a_c = encoder_intl.transform([away_team])[0]
