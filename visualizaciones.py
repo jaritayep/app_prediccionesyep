@@ -221,9 +221,95 @@ if menu == "Análisis del Día":
                             a_c = encoder_intl.transform([away_team])[0]
                             X_input = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac, xg_h, xg_a]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC','xG_home','xG_away'])
                             probs = modelo_intl.predict_proba(X_input)[0]
-                            prob_visita, prob_empate, prob_local = probs[0], probs[1], probs[2]
+                            p_a_raw, p_d_raw, p_h_raw = float(probs[0]), float(probs[1]), float(probs[2])
                         else:
-                            prob_visita, prob_empate, prob_local = 0.33, 0.34, 0.33
+                            p_h_raw, p_d_raw, p_a_raw = 0.33, 0.34, 0.33
+
+                        # ── Ajuste FIFA (igual que en predecir_wc) ───────────────
+                        _UEFA = {
+                            "France","Spain","England","Germany","Portugal","Netherlands",
+                            "Italy","Belgium","Croatia","Switzerland","Denmark","Austria",
+                            "Poland","Serbia","Ukraine","Czech Republic","Hungary","Slovakia",
+                            "Romania","Turkey","Scotland","Wales","Greece","Slovenia",
+                            "Albania","Georgia","Norway","Sweden","Finland",
+                            "Bosnia and Herzegovina","North Macedonia","Kosovo","Montenegro",
+                            "Bulgaria","Luxembourg","Belarus","Ireland","Northern Ireland",
+                            "Iceland","Israel"
+                        }
+                        _CONMEBOL = {
+                            "Argentina","Brazil","Uruguay","Colombia","Chile",
+                            "Ecuador","Peru","Paraguay","Venezuela","Bolivia"
+                        }
+                        try:
+                            _df_fifa = pd.read_csv('fifa_ranking_2026.csv')
+                            _df_fifa.columns = [c.strip() for c in _df_fifa.columns]
+                            _TRAD_CSV = {
+                                "Francia":"France","España":"Spain","Argentina":"Argentina",
+                                "Inglaterra":"England","Portugal":"Portugal","Brasil":"Brazil",
+                                "Países Bajos":"Netherlands","Marruecos":"Morocco","Bélgica":"Belgium",
+                                "Alemania":"Germany","Croacia":"Croatia","Italia":"Italy",
+                                "Colombia":"Colombia","Senegal":"Senegal","México":"Mexico",
+                                "Estados Unidos":"United States","Uruguay":"Uruguay","Japón":"Japan",
+                                "Suiza":"Switzerland","Dinamarca":"Denmark","Irán":"Iran",
+                                "Turquía":"Turkey","Ecuador":"Ecuador","Austria":"Austria",
+                                "Corea del Sur":"Korea Republic","Nigeria":"Nigeria","Australia":"Australia",
+                                "Argelia":"Algeria","Egipto":"Egypt","Canadá":"Canada",
+                                "Noruega":"Norway","Ucrania":"Ukraine","Panamá":"Panama",
+                                "Costa de Marfil":"Ivory Coast","Polonia":"Poland","Rusia":"Russia",
+                                "Gales":"Wales","Suecia":"Sweden","Serbia":"Serbia",
+                                "Paraguay":"Paraguay","Chequia":"Czech Republic","Hungría":"Hungary",
+                                "Escocia":"Scotland","Túnez":"Tunisia","Camerún":"Cameroon",
+                                "RD Congo":"DR Congo","Grecia":"Greece","Eslovaquia":"Slovakia",
+                                "Venezuela":"Venezuela","Uzbekistán":"Uzbekistan","Costa Rica":"Costa Rica",
+                                "Malí":"Mali","Perú":"Peru","Chile":"Chile","Catar":"Qatar",
+                                "Rumanía":"Romania","Irak":"Iraq","Eslovenia":"Slovenia",
+                                "Irlanda":"Ireland","Sudáfrica":"South Africa","Arabia Saudita":"Saudi Arabia",
+                                "Burkina Faso":"Burkina Faso","Jordania":"Jordan","Albania":"Albania",
+                                "Bosnia":"Bosnia and Herzegovina","Honduras":"Honduras",
+                                "Macedonia Norte":"North Macedonia","EAU":"United Arab Emirates",
+                                "Cabo Verde":"Cape Verde","Irlanda Norte":"Northern Ireland",
+                                "Jamaica":"Jamaica","Georgia":"Georgia","Finlandia":"Finland",
+                                "Ghana":"Ghana","Islandia":"Iceland","Bolivia":"Bolivia",
+                                "Israel":"Israel","Kosovo":"Kosovo","Omán":"Oman",
+                                "Guinea":"Guinea","Montenegro":"Montenegro","Curazao":"Curaçao",
+                                "Haití":"Haiti","Siria":"Syria","Nueva Zelanda":"New Zealand",
+                                "Bulgaria":"Bulgaria","Gabón":"Gabon","Uganda":"Uganda",
+                                "Angola":"Angola","Benín":"Benin","Baréin":"Bahrain",
+                                "Zambia":"Zambia","Tailandia":"Thailand","China":"China",
+                                "Palestina":"Palestine","Guatemala":"Guatemala",
+                                "Bielorrusia":"Belarus","Luxemburgo":"Luxembourg",
+                                "Vietnam":"Vietnam","El Salvador":"El Salvador",
+                            }
+                            _df_fifa['country_en'] = _df_fifa['country'].str.strip().map(_TRAD_CSV)
+                            _pts_min, _pts_max = _df_fifa['points'].min(), _df_fifa['points'].max()
+                            _val_min, _val_max = _df_fifa['valor_total_mill_eur'].min(), _df_fifa['valor_total_mill_eur'].max()
+                            _df_fifa['pts_norm'] = (_df_fifa['points'] - _pts_min) / (_pts_max - _pts_min)
+                            _df_fifa['val_norm'] = (_df_fifa['valor_total_mill_eur'] - _val_min) / (_val_max - _val_min)
+                            _FIFA_SCORES = dict(zip(_df_fifa['country_en'], zip(_df_fifa['pts_norm'], _df_fifa['val_norm'])))
+                        except Exception:
+                            _FIFA_SCORES = {}
+
+                        def _score_sel(eq):
+                            if eq in _FIFA_SCORES:
+                                pts_n, val_n = _FIFA_SCORES[eq]
+                            else:
+                                pts_n, val_n = 0.3, 0.05
+                            conf = 1.0 if eq in _UEFA or eq in _CONMEBOL else 0.0
+                            return 0.40 * pts_n + 0.40 * val_n + 0.20 * conf
+
+                        _score_h = _score_sel(home_team)
+                        _score_a = _score_sel(away_team)
+                        _diff    = _score_h - _score_a
+                        _mul_h   = max(0.1, 1.0 + _diff)
+                        _mul_a   = max(0.1, 1.0 - _diff)
+
+                        p_h_aj = p_h_raw * _mul_h
+                        p_a_aj = p_a_raw * _mul_a
+                        p_d_aj = p_d_raw * 0.9
+                        _suma  = p_h_aj + p_a_aj + p_d_aj
+                        prob_local   = p_h_aj / _suma
+                        prob_visita  = p_a_aj / _suma
+                        prob_empate  = p_d_aj / _suma
 
                         xg_h = (gf_h + gc_a) / 2
                         xg_a = (gf_a + gc_h) / 2
