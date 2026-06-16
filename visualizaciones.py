@@ -420,6 +420,7 @@ if menu == "Análisis del Día":
                     except Exception:
                         st.info("No se pudieron graficar las tarjetas.")
             # --- 🎯 NUEVA SECCIÓN: PROMEDIOS Y TENDENCIAS ---
+            # --- 🎯 NUEVA SECCIÓN: PROMEDIOS Y TENDENCIAS ---
             st.divider()
             st.subheader("📈 Promedios y Tendencias (Últimos 10 Partidos)")
             
@@ -474,36 +475,33 @@ if menu == "Análisis del Día":
                     promedios["Tarjetas Amarillas"] = sum(stats['amarillas'])/len(stats['amarillas'])
                 
                 tendencias = []
-                def check_over(lista, umbral, texto):
+                
+                def check_highest_over(lista, umbrales, texto):
                     if not lista: return
-                    count = sum(1 for x in lista if x > umbral)
-                    if count / n >= 0.75:
-                        tendencias.append(f"{texto} (+{umbral}) en {count}/{n} partidos")
+                    # Revisar desde el umbral más alto al más bajo
+                    for umbral in sorted(umbrales, reverse=True):
+                        count = sum(1 for x in lista if x > umbral)
+                        if count / n >= 0.75:
+                            if umbral == 0.5 and texto == "⚽ Goles del Equipo":
+                                tendencias.append(f"⚽ Anota al menos 1 gol en {count}/{n} partidos")
+                            else:
+                                tendencias.append(f"{texto} (+{umbral}) en {count}/{n} partidos")
+                            break # Detenerse tras encontrar la tendencia más alta que cumpla
 
                 # Goles Equipo
-                check_over(stats['gf'], 0.5, "⚽ Anota al menos 1 gol")
-                check_over(stats['gf'], 1.5, "⚽ Goles del Equipo")
-                check_over(stats['gf'], 2.5, "⚽ Goles del Equipo")
+                check_highest_over(stats['gf'], [0.5, 1.5, 2.5], "⚽ Goles del Equipo")
                 
                 # Goles Partido
-                check_over(stats['gt'], 1.5, "🥅 Goles en el Partido")
-                check_over(stats['gt'], 2.5, "🥅 Goles en el Partido")
-                check_over(stats['gt'], 3.5, "🥅 Goles en el Partido")
+                check_highest_over(stats['gt'], [1.5, 2.5, 3.5], "🥅 Goles en el Partido")
                 
                 # Córners Equipo
-                check_over(stats['ce'], 3.5, "🚩 Córners del Equipo")
-                check_over(stats['ce'], 4.5, "🚩 Córners del Equipo")
-                check_over(stats['ce'], 5.5, "🚩 Córners del Equipo")
+                check_highest_over(stats['ce'], [3.5, 4.5, 5.5], "🚩 Córners del Equipo")
                 
                 # Córners Totales
-                check_over(stats['ct'], 7.5, "⛳ Córners en el Partido")
-                check_over(stats['ct'], 8.5, "⛳ Córners en el Partido")
-                check_over(stats['ct'], 9.5, "⛳ Córners en el Partido")
+                check_highest_over(stats['ct'], [7.5, 8.5, 9.5], "⛳ Córners en el Partido")
                 
                 # Tiros a Puerta
-                check_over(stats['se'], 2.5, "🎯 Tiros al Arco")
-                check_over(stats['se'], 3.5, "🎯 Tiros al Arco")
-                check_over(stats['se'], 4.5, "🎯 Tiros al Arco")
+                check_highest_over(stats['se'], [2.5, 3.5, 4.5], "🎯 Tiros al Arco")
                 
                 # Rachas
                 if wins / n >= 0.75:
@@ -531,7 +529,7 @@ if menu == "Análisis del Día":
                     tabla_md += f"| {k} | **{v:.1f}** |\n"
                 st.markdown(tabla_md)
                 
-                st.markdown("**Tendencias**")
+                st.markdown("**🔥 Tendencias Altas (>75%)**")
                 if tend:
                     for t in tend: 
                         st.success(t)
@@ -541,7 +539,7 @@ if menu == "Análisis del Día":
             with ct1:
                 renderizar_columna(home_team, prom_h, tend_h)
             with ct2:
-                renderizar_columna(away_team, prom_a, tend_a)        
+                renderizar_columna(away_team, prom_a, tend_a)
         else:
             st.info("No hay partidos programados en la base de datos.")
 
