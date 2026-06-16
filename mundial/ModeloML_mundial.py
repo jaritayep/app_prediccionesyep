@@ -15,18 +15,15 @@ def cargar_datos_limpios():
     print("📥 Extrayendo datos de la base local...")
     conn = sqlite3.connect('database_partidos.db')
     
-    # Seleccionamos explícitamente las columnas, incluyendo xG
+    # xG excluido del modelo: 86 % de filas tienen xG=0 (almacenado como 0, no NaN).
+    # Incluirlo crea un desfase entrenamiento/inferencia porque en inferencia se usan
+    # promedios reales (0.3–1.5). Se revisará cuando la cobertura de xG supere el 50 %.
     query = """
-        SELECT Date, Torneo, HomeTeam, AwayTeam, FTHG, FTAG, FTR, HST, AST, HC, AC,
-               xG_home, xG_away
+        SELECT Date, Torneo, HomeTeam, AwayTeam, FTHG, FTAG, FTR, HST, AST, HC, AC
         FROM historial_selecciones_ml
     """
     df = pd.read_sql(query, conn)
     conn.close()
-
-    # Rellenamos xG nulos con 0 antes de filtrar
-    df['xG_home'] = df['xG_home'].fillna(0)
-    df['xG_away'] = df['xG_away'].fillna(0)
 
     # Eliminamos cualquier fila que todavía tenga valores nulos en tiros o córners
     df = df.dropna(subset=['HST', 'AST', 'HC', 'AC'])
@@ -61,9 +58,10 @@ def preparar_features(df):
     mapa_resultados = {'H': 2, 'D': 1, 'A': 0}
     df['Target'] = df['FTR'].map(mapa_resultados)
 
-    # Variables de entrada para el modelo
-    # Utilizamos los códigos de los equipos y las estadísticas de fuerza ofensiva + xG
-    features = ['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC', 'xG_home', 'xG_away']
+    # Variables de entrada para el modelo (6 features, sin xG)
+    # xG eliminado: cobertura insuficiente (~14 % de filas con datos reales).
+    # Revisitar cuando la cobertura supere el 50 %.
+    features = ['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC']
     
     X = df[features]
     y = df['Target']
@@ -81,13 +79,12 @@ def entrenar_modelo():
     # shuffle=False es CRÍTICO en deportes: entrenamos con el pasado para predecir el futuro
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
     
-    print("🧠 Entrenando Random Forest Classifier...")
-    # Configuración del modelo: 200 árboles de decisión para evitar sobreajuste (overfitting)
-    # class_weight='balanced' corrige el desbalance de clases (47% local vs 30% visitante)
+    print("🧠 Entrenando Random Forest Classifier con calibración isotónica...")
+    # Pasamos el estimador SIN ajustar directamente a CalibratedClassifierCV.
+    # Así el wrapper gestiona internamente los 5 folds: en cada fold entrena una
+    # instancia nueva del RF y la calibra, evitando el ajuste redundante previo.
+    # class_weight='balanced' corrige el desbalance (47 % local vs 30 % visitante).
     modelo_rf = RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1, class_weight='balanced')
-    modelo_rf.fit(X_train, y_train)
-
-    # Calibración isotónica para mejorar la calidad de las probabilidades
     modelo = CalibratedClassifierCV(modelo_rf, method='isotonic', cv=5)
     modelo.fit(X_train, y_train)
     

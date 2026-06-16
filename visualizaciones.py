@@ -219,7 +219,8 @@ if menu == "Análisis del Día":
                         if home_team in encoder_intl.classes_ and away_team in encoder_intl.classes_:
                             h_c = encoder_intl.transform([home_team])[0]
                             a_c = encoder_intl.transform([away_team])[0]
-                            X_input = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac, xg_h, xg_a]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC','xG_home','xG_away'])
+                            # Modelo entrenado con 6 features (xG eliminado por cobertura insuficiente)
+                            X_input = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
                             probs = modelo_intl.predict_proba(X_input)[0]
                             p_a_raw, p_d_raw, p_h_raw = float(probs[0]), float(probs[1]), float(probs[2])
                         else:
@@ -709,6 +710,7 @@ elif menu == "Portafolio de Picks":
                             if h_db in encoder_wc.classes_ and a_db in encoder_wc.classes_:
                                 h_c = encoder_wc.transform([h_db])[0]
                                 a_c = encoder_wc.transform([a_db])[0]
+                                # Modelo entrenado con 6 features (xG eliminado por cobertura insuficiente)
                                 X_input = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
                                 probs = modelo_wc.predict_proba(X_input)[0]
                                 prob_visita, prob_empate, prob_local = probs[0], probs[1], probs[2]
@@ -1408,8 +1410,10 @@ elif menu == "Mundial 2026":
         # ── Motor de predicción ───────────────────────────────────────────
 
         # Diccionario de traducción de nombres de selecciones
+        # NOTA: "South Korea" es el nombre correcto en historial_selecciones_ml.
+        # No se traduce — dejarlo aquí lo rompería (buscaría "Korea Republic" que no existe).
         TRADUCCION_WC = {
-            "Czechia": "Czech Republic", "South Korea": "Korea Republic",
+            "Czechia": "Czech Republic",
             "Bosnia-Herzegovina": "Bosnia and Herzegovina", "Cape Verde Islands": "Cape Verde",
             "Congo DR": "DR Congo", "USA": "United States"
         }
@@ -1497,13 +1501,9 @@ elif menu == "Mundial 2026":
                 ast, ac = _fuerza_seleccion(a)
                 h_c = encoder_wc.transform([h])[0]
                 a_c = encoder_wc.transform([a])[0]
-                # xG: promedio de partidos como local/visita, con defaults neutrales
-                hist_h_home = df_hist_wc[df_hist_wc['HomeTeam'] == h]
-                hist_a_away = df_hist_wc[df_hist_wc['AwayTeam'] == a]
-                xg_h = hist_h_home['xG_home'].mean() if not hist_h_home.empty and hist_h_home['xG_home'].mean() > 0 else 1.2
-                xg_a = hist_a_away['xG_away'].mean() if not hist_a_away.empty and hist_a_away['xG_away'].mean() > 0 else 1.0
-                X = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac, xg_h, xg_a]],
-                                  columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC','xG_home','xG_away'])
+                # Modelo entrenado con 6 features (xG eliminado por cobertura insuficiente)
+                X = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]],
+                                  columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
                 probs = modelo_wc.predict_proba(X)[0]
                 # sklearn RandomForest ordena clases alfabéticamente: A(way)=0, D(raw)=1, H(ome)=2
                 p_a_raw, p_d_raw, p_h_raw = float(probs[0]), float(probs[1]), float(probs[2])
