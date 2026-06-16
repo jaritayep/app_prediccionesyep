@@ -419,7 +419,129 @@ if menu == "Análisis del Día":
                             st.info("Sin datos suficientes de tarjetas para graficar H2H.")
                     except Exception:
                         st.info("No se pudieron graficar las tarjetas.")
+            # --- 🎯 NUEVA SECCIÓN: PROMEDIOS Y TENDENCIAS ---
+            st.divider()
+            st.subheader("📈 Promedios y Tendencias (Últimos 10 Partidos)")
+            
+            def calcular_promedios_tendencias(equipo, df_hist):
+                n = len(df_hist)
+                if n == 0: return {}, []
+                
+                stats = {'gf':[], 'gc':[], 'gt':[], 'ce':[], 'ct':[], 'se':[], 'amarillas':[]}
+                wins, no_loss = 0, 0
+                
+                for _, row in df_hist.iterrows():
+                    is_home = (row['HomeTeam'] == equipo)
                     
+                    gf = row['FTHG'] if is_home else row['FTAG']
+                    gc = row['FTAG'] if is_home else row['FTHG']
+                    
+                    ce = row['HC'] if 'HC' in row and pd.notna(row['HC']) else 0
+                    if not is_home: ce = row['AC'] if 'AC' in row and pd.notna(row['AC']) else 0
+                    
+                    ct_h = row['HC'] if 'HC' in row and pd.notna(row['HC']) else 0
+                    ct_a = row['AC'] if 'AC' in row and pd.notna(row['AC']) else 0
+                    
+                    se = row['HST'] if 'HST' in row and pd.notna(row['HST']) else 0
+                    if not is_home: se = row['AST'] if 'AST' in row and pd.notna(row['AST']) else 0
+                    
+                    am_h = row['HY'] if 'HY' in row and pd.notna(row['HY']) else None
+                    am_a = row['AY'] if 'AY' in row and pd.notna(row['AY']) else None
+                    am = am_h if is_home else am_a
+                    
+                    stats['gf'].append(gf)
+                    stats['gc'].append(gc)
+                    stats['gt'].append(gf + gc)
+                    stats['ce'].append(ce)
+                    stats['ct'].append(ct_h + ct_a)
+                    stats['se'].append(se)
+                    if am is not None: stats['amarillas'].append(am)
+                    
+                    if gf > gc:
+                        wins += 1
+                        no_loss += 1
+                    elif gf == gc:
+                        no_loss += 1
+                        
+                promedios = {
+                    "Goles Anotados": sum(stats['gf'])/n if n>0 else 0,
+                    "Goles Recibidos": sum(stats['gc'])/n if n>0 else 0,
+                    "Córners a Favor": sum(stats['ce'])/n if n>0 else 0,
+                    "Córners en Partido": sum(stats['ct'])/n if n>0 else 0,
+                    "Tiros al Arco": sum(stats['se'])/n if n>0 else 0,
+                }
+                if stats['amarillas']:
+                    promedios["Tarjetas Amarillas"] = sum(stats['amarillas'])/len(stats['amarillas'])
+                
+                tendencias = []
+                def check_over(lista, umbral, texto):
+                    if not lista: return
+                    count = sum(1 for x in lista if x > umbral)
+                    if count / n >= 0.75:
+                        tendencias.append(f"{texto} (+{umbral}) en {count}/{n} partidos")
+
+                # Goles Equipo
+                check_over(stats['gf'], 0.5, "⚽ Anota al menos 1 gol")
+                check_over(stats['gf'], 1.5, "⚽ Goles del Equipo")
+                check_over(stats['gf'], 2.5, "⚽ Goles del Equipo")
+                
+                # Goles Partido
+                check_over(stats['gt'], 1.5, "🥅 Goles en el Partido")
+                check_over(stats['gt'], 2.5, "🥅 Goles en el Partido")
+                check_over(stats['gt'], 3.5, "🥅 Goles en el Partido")
+                
+                # Córners Equipo
+                check_over(stats['ce'], 3.5, "🚩 Córners del Equipo")
+                check_over(stats['ce'], 4.5, "🚩 Córners del Equipo")
+                check_over(stats['ce'], 5.5, "🚩 Córners del Equipo")
+                
+                # Córners Totales
+                check_over(stats['ct'], 7.5, "⛳ Córners en el Partido")
+                check_over(stats['ct'], 8.5, "⛳ Córners en el Partido")
+                check_over(stats['ct'], 9.5, "⛳ Córners en el Partido")
+                
+                # Tiros a Puerta
+                check_over(stats['se'], 2.5, "🎯 Tiros al Arco")
+                check_over(stats['se'], 3.5, "🎯 Tiros al Arco")
+                check_over(stats['se'], 4.5, "🎯 Tiros al Arco")
+                
+                # Rachas
+                if wins / n >= 0.75:
+                    tendencias.append(f"🏆 Victorias en {wins}/{n} partidos")
+                if no_loss / n >= 0.75:
+                    tendencias.append(f"🛡️ Invicto en {no_loss}/{n} partidos")
+                    
+                return promedios, tendencias
+
+            # Obtener datos de los últimos 10 partidos para cada equipo
+            df_h10 = pd.read_sql(f'SELECT * FROM {hist_table} WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" ORDER BY Date DESC LIMIT 10', conn)
+            df_a10 = pd.read_sql(f'SELECT * FROM {hist_table} WHERE HomeTeam="{away_team}" OR AwayTeam="{away_team}" ORDER BY Date DESC LIMIT 10', conn)
+
+            prom_h, tend_h = calcular_promedios_tendencias(home_team, df_h10)
+            prom_a, tend_a = calcular_promedios_tendencias(away_team, df_a10)
+
+            ct1, ct2 = st.columns(2)
+            
+            def renderizar_columna(equipo, prom, tend):
+                st.markdown(f"#### {equipo}")
+                st.markdown("**📊 Promedios**")
+                
+                tabla_md = "| Estadística | Promedio |\n|---|---|\n"
+                for k, v in prom.items():
+                    tabla_md += f"| {k} | **{v:.1f}** |\n"
+                st.markdown(tabla_md)
+                
+                st.markdown("**Tendencias**")
+                if tend:
+                    for t in tend: 
+                        st.success(t)
+                else:
+                    st.info("Sin tendencias consistentes en los últimos 10 partidos.")
+
+            with ct1:
+                renderizar_columna(home_team, prom_h, tend_h)
+            with ct2:
+                renderizar_columna(away_team, prom_a, tend_a)        
         else:
             st.info("No hay partidos programados en la base de datos.")
 
