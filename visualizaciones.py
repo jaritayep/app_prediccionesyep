@@ -992,12 +992,22 @@ elif menu == "Portafolio de Picks":
                 used_matches = set()
                 df_top_10_list = []
 
+                # ── Definición de niveles de riesgo por cuota ─────────────
+                BUCKETS = [
+                    # (label, min_cuota, max_cuota)
+                    ('🔴 Alto (>2.50)',        2.50, 9999.0),
+                    ('🟡 Medio (1.90–2.49)',   1.90,  2.50),
+                    ('🟢 Bajo (<1.90)',         0.0,   1.90),
+                ]
+                # Contadores por bucket (índice = posición en BUCKETS)
+                bucket_counts = [0, 0, 0]
+
                 # ── helpers ───────────────────────────────────────────────
                 def _mercados_elegidos(partido):
                     return {r.iloc[0]['Mercado'] for r in df_top_10_list if r.iloc[0]['Partido'] == partido}
 
                 def add_pick(row_or_idx, nivel_label, from_df=True):
-                    """Agrega pick; from_df=True usa índice de df_ops, False recibe dict."""
+                    """Agrega pick. from_df=True usa índice de df_ops, False recibe dict."""
                     if from_df:
                         row = df_ops.loc[row_or_idx]
                         partido = row['Partido']
@@ -1009,31 +1019,26 @@ elif menu == "Portafolio de Picks":
                     else:
                         d = row_or_idx
                         partido = d['Partido']
-                        if mkt_already_added(partido, d['Mercado']):
+                        if (partido, d['Mercado']) in {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}:
                             return False
                         used_matches.add(partido)
                         df_top_10_list.append(pd.DataFrame([d]))
                     return True
 
-                def mkt_already_added(partido, mercado):
-                    return mercado in _mercados_elegidos(partido)
-
-                def get_pool(min_c, max_c, edge_min=0.02, edge_max=0.15):
-                    """Pool de df_ops filtrado por cuota y edge, excluyendo partidos ya usados."""
+                def get_pool(min_c, max_c, edge_min, edge_max):
+                    """Pool filtrado por cuota y edge, excluyendo partidos ya usados."""
                     mask = (
-                        ~df_ops['Partido'].isin(used_matches) &
-                        (df_ops['Cuota'] >= min_c) & (df_ops['Cuota'] < max_c) &
-                        (df_ops['Edge'] >= edge_min) & (df_ops['Edge'] <= edge_max)
+                        ~df_ops['Partido'].isin(used_matches)
+                        & (df_ops['Cuota'] >= min_c) & (df_ops['Cuota'] < max_c)
+                        & (df_ops['Edge'] >= edge_min) & (df_ops['Edge'] <= edge_max)
                     )
                     return df_ops[mask].drop_duplicates(subset=['Partido'], keep='first')
 
-                def fill_bucket(min_c, max_c, target_n, nivel_label, edge_min=0.02, edge_max=0.15):
-                    """Intenta llenar un bucket hasta target_n picks dentro del rango de cuota.
-                    Itera por todo el pool hasta completar target_n slots (1 partido por pick)."""
+                def fill_bucket(bucket_idx, target_n, nivel_label, edge_min, edge_max):
+                    """Intenta llenar el bucket hasta target_n picks."""
+                    _, min_c, max_c = BUCKETS[bucket_idx]
                     added = 0
                     pool = get_pool(min_c, max_c, edge_min, edge_max)
-                    if pool.empty:
-                        return 0
                     for idx in pool.index:
                         if added >= target_n:
                             break
@@ -1045,57 +1050,53 @@ elif menu == "Portafolio de Picks":
                     return max(0, target - conteo_actual)
 
                 # ══════════════════════════════════════════════════════════
-                # FASE 1 — estructura 3-3-3-1 con edge ESTÁNDAR (2%-15%)
+                # FASE 1 — estructura 1-3-3-3 con edge ESTÁNDAR (2%–15%)
                 # ══════════════════════════════════════════════════════════
+                EDGE_STD_MIN, EDGE_STD_MAX = 0.02, 0.15
 
-                # Golden Pick: mejor edge general (cuota cualquiera)
-                for idx in df_ops.index:
-                    if add_pick(idx, '⭐ Golden Pick'): break
+                # Golden Pick: mejor edge global (cualquier cuota)
+                for idx in df_ops[
+                    (df_ops['Edge'] >= EDGE_STD_MIN)
+                    & (df_ops['Edge'] <= EDGE_STD_MAX)
+                ].index:
+                    if add_pick(idx, '⭐ Golden Pick'):
+                        break
 
-                # Buckets estándar: Alto 3, Medio 3, Bajo 3
-                n_high = fill_bucket(2.50, 999.0, 3, '🔴 Alto (>2.50)')
-                n_med  = fill_bucket(1.90, 2.50,  3, '🟡 Medio (1.90-2.49)')
-                n_low  = fill_bucket(0.0,  1.90,  3, '🟢 Bajo (<1.90)')
+                # Si no hay golden con estándar, usar el mejor edge disponible (≤30%)
+                if len(df_top_10_list) == 0:
+                    for idx in df_ops[df_ops['Edge'] <= 0.30].index:
+                        if add_pick(idx, '⭐ Golden Pick (ext.)'):
+                            break
+
+                # Buckets estándar: 3 altos, 3 medios, 3 bajos
+                for bi in range(3):
+                    lbl = BUCKETS[bi][0]
+                    bucket_counts[bi] = fill_bucket(bi, 3, lbl, EDGE_STD_MIN, EDGE_STD_MAX)
 
                 # ══════════════════════════════════════════════════════════
-                # FASE 2 — ampliar edge MANTENIENDO estructura 3-3-3-1 ESTRICTA
-                # Se expande en pasos progresivos bucket por bucket.
+                # FASE 2 — ampliar edge HASTA 30% (en pasos), bucket por bucket
+                #          NUNCA superar 30% de edge máximo.
                 # ══════════════════════════════════════════════════════════
                 EDGE_PASOS = [
                     (0.01,  0.20),   # paso 1: relajar un poco
                     (0.005, 0.25),   # paso 2: abrir más
-                    (0.001, 0.35),   # paso 3: casi cualquier edge positivo
+                    (0.001, 0.30),   # paso 3: hasta el máximo permitido (30%)
                 ]
 
-                if len(df_top_10_list) < TARGET_PICKS:
-                    for edge_min_exp, edge_max_exp in EDGE_PASOS:
-                        if len(df_top_10_list) >= TARGET_PICKS:
-                            break
-                        falt_high = faltantes_bucket(n_high)
-                        falt_med  = faltantes_bucket(n_med)
-                        falt_low  = faltantes_bucket(n_low)
-                        lbl_suf = f'edge {edge_min_exp:.1%}–{edge_max_exp:.0%}'
-
-                        if falt_high:
-                            added = fill_bucket(2.50, 999.0, falt_high,
-                                                f'🔴 Alto — {lbl_suf}',
-                                                edge_min_exp, edge_max_exp)
-                            n_high += added
-                        if falt_med:
-                            added = fill_bucket(1.90, 2.50, falt_med,
-                                                f'🟡 Medio — {lbl_suf}',
-                                                edge_min_exp, edge_max_exp)
-                            n_med += added
-                        if falt_low:
-                            added = fill_bucket(0.0, 1.90, falt_low,
-                                                f'🟢 Bajo — {lbl_suf}',
-                                                edge_min_exp, edge_max_exp)
-                            n_low += added
+                for edge_min_exp, edge_max_exp in EDGE_PASOS:
+                    if all(bucket_counts[bi] >= 3 for bi in range(3)):
+                        break
+                    lbl_suf = f'edge {edge_min_exp:.1%}–{edge_max_exp:.0%}'
+                    for bi in range(3):
+                        falt = faltantes_bucket(bucket_counts[bi])
+                        if falt:
+                            lbl = f'{BUCKETS[bi][0]} — {lbl_suf}'
+                            added = fill_bucket(bi, falt, lbl, edge_min_exp, edge_max_exp)
+                            bucket_counts[bi] += added
 
                 # ══════════════════════════════════════════════════════════
-                # FASE 3 — estructura flexible: llenar con lo que haya
-                # Usa el pool completo (mercados_evaluados_completos) que
-                # incluye TODO lo que tenga edge > 0, sin límite de rango.
+                # FASE 3 — estructura flexible: llenar con lo que haya (≤30% edge)
+                # Usa el pool completo (mercados_evaluados_completos).
                 # Permite repetir partido si es mercado distinto.
                 # ══════════════════════════════════════════════════════════
                 if len(df_top_10_list) < TARGET_PICKS:
@@ -1112,6 +1113,9 @@ elif menu == "Portafolio de Picks":
                         df_f3['Prob_IA_Str'] = (df_f3['Prob_IA'] * 100).round(1).astype(str) + "%"
                         df_f3['Edge_Str']    = (df_f3['Edge']    * 100).round(2).astype(str) + "%"
 
+                        # Respetar el tope de edge del 30%
+                        df_f3 = df_f3[df_f3['Edge'] <= 0.30]
+
                         # Excluir mercados exactos ya elegidos (partido+mercado)
                         mercados_ya_en_portfolio = set()
                         for item in df_top_10_list:
@@ -1122,7 +1126,7 @@ elif menu == "Portafolio de Picks":
                             ~df_f3.apply(lambda r: (r['Partido'], r['Mercado']) in mercados_ya_en_portfolio, axis=1)
                         ]
 
-                        # Ordenar: mayor edge primero, preferir partidos nuevos
+                        # Ordenar: preferir partidos nuevos, luego mayor edge
                         df_f3['es_partido_nuevo'] = (~df_f3['Partido'].isin(used_matches)).astype(int)
                         df_f3 = df_f3.sort_values(['es_partido_nuevo', 'Edge'], ascending=[False, False])
 
@@ -1133,10 +1137,13 @@ elif menu == "Portafolio de Picks":
                             cuota_f3 = row_f3['Cuota']
                             if cuota_f3 >= 2.50:
                                 nivel_f3 = '🔴 Flexible (alto)'
+                                bi_f3 = 0
                             elif cuota_f3 >= 1.90:
                                 nivel_f3 = '🟡 Flexible (medio)'
+                                bi_f3 = 1
                             else:
                                 nivel_f3 = '🟢 Flexible (bajo)'
+                                bi_f3 = 2
 
                             entry = {
                                 'Date': row_f3['Date'], 'Home': row_f3['Home'], 'Away': row_f3['Away'],
@@ -1145,17 +1152,18 @@ elif menu == "Portafolio de Picks":
                                 'Prob_IA_Str': row_f3['Prob_IA_Str'], 'Edge_Str': row_f3['Edge_Str'],
                                 'Partido': row_f3['Partido'], 'Nivel': nivel_f3
                             }
-                            # add_pick controla duplicados de partido; aquí permitimos mismo partido distinto mercado
+                            # Permitimos mismo partido si es mercado distinto
                             partido_f3 = row_f3['Partido']
                             if partido_f3 not in used_matches:
                                 used_matches.add(partido_f3)
                             df_top_10_list.append(pd.DataFrame([entry]))
+                            bucket_counts[bi_f3] += 1
                             picks_f3 += 1
 
                         if picks_f3 > 0:
                             st.warning(
-                                f"⚠️ **Modo flexible activado:** Se añadieron {picks_f3} pick(s) "
-                                f"con el mejor edge disponible fuera del rango estándar. "
+                                f"⚠️ **Modo flexible activado (≤30% edge):** Se añadieron {picks_f3} pick(s) "
+                                f"con el mejor edge disponible fuera del rango estándar (2%–15%). "
                                 f"Aparecen como 'Flexible' en la tabla — úsalos con criterio."
                             )
 
@@ -1188,6 +1196,16 @@ elif menu == "Portafolio de Picks":
 
                 modo = "completo ✅" if len(df_top_10) >= TARGET_PICKS else f"parcial ({len(df_top_10)}/{TARGET_PICKS} picks)"
                 st.success(f"Escaneo listo. Portafolio {modo} — {len(df_top_10)} picks seleccionados.")
+
+                # ── Resumen de estructura 1-3-3-3 ─────────────────────────
+                n_golden = sum(1 for d in df_top_10_list if 'Golden' in str(d.iloc[0].get('Nivel','')))
+                _bc = bucket_counts  # [alto, medio, bajo]
+                col_g, col_h, col_m, col_l = st.columns(4)
+                col_g.metric("⭐ Golden", f"{n_golden}/1")
+                col_h.metric("🔴 Alto",  f"{_bc[0]}/3")
+                col_m.metric("🟡 Medio", f"{_bc[1]}/3")
+                col_l.metric("🟢 Bajo",  f"{_bc[2]}/3")
+
                 st.markdown(f"### 🎯 Portafolio ({len(df_top_10)} picks)")
                 
                 edit_top10 = st.data_editor(
@@ -1521,9 +1539,14 @@ elif menu == "Mundial 2026":
         modelo_wc  = joblib.load('modelo_selecciones_rf.pkl')
         encoder_wc = joblib.load('encoder_equipos_selecciones.pkl')
         # Solo partidos de grupos (Grupo = GROUP_A … GROUP_L)
+        # Incluimos FTHG/FTAG para detectar resultados ya guardados
         df_fixture_wc = pd.read_sql(
             "SELECT * FROM fixture_mundial WHERE Grupo LIKE 'GROUP_%'", conn
         )
+        # Asegurar que las columnas de resultado existen aunque la tabla sea antigua
+        for _col in ('FTHG', 'FTAG'):
+            if _col not in df_fixture_wc.columns:
+                df_fixture_wc[_col] = None
         # Columna auxiliar: solo la letra (GROUP_A → A)
         df_fixture_wc['_letra'] = df_fixture_wc['Grupo'].str.replace('GROUP_', '', regex=False).str.strip()
 
@@ -1781,6 +1804,16 @@ elif menu == "Mundial 2026":
         terceros    = []          # (pts, dg, gf, letra, equipo)
         grupos_data = {}          # letra → {tabla: df, partidos: list}
 
+        # ── Asegurar columnas de resultado en fixture_mundial ─────────────
+        cursor_wc = conn.cursor()
+        cursor_wc.execute("PRAGMA table_info(fixture_mundial)")
+        cols_fixture = {r[1] for r in cursor_wc.fetchall()}
+        if 'FTHG' not in cols_fixture:
+            cursor_wc.execute("ALTER TABLE fixture_mundial ADD COLUMN FTHG INTEGER")
+        if 'FTAG' not in cols_fixture:
+            cursor_wc.execute("ALTER TABLE fixture_mundial ADD COLUMN FTAG INTEGER")
+        conn.commit()
+
         for letra in grupos_keys:
             df_g = df_fixture_wc[df_fixture_wc['_letra'] == letra].copy()
             if df_g.empty:
@@ -1791,7 +1824,48 @@ elif menu == "Mundial 2026":
 
             for _, p in df_g.iterrows():
                 h, a = str(p['HomeTeam']).strip(), str(p['AwayTeam']).strip()
-                res  = predecir_wc(h, a)
+
+                # ── ¿Ya existe resultado real guardado? ──────────────────
+                fthg_db = p.get('FTHG', None)
+                ftag_db = p.get('FTAG', None)
+                tiene_resultado = (
+                    fthg_db is not None
+                    and ftag_db is not None
+                    and pd.notna(fthg_db)
+                    and pd.notna(ftag_db)
+                )
+
+                if tiene_resultado:
+                    # Usar resultado real; calcular puntos correctamente
+                    gh, ga = int(fthg_db), int(ftag_db)
+                    if gh > ga:
+                        pts_h, pts_a = 3, 0
+                    elif ga > gh:
+                        pts_h, pts_a = 0, 3
+                    else:
+                        pts_h, pts_a = 1, 1
+                    res = {'Pts_H': pts_h, 'Pts_A': pts_a, 'GH': gh, 'GA': ga,
+                           'p_h': 1.0 if pts_h == 3 else 0.0,
+                           'p_a': 1.0 if pts_a == 3 else 0.0}
+                else:
+                    # Simular con IA y guardar predicción en la BD
+                    res = predecir_wc(h, a)
+                    # Actualizar (o insertar) el resultado simulado en fixture_mundial
+                    # si la fila tiene un ID único usamos rowid implícito de SQLite
+                    try:
+                        if 'id' in p.index and pd.notna(p.get('id')):
+                            cursor_wc.execute(
+                                "UPDATE fixture_mundial SET FTHG=?, FTAG=? WHERE id=?",
+                                (res['GH'], res['GA'], int(p['id']))
+                            )
+                        else:
+                            cursor_wc.execute(
+                                "UPDATE fixture_mundial SET FTHG=?, FTAG=? WHERE HomeTeam=? AND AwayTeam=? AND Grupo=?",
+                                (res['GH'], res['GA'], h, a, p['Grupo'])
+                            )
+                        conn.commit()
+                    except Exception:
+                        pass  # No crítico — la simulación sigue funcionando
 
                 for eq in (h, a):
                     if eq not in tabla:
@@ -1801,7 +1875,8 @@ elif menu == "Mundial 2026":
                 tabla[h]['GC']  += res['GA'];    tabla[h]['PJ'] += 1
                 tabla[a]['Pts'] += res['Pts_A']; tabla[a]['GF'] += res['GA']
                 tabla[a]['GC']  += res['GH'];    tabla[a]['PJ'] += 1
-                partidos.append({'H': h, 'A': a, 'GH': res['GH'], 'GA': res['GA']})
+                partidos.append({'H': h, 'A': a, 'GH': res['GH'], 'GA': res['GA'],
+                                 'Real': tiene_resultado})
 
             df_t = pd.DataFrame([
                 {'Sel': eq, 'PJ': v['PJ'], 'Pts': v['Pts'],
@@ -1891,12 +1966,13 @@ elif menu == "Mundial 2026":
                             gh, ga = m['GH'], m['GA']
                             h_n = m['H'][:13] + ("…" if len(m['H']) > 13 else "")
                             a_n = m['A'][:13] + ("…" if len(m['A']) > 13 else "")
+                            badge = ' <span style="color:#2ecc71;font-size:0.65rem">✅</span>' if m.get('Real') else ' <span style="color:#555;font-size:0.65rem">🔮</span>'
                             if gh > ga:
-                                s = f'<span class="wc-win">{h_n} {gh}</span>–{ga} {a_n}'
+                                s = f'<span class="wc-win">{h_n} {gh}</span>–{ga} {a_n}{badge}'
                             elif ga > gh:
-                                s = f'{h_n} {gh}–<span class="wc-win">{ga} {a_n}</span>'
+                                s = f'{h_n} {gh}–<span class="wc-win">{ga} {a_n}</span>{badge}'
                             else:
-                                s = f'{h_n} <span class="wc-draw">{gh}–{ga}</span> {a_n}'
+                                s = f'{h_n} <span class="wc-draw">{gh}–{ga}</span> {a_n}{badge}'
                             html_m += f'<div class="wc-match">{s}</div>'
                         html_m += '</div>'
                         st.markdown(html_m, unsafe_allow_html=True)
