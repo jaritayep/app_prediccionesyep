@@ -107,9 +107,13 @@ st.sidebar.markdown("---")
 
 if menu == "Análisis del Día":
     try:
-        # 1. Intentar cargar partidos de clubes
+        # 1. Cargar partidos de clubes
         df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
-        hoy = pd.Timestamp.now().normalize()
+        hoy        = pd.Timestamp.now().normalize()
+        # ── Partidos visibles todo el día hasta las 23:59 ──
+        # Filtramos >= hoy (fecha normalizada), NO por hora, así el partido
+        # del día de hoy no desaparece hasta que cambie el día calendario.
+        manana = hoy + pd.Timedelta(days=1)
 
         if not df_jornada.empty:
             df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
@@ -117,36 +121,124 @@ if menu == "Análisis del Día":
 
         es_mundial = False
 
-        # 2. 🎯 MODO INTERNACIONAL (Fallback si no hay clubes)
+        # 2. Fallback al Mundial si no hay clubes
         if df_jornada.empty:
-            df_jornada = pd.read_sql("SELECT * FROM fixture_mundial WHERE HomeTeam != 'TBA' AND AwayTeam != 'TBA'", conn)
-            df_jornada['Date'] = pd.to_datetime(df_jornada['Date'], errors='coerce').dt.tz_localize(None).dt.normalize()
+            df_jornada = pd.read_sql(
+                "SELECT * FROM fixture_mundial WHERE HomeTeam != 'TBA' AND AwayTeam != 'TBA'", conn
+            )
+            df_jornada['Date'] = (
+                pd.to_datetime(df_jornada['Date'], errors='coerce')
+                .dt.tz_localize(None).dt.normalize()
+            )
             df_jornada = df_jornada[df_jornada['Date'] >= hoy]
             es_mundial = True
             st.info("🌍 **Modo Internacional Automático:** No hay partidos de clubes programados. Mostrando Fixture del Mundial.")
 
         if not df_jornada.empty:
             df_jornada = df_jornada.sort_values(by='Date', ascending=True)
-            df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%A %d/%m')
+            df_jornada['Fecha_Display'] = df_jornada['Date'].dt.strftime('%a %d/%m')
 
-            # 3. Selección en la sidebar
+            # ── CSS compartido para las cards de partido ──
+            st.markdown("""
+            <style>
+            div[data-testid="stHorizontalBlock"] .match-card-wrap { width:100%; }
+            </style>
+            """, unsafe_allow_html=True)
+
+            # ─────────────────────────────────────────────
+            # SECCIÓN SELECTOR EN PANTALLA PRINCIPAL
+            # ─────────────────────────────────────────────
             opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
-            dia_sel_str = st.sidebar.selectbox("📅 Seleccionar Día:", opciones_fecha)
 
-            partidos_dia = df_jornada[df_jornada['Fecha_Display'] == dia_sel_str]
+            # ── Tabs de fecha (máx 7 para no colapsar en móvil) ──
+            tabs_fechas = st.tabs(opciones_fecha[:7])
 
-            if es_mundial:
-                partidos_list = partidos_dia['HomeTeam'] + " vs " + partidos_dia['AwayTeam']
-            else:
-                partidos_list = partidos_dia['Local'] + " vs " + partidos_dia['Visita']
+            partido_texto  = None
+            dia_sel_str    = opciones_fecha[0]   # default
 
-            partido_texto = st.sidebar.selectbox("🏟️ Partido:", partidos_list)
+            for i, tab in enumerate(tabs_fechas):
+                fecha_label = opciones_fecha[i]
+                partidos_dia = df_jornada[df_jornada['Fecha_Display'] == fecha_label]
 
-            # Separar y corregir nombres
+                if es_mundial:
+                    lista_partidos = (partidos_dia['HomeTeam'] + " vs " + partidos_dia['AwayTeam']).tolist()
+                else:
+                    lista_partidos = (partidos_dia['Local'] + " vs " + partidos_dia['Visita']).tolist()
+
+                with tab:
+                    # Inicializar estado para esta pestaña
+                    _state_key = f"partido_sel_{i}"
+                    if _state_key not in st.session_state:
+                        st.session_state[_state_key] = lista_partidos[0] if lista_partidos else None
+
+                    # Renderizar cards clicables en columnas de 1 (móvil) o 2 (desktop)
+                    for partido in lista_partidos:
+                        _h, _a = partido.split(" vs ")
+                        _activo = (st.session_state[_state_key] == partido)
+                        _border  = "#5dade2" if _activo else "#2c3050"
+                        _bg      = "#1a2540" if _activo else "#1e2129"
+                        _sombra  = "0 0 0 2px #5dade255" if _activo else "none"
+                        _check   = "✦" if _activo else ""
+
+                        st.markdown(f"""
+                        <div style="
+                            background:{_bg};border:1px solid {_border};border-radius:10px;
+                            padding:10px 14px;margin-bottom:8px;
+                            box-shadow:{_sombra};transition:all .2s;">
+                          <div style="display:flex;align-items:center;justify-content:space-between;">
+                            <span style="font-size:0.85rem;font-weight:700;color:#e8ecf5;flex:1;text-align:right;">
+                              {_h}
+                            </span>
+                            <span style="color:#6c7a9c;font-size:0.72rem;font-weight:600;
+                              margin:0 10px;white-space:nowrap;">VS</span>
+                            <span style="font-size:0.85rem;font-weight:700;color:#e8ecf5;flex:1;text-align:left;">
+                              {_a}
+                            </span>
+                            <span style="color:#5dade2;font-size:0.8rem;margin-left:8px;
+                              min-width:12px;">{_check}</span>
+                          </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        if st.button(
+                            "Analizar →" if not _activo else "✔ Seleccionado",
+                            key=f"btn_{i}_{partido}",
+                            use_container_width=True,
+                            type="primary" if _activo else "secondary",
+                        ):
+                            st.session_state[_state_key] = partido
+                            st.rerun()
+
+                    # Capturar el partido seleccionado en esta tab activa
+                    # (lo tomaremos si esta tab tiene selección)
+                    if st.session_state.get(_state_key):
+                        partido_texto = st.session_state[_state_key]
+                        dia_sel_str   = fecha_label
+
+            # ── Si ninguna tab tiene selección, usar la primera disponible ──
+            if partido_texto is None:
+                _fb_lista = (
+                    (df_jornada['HomeTeam'] + " vs " + df_jornada['AwayTeam']).tolist()
+                    if es_mundial else
+                    (df_jornada['Local'] + " vs " + df_jornada['Visita']).tolist()
+                )
+                partido_texto = _fb_lista[0] if _fb_lista else None
+
+            if partido_texto is None:
+                st.info("No hay partidos programados en la base de datos.")
+                st.stop()
+
+            st.divider()
+
+            # ─────────────────────────────────────────────
+            # CORRECCIÓN DE NOMBRES Y CARGA DE HISTÓRICO
+            # ─────────────────────────────────────────────
             home_raw, away_raw = partido_texto.split(" vs ")
 
             hist_table = "historial_selecciones_ml" if es_mundial else "historial_multiliga_ml"
-            equipos_db = pd.read_sql(f"SELECT DISTINCT HomeTeam FROM {hist_table}", conn)['HomeTeam'].tolist()
+            equipos_db = pd.read_sql(
+                f"SELECT DISTINCT HomeTeam FROM {hist_table}", conn
+            )['HomeTeam'].tolist()
 
             home_team = corregir_nombre_equipo(home_raw, equipos_db)
             away_team = corregir_nombre_equipo(away_raw, equipos_db)
@@ -188,11 +280,13 @@ if menu == "Análisis del Día":
 
             with col1:
                 st.subheader("📊 Historial H2H")
-                q_h2h = (f'SELECT Date, HomeTeam as L, AwayTeam as V, FTHG as [GL], FTAG as [GV], FTR as R '
-                         f'FROM {hist_table} '
-                         f'WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") '
-                         f'OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") '
-                         f'ORDER BY Date DESC LIMIT 5')
+                q_h2h = (
+                    f'SELECT Date, HomeTeam as L, AwayTeam as V, FTHG as [GL], FTAG as [GV], FTR as R '
+                    f'FROM {hist_table} '
+                    f'WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") '
+                    f'OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") '
+                    f'ORDER BY Date DESC LIMIT 5'
+                )
                 df_h2h = pd.read_sql(q_h2h, conn)
                 if not df_h2h.empty:
                     df_h2h['Date'] = pd.to_datetime(df_h2h['Date']).dt.strftime('%d/%m/%y')
@@ -201,9 +295,11 @@ if menu == "Análisis del Día":
                     st.info("No existen enfrentamientos directos recientes en la base de datos.")
 
                 st.subheader("📈 Tendencia de Goles")
-                q_trend = (f'SELECT FTHG as [Local], FTAG as [Visita] FROM {hist_table} '
-                           f'WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" '
-                           f'ORDER BY Date DESC LIMIT 10')
+                q_trend = (
+                    f'SELECT FTHG as [Local], FTAG as [Visita] FROM {hist_table} '
+                    f'WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" '
+                    f'ORDER BY Date DESC LIMIT 10'
+                )
                 df_trend = pd.read_sql(q_trend, conn)
                 if not df_trend.empty:
                     st.line_chart(df_trend.iloc[::-1])
@@ -211,9 +307,9 @@ if menu == "Análisis del Día":
             with col2:
                 st.subheader("IA Predictiva")
 
-                # ── Inicialización de variables de scope para uso posterior ──
+                # ── Variables de scope para uso posterior ──
                 prob_local = prob_empate = prob_visita = 0.33
-                prob_over = 0.5
+                prob_over  = 0.5
                 xg_h = xg_a = 1.2
                 pred_home = pred_away = 1.2
                 stats_h_dict = stats_a_dict = {}
@@ -223,7 +319,7 @@ if menu == "Análisis del Día":
 
                 if es_mundial:
                     try:
-                        modelo_intl = joblib.load('modelo_selecciones_rf.pkl')
+                        modelo_intl  = joblib.load('modelo_selecciones_rf.pkl')
                         encoder_intl = joblib.load('encoder_equipos_selecciones.pkl')
 
                         df_sh = pd.read_sql(f'SELECT * FROM {hist_table} WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" ORDER BY Date DESC LIMIT 6', conn)
@@ -354,11 +450,11 @@ if menu == "Análisis del Día":
                         promedio_goles = xg_h + xg_a
                         prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
                         pred_home, pred_away = xg_h, xg_a
-                        _tiros_h, _tiros_a = hst, ast
+                        _tiros_h, _tiros_a   = hst, ast
                         _corners_h, _corners_a = hc, ac
 
                         # --- SECCIÓN 2: TORTA CON ANOTACIÓN CENTRAL ---
-                        _outcomes = {'LOCAL': prob_local, 'EMPATE': prob_empate, 'VISITA': prob_visita}
+                        _outcomes  = {'LOCAL': prob_local, 'EMPATE': prob_empate, 'VISITA': prob_visita}
                         _dom_label = max(_outcomes, key=_outcomes.get)
                         _dom_pct   = f"{_outcomes[_dom_label]:.0%}"
 
@@ -370,26 +466,24 @@ if menu == "Análisis del Día":
                             hole=0.45
                         )
                         fig_pie.update_layout(
-                            dragmode=False,
-                            margin=dict(t=0, b=0, l=0, r=0),
+                            dragmode=False, margin=dict(t=0, b=0, l=0, r=0),
                             annotations=[dict(
                                 text=f"<b>{_dom_label}</b><br>{_dom_pct}",
                                 x=0.5, y=0.5,
                                 font=dict(size=13, color='#e8ecf5'),
-                                showarrow=False,
-                                xanchor='center', yanchor='middle'
+                                showarrow=False, xanchor='center', yanchor='middle'
                             )]
                         )
                         st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
 
                         # --- SECCIÓN 3: PANEL COMPACTO DE MÉTRICAS (4 columnas) ---
-                        _BASE = 1.2
+                        _BASE   = 1.2
                         _xg_total = xg_h + xg_a
                         _m1, _m2, _m3, _m4 = st.columns(4)
-                        _m1.metric("xG Total",       f"{_xg_total:.2f}", f"{_xg_total - _BASE * 2:+.2f}")
-                        _m2.metric("Over 2.5",        f"{prob_over:.0%}",  delta=None)
-                        _m3.metric(f"⚽ {home_team[:8]}", f"{pred_home:.2f}", f"{pred_home - _BASE:+.2f}")
-                        _m4.metric(f"⚽ {away_team[:8]}", f"{pred_away:.2f}", f"{pred_away - _BASE:+.2f}")
+                        _m1.metric("xG Total",            f"{_xg_total:.2f}", f"{_xg_total - _BASE*2:+.2f}")
+                        _m2.metric("Over 2.5",             f"{prob_over:.0%}", delta=None)
+                        _m3.metric(f"⚽ {home_team[:8]}",  f"{pred_home:.2f}", f"{pred_home - _BASE:+.2f}")
+                        _m4.metric(f"⚽ {away_team[:8]}",  f"{pred_away:.2f}", f"{pred_away - _BASE:+.2f}")
 
                         # --- SECCIÓN 4: MINI TABLA TIROS Y CÓRNERS ---
                         st.markdown(f"""
@@ -422,17 +516,17 @@ if menu == "Análisis del Día":
                 else:
                     model = cargar_modelo()
                     if model:
-                        stats_h, stats_a = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
+                        stats_h, stats_a   = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
                         stats_h_dict, stats_a_dict = stats_h, stats_a
 
                         xg_h = stats_h.get('xG_home', 1.0)
                         xg_a = stats_a.get('xG_away', 1.0)
-                        xg_diff = xg_h - xg_a
-                        pts_h = obtener_puntos_temporada(home_team, conn)
-                        pts_a = obtener_puntos_temporada(away_team, conn)
-                        dif_tabla = pts_h - pts_a
-                        descanso_h = obtener_dias_descanso(home_team, conn)
-                        descanso_a = obtener_dias_descanso(away_team, conn)
+                        xg_diff       = xg_h - xg_a
+                        pts_h         = obtener_puntos_temporada(home_team, conn)
+                        pts_a         = obtener_puntos_temporada(away_team, conn)
+                        dif_tabla     = pts_h - pts_a
+                        descanso_h    = obtener_dias_descanso(home_team, conn)
+                        descanso_a    = obtener_dias_descanso(away_team, conn)
                         ventaja_fisica = descanso_h - descanso_a
 
                         eff_h = stats_h['FTHG'] / (xg_h + 0.01)
@@ -445,22 +539,22 @@ if menu == "Análisis del Día":
                             dif_tabla, ventaja_fisica
                         ]]
 
-                        prob_ia = model.predict_proba(input_data)[0]
+                        prob_ia     = model.predict_proba(input_data)[0]
                         prob_local  = float(prob_ia[2])
                         prob_empate = float(prob_ia[1])
                         prob_visita = float(prob_ia[0])
 
-                        pred_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
-                        pred_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+                        pred_home      = (stats_h['FTHG'] + stats_a['FTAG']) / 2
+                        pred_away      = (stats_a['FTHG'] + stats_h['FTAG']) / 2
                         promedio_goles = pred_home + pred_away
-                        prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
-                        _tiros_h   = stats_h['HST']
-                        _tiros_a   = stats_a['AST']
-                        _corners_h = stats_h['HC']
-                        _corners_a = stats_a['AC']
+                        prob_over      = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
+                        _tiros_h       = stats_h['HST']
+                        _tiros_a       = stats_a['AST']
+                        _corners_h     = stats_h['HC']
+                        _corners_a     = stats_a['AC']
 
                         # --- SECCIÓN 2: TORTA CON ANOTACIÓN CENTRAL ---
-                        _outcomes = {'LOCAL': prob_local, 'EMPATE': prob_empate, 'VISITA': prob_visita}
+                        _outcomes  = {'LOCAL': prob_local, 'EMPATE': prob_empate, 'VISITA': prob_visita}
                         _dom_label = max(_outcomes, key=_outcomes.get)
                         _dom_pct   = f"{_outcomes[_dom_label]:.0%}"
 
@@ -472,26 +566,24 @@ if menu == "Análisis del Día":
                             hole=0.45
                         )
                         fig_pie.update_layout(
-                            dragmode=False,
-                            margin=dict(t=0, b=0, l=0, r=0),
+                            dragmode=False, margin=dict(t=0, b=0, l=0, r=0),
                             annotations=[dict(
                                 text=f"<b>{_dom_label}</b><br>{_dom_pct}",
                                 x=0.5, y=0.5,
                                 font=dict(size=13, color='#e8ecf5'),
-                                showarrow=False,
-                                xanchor='center', yanchor='middle'
+                                showarrow=False, xanchor='center', yanchor='middle'
                             )]
                         )
                         st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
 
                         # --- SECCIÓN 3: PANEL COMPACTO DE MÉTRICAS (4 columnas) ---
-                        _BASE = 1.2
+                        _BASE   = 1.2
                         _xg_total = xg_h + xg_a
                         _m1, _m2, _m3, _m4 = st.columns(4)
-                        _m1.metric("xG Total",           f"{_xg_total:.2f}", f"{_xg_total - _BASE * 2:+.2f}")
-                        _m2.metric("Over 2.5",            f"{prob_over:.0%}",  delta=None)
-                        _m3.metric(f"⚽ {home_team[:8]}", f"{pred_home:.2f}", f"{pred_home - _BASE:+.2f}")
-                        _m4.metric(f"⚽ {away_team[:8]}", f"{pred_away:.2f}", f"{pred_away - _BASE:+.2f}")
+                        _m1.metric("xG Total",            f"{_xg_total:.2f}", f"{_xg_total - _BASE*2:+.2f}")
+                        _m2.metric("Over 2.5",             f"{prob_over:.0%}", delta=None)
+                        _m3.metric(f"⚽ {home_team[:8]}",  f"{pred_home:.2f}", f"{pred_home - _BASE:+.2f}")
+                        _m4.metric(f"⚽ {away_team[:8]}",  f"{pred_away:.2f}", f"{pred_away - _BASE:+.2f}")
 
                         # --- SECCIÓN 4: MINI TABLA TIROS Y CÓRNERS ---
                         st.markdown(f"""
@@ -533,10 +625,12 @@ if menu == "Análisis del Día":
                     m2.metric(f"{away_team[:12]}", f"{stats_a_dict.get('AY', 0):.1f}")
 
                 with cd2:
-                    q_cards = (f'SELECT Date, (HY + AY) as Total FROM {hist_table} '
-                               f'WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") '
-                               f'OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") '
-                               f'ORDER BY Date DESC LIMIT 5')
+                    q_cards = (
+                        f'SELECT Date, (HY + AY) as Total FROM {hist_table} '
+                        f'WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") '
+                        f'OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") '
+                        f'ORDER BY Date DESC LIMIT 5'
+                    )
                     try:
                         df_cards = pd.read_sql(q_cards, conn)
                         if not df_cards.empty:
@@ -561,49 +655,34 @@ if menu == "Análisis del Día":
 
                 for _, row in df_hist.iterrows():
                     is_home = (row['HomeTeam'] == equipo)
-
                     gf = row['FTHG'] if is_home else row['FTAG']
                     gc = row['FTAG'] if is_home else row['FTHG']
-
                     ce = row['HC'] if 'HC' in row and pd.notna(row['HC']) else 0
                     if not is_home: ce = row['AC'] if 'AC' in row and pd.notna(row['AC']) else 0
-
                     ct_h = row['HC'] if 'HC' in row and pd.notna(row['HC']) else 0
                     ct_a = row['AC'] if 'AC' in row and pd.notna(row['AC']) else 0
-
                     se = row['HST'] if 'HST' in row and pd.notna(row['HST']) else 0
                     if not is_home: se = row['AST'] if 'AST' in row and pd.notna(row['AST']) else 0
-
                     am_h = row['HY'] if 'HY' in row and pd.notna(row['HY']) else None
                     am_a = row['AY'] if 'AY' in row and pd.notna(row['AY']) else None
                     am = am_h if is_home else am_a
-
-                    stats['gf'].append(gf)
-                    stats['gc'].append(gc)
-                    stats['gt'].append(gf + gc)
-                    stats['ce'].append(ce)
-                    stats['ct'].append(ct_h + ct_a)
-                    stats['se'].append(se)
+                    stats['gf'].append(gf); stats['gc'].append(gc); stats['gt'].append(gf + gc)
+                    stats['ce'].append(ce); stats['ct'].append(ct_h + ct_a); stats['se'].append(se)
                     if am is not None: stats['amarillas'].append(am)
-
-                    if gf > gc:
-                        wins += 1
-                        no_loss += 1
-                    elif gf == gc:
-                        no_loss += 1
+                    if gf > gc: wins += 1; no_loss += 1
+                    elif gf == gc: no_loss += 1
 
                 promedios = {
-                    "Goles Anotados": sum(stats['gf'])/n if n>0 else 0,
-                    "Goles Recibidos": sum(stats['gc'])/n if n>0 else 0,
-                    "Córners a Favor": sum(stats['ce'])/n if n>0 else 0,
-                    "Córners en Partido": sum(stats['ct'])/n if n>0 else 0,
-                    "Tiros al Arco": sum(stats['se'])/n if n>0 else 0,
+                    "Goles Anotados":    sum(stats['gf'])/n if n>0 else 0,
+                    "Goles Recibidos":   sum(stats['gc'])/n if n>0 else 0,
+                    "Córners a Favor":   sum(stats['ce'])/n if n>0 else 0,
+                    "Córners en Partido":sum(stats['ct'])/n if n>0 else 0,
+                    "Tiros al Arco":     sum(stats['se'])/n if n>0 else 0,
                 }
                 if stats['amarillas']:
                     promedios["Tarjetas Amarillas"] = sum(stats['amarillas'])/len(stats['amarillas'])
 
                 tendencias = []
-
                 def check_highest_over(lista, umbrales, texto):
                     if not lista: return
                     for umbral in sorted(umbrales, reverse=True):
@@ -620,12 +699,8 @@ if menu == "Análisis del Día":
                 check_highest_over(stats['ce'], [3.5, 4.5, 5.5], "🚩 Córners del Equipo")
                 check_highest_over(stats['ct'], [7.5, 8.5, 9.5], "⛳ Córners en el Partido")
                 check_highest_over(stats['se'], [2.5, 3.5, 4.5], "🎯 Tiros al Arco")
-
-                if wins / n >= 0.75:
-                    tendencias.append(f"🏆 Victorias en {wins}/{n} partidos")
-                if no_loss / n >= 0.75:
-                    tendencias.append(f"🛡️ Invicto en {no_loss}/{n} partidos")
-
+                if wins / n >= 0.75:   tendencias.append(f"🏆 Victorias en {wins}/{n} partidos")
+                if no_loss / n >= 0.75: tendencias.append(f"🛡️ Invicto en {no_loss}/{n} partidos")
                 return promedios, tendencias
 
             df_h10 = pd.read_sql(f'SELECT * FROM {hist_table} WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" ORDER BY Date DESC LIMIT 10', conn)
@@ -638,19 +713,17 @@ if menu == "Análisis del Día":
 
             # --- SECCIÓN 5: BADGES PILL POR CATEGORÍA ---
             def _badge_color(texto):
-                """Devuelve (bg, fg) según la categoría de la tendencia."""
                 t = texto.lower()
-                if "gol" in t:    return "#0d3320", "#2ecc71"   # verde — goles
-                if "córner" in t or "corner" in t: return "#3a2000", "#e67e22"  # naranja — córners
-                if "victoria" in t or "invicto" in t: return "#0d1f40", "#5dade2"  # azul — rachas
-                if "tiro" in t:   return "#1a0d40", "#9b59b6"   # violeta — tiros
-                if "tarjeta" in t or "amarilla" in t: return "#3a3000", "#f1c40f"  # amarillo — disciplina
-                return "#1e1e1e", "#aab0c0"                                         # gris — resto
+                if "gol" in t:                              return "#0d3320", "#2ecc71"
+                if "córner" in t or "corner" in t:          return "#3a2000", "#e67e22"
+                if "victoria" in t or "invicto" in t:       return "#0d1f40", "#5dade2"
+                if "tiro" in t:                             return "#1a0d40", "#9b59b6"
+                if "tarjeta" in t or "amarilla" in t:       return "#3a3000", "#f1c40f"
+                return "#1e1e1e", "#aab0c0"
 
             def renderizar_columna(equipo, prom, tend):
                 st.markdown(f"#### {equipo}")
                 st.markdown("**📊 Promedios**")
-
                 tabla_md = "| Estadística | Promedio |\n|---|---|\n"
                 for k, v in prom.items():
                     tabla_md += f"| {k} | **{v:.1f}** |\n"
@@ -672,56 +745,45 @@ if menu == "Análisis del Día":
                 else:
                     st.info("Sin tendencias consistentes en los últimos 10 partidos.")
 
-            with ct1:
-                renderizar_columna(home_team, prom_h, tend_h)
-            with ct2:
-                renderizar_columna(away_team, prom_a, tend_a)
+            with ct1: renderizar_columna(home_team, prom_h, tend_h)
+            with ct2: renderizar_columna(away_team, prom_a, tend_a)
 
             # --- SECCIÓN 6: SCOUT REPORT FINAL ---
             st.divider()
-
-            # Construir las 2-3 líneas auto-generadas combinando variables disponibles
             _outcome_map = {'LOCAL': home_team, 'EMPATE': 'Empate', 'VISITA': away_team}
-            _dom_key  = max({'LOCAL': prob_local, 'EMPATE': prob_empate, 'VISITA': prob_visita},
-                            key=lambda k: {'LOCAL': prob_local, 'EMPATE': prob_empate, 'VISITA': prob_visita}[k])
-            _dom_team = _outcome_map[_dom_key]
-            _dom_prob = {'LOCAL': prob_local, 'EMPATE': prob_empate, 'VISITA': prob_visita}[_dom_key]
-
+            _probs_dict  = {'LOCAL': prob_local, 'EMPATE': prob_empate, 'VISITA': prob_visita}
+            _dom_key     = max(_probs_dict, key=_probs_dict.get)
+            _dom_team    = _outcome_map[_dom_key]
+            _dom_prob    = _probs_dict[_dom_key]
             _xg_total_str = f"{xg_h + xg_a:.2f}"
             _over_str     = f"{prob_over:.0%}"
+            _over_label   = "favorable" if prob_over >= 0.55 else ("ajustada" if prob_over >= 0.45 else "baja")
 
-            _scout_lines = []
-
-            # Línea 1: resultado dominante
-            _scout_lines.append(
+            _scout_lines = [
                 f"📌 El modelo favorece a <b>{_dom_team}</b> con una probabilidad del <b>{_dom_prob:.0%}</b>. "
-                f"Los xG combinados ({_xg_total_str}) sitúan el partido con una expectativa de goles "
-                f"{'alta' if xg_h + xg_a >= 2.5 else 'moderada'}."
-            )
-
-            # Línea 2: Over / Under + goles individuales
-            _over_label = "favorable" if prob_over >= 0.55 else ("ajustada" if prob_over >= 0.45 else "baja")
-            _scout_lines.append(
+                f"Los xG combinados ({_xg_total_str}) sitúan el partido con expectativa de goles "
+                f"{'alta' if xg_h + xg_a >= 2.5 else 'moderada'}.",
                 f"🔢 La probabilidad Over 2.5 es <b>{_over_str}</b> ({_over_label}). "
                 f"Se proyectan <b>{pred_home:.1f}</b> goles para {home_team} "
                 f"y <b>{pred_away:.1f}</b> para {away_team}."
-            )
-
-            # Línea 3: tendencia combinada si existe
-            _all_tend = tend_h + tend_a
+            ]
+            _all_tend    = tend_h + tend_a
             _corner_tend = [t for t in _all_tend if "córner" in t.lower() or "corner" in t.lower()]
             _goal_tend   = [t for t in _all_tend if "gol" in t.lower()]
             if _corner_tend or _goal_tend:
                 _extras = (_goal_tend + _corner_tend)[:2]
-                _extra_txt = " · ".join(_extras)
-                _scout_lines.append(f"📋 Tendencias clave: {_extra_txt}.")
+                _scout_lines.append(f"📋 Tendencias clave: {' · '.join(_extras)}.")
 
-            _report_html = '<div style="background:linear-gradient(135deg,#10131e 0%,#14182b 100%);border:1px solid #2c3050;border-left:4px solid #5dade2;border-radius:12px;padding:16px 18px;margin-top:4px;">'
-            _report_html += '<div style="color:#5dade2;font-size:0.7rem;font-weight:700;letter-spacing:2px;margin-bottom:12px;">🕵️ SCOUT REPORT · IA</div>'
+            _report_html = (
+                '<div style="background:linear-gradient(135deg,#10131e 0%,#14182b 100%);'
+                'border:1px solid #2c3050;border-left:4px solid #5dade2;'
+                'border-radius:12px;padding:16px 18px;margin-top:4px;">'
+                '<div style="color:#5dade2;font-size:0.7rem;font-weight:700;'
+                'letter-spacing:2px;margin-bottom:12px;">🕵️ SCOUT REPORT · IA</div>'
+            )
             for _line in _scout_lines:
                 _report_html += f'<p style="color:#c8d0e0;font-size:0.84rem;line-height:1.55;margin:0 0 8px;">{_line}</p>'
             _report_html += '</div>'
-
             st.markdown(_report_html, unsafe_allow_html=True)
 
         else:
@@ -729,6 +791,7 @@ if menu == "Análisis del Día":
 
     except Exception as e:
         st.error(f"Error al cargar dashboard: {e}")
+
 elif menu == "Auditoría (Resultados)":
     st.title("🎯 Auditoría de Precisión (Flexible)")
     st.markdown("Audita las proyecciones de la IA incluyendo márgenes de error (⚠️) para resultados cercanos.")
