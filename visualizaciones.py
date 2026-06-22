@@ -1497,8 +1497,8 @@ elif menu == "Portafolio de Picks":
                 
             st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
 elif menu == "Mundial 2026":
-    st.title("Simulacion Mundial 2026")
-    st.markdown("Proyección oficial basada en formato FIFA 48 selecciones.")
+    st.title("Simulación Mundial 2026")
+    st.markdown("Proyección oficial basada en formato FIFA 48 selecciones. (✅ Real | 🔮 IA)")
 
     st.markdown("""
     <style>
@@ -1538,32 +1538,16 @@ elif menu == "Mundial 2026":
     try:
         modelo_wc  = joblib.load('modelo_selecciones_rf.pkl')
         encoder_wc = joblib.load('encoder_equipos_selecciones.pkl')
-        # Solo partidos de grupos (Grupo = GROUP_A … GROUP_L)
-        # Incluimos FTHG/FTAG para detectar resultados ya guardados
-        df_fixture_wc = pd.read_sql(
-            "SELECT * FROM fixture_mundial WHERE Grupo LIKE 'GROUP_%'", conn
-        )
-        # Asegurar que las columnas de resultado existen aunque la tabla sea antigua
-        for _col in ('FTHG', 'FTAG'):
-            if _col not in df_fixture_wc.columns:
-                df_fixture_wc[_col] = None
-        # Columna auxiliar: solo la letra (GROUP_A → A)
+        
+        df_fixture_wc = pd.read_sql("SELECT * FROM fixture_mundial WHERE Grupo LIKE 'GROUP_%'", conn)
         df_fixture_wc['_letra'] = df_fixture_wc['Grupo'].str.replace('GROUP_', '', regex=False).str.strip()
 
-        # ── Motor de predicción ───────────────────────────────────────────
-
-        # Diccionario de traducción de nombres de selecciones
-        # NOTA: "South Korea" es el nombre correcto en historial_selecciones_ml.
-        # No se traduce — dejarlo aquí lo rompería (buscaría "Korea Republic" que no existe).
         TRADUCCION_WC = {
             "Czechia": "Czech Republic",
             "Bosnia-Herzegovina": "Bosnia and Herzegovina", "Cape Verde Islands": "Cape Verde",
             "Congo DR": "DR Congo", "USA": "United States"
         }
 
-        # ── Carga del CSV FIFA 2026 ───────────────────────────────────────
-        # Columnas: rank, country (en español), points, valor_total_mill_eur
-        # Los nombres en español se traducen al inglés usado internamente.
         TRADUCCION_CSV = {
             "Francia": "France", "España": "Spain", "Argentina": "Argentina",
             "Inglaterra": "England", "Portugal": "Portugal", "Brasil": "Brazil",
@@ -1623,6 +1607,23 @@ elif menu == "Mundial 2026":
 
         df_hist_wc = pd.read_sql("SELECT * FROM historial_selecciones_ml", conn)
 
+        # ── NUEVO HELPER: Buscar resultados reales en historial ──
+        def obtener_resultado_real_mundial(h, a):
+            if df_hist_wc.empty or 'Date' not in df_hist_wc.columns:
+                return None, None
+            match = df_hist_wc[((df_hist_wc['HomeTeam'] == h) & (df_hist_wc['AwayTeam'] == a)) |
+                               ((df_hist_wc['HomeTeam'] == a) & (df_hist_wc['AwayTeam'] == h))]
+            if not match.empty:
+                match = match.sort_values('Date', ascending=False).iloc[0]
+                fecha = str(match['Date'])
+                # Solo consideramos resultados desde Junio 2026 (para ignorar amistosos antiguos)
+                if fecha >= "2026-06-01":
+                    if match['HomeTeam'] == h:
+                        return match['FTHG'], match['FTAG']
+                    else:
+                        return match['FTAG'], match['FTHG']
+            return None, None
+
         def _fuerza_seleccion(equipo):
             df_h = df_hist_wc[df_hist_wc['HomeTeam'] == equipo]
             df_a = df_hist_wc[df_hist_wc['AwayTeam'] == equipo]
@@ -1638,36 +1639,23 @@ elif menu == "Mundial 2026":
 
             classes = list(encoder_wc.classes_)
 
-            # 1. Predicción base del modelo (estadística pura)
             if h in classes and a in classes:
                 hst, hc = _fuerza_seleccion(h)
                 ast, ac = _fuerza_seleccion(a)
                 h_c = encoder_wc.transform([h])[0]
                 a_c = encoder_wc.transform([a])[0]
-                # Modelo entrenado con 6 features (xG eliminado por cobertura insuficiente)
                 X = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]],
                                   columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
                 probs = modelo_wc.predict_proba(X)[0]
-                # sklearn RandomForest ordena clases alfabéticamente: A(way)=0, D(raw)=1, H(ome)=2
                 p_a_raw, p_d_raw, p_h_raw = float(probs[0]), float(probs[1]), float(probs[2])
 
-                # Neutral venue correction: flatten home advantage (World Cup on neutral ground)
-                NEUTRAL_FACTOR = 0.15  # reduces home advantage by 15%
+                NEUTRAL_FACTOR = 0.15 
                 p_h_raw = p_h_raw * (1 - NEUTRAL_FACTOR) + p_d_raw * (NEUTRAL_FACTOR / 2)
                 p_a_raw = p_a_raw * (1 - NEUTRAL_FACTOR) + p_d_raw * (NEUTRAL_FACTOR / 2)
                 total = p_h_raw + p_d_raw + p_a_raw
                 p_h_raw, p_d_raw, p_a_raw = p_h_raw/total, p_d_raw/total, p_a_raw/total
             else:
                 p_h_raw, p_d_raw, p_a_raw = 0.33, 0.33, 0.33
-
-            # 2. Score compuesto de 3 factores para medir la fuerza real de cada selección
-            #
-            #   - Puntos FIFA (40%): refleja el rendimiento reciente oficial
-            #   - Valor de mercado (40%): proxy de calidad individual de plantilla
-            #   - Bono confederación (20%): UEFA y CONMEBOL tienen mayor rodaje en mundiales
-            #
-            # Los tres factores se normalizan entre 0 y 1 y se combinan en un score único.
-            # La diferencia de scores entre ambos equipos determina el multiplicador de probabilidad.
 
             UEFA_ES = {
                 "France", "Spain", "England", "Germany", "Portugal", "Netherlands",
@@ -1688,32 +1676,26 @@ elif menu == "Mundial 2026":
                 if equipo in FIFA_SCORES:
                     pts_n, val_n = FIFA_SCORES[equipo]
                 else:
-                    pts_n, val_n = 0.3, 0.05   # Equipo desconocido: valores bajos por defecto
+                    pts_n, val_n = 0.3, 0.05
                 conf = 1.0 if equipo in UEFA_ES or equipo in CONMEBOL_ES else 0.0
                 return 0.40 * pts_n + 0.40 * val_n + 0.20 * conf
 
             score_h = _score_seleccion(h)
             score_a = _score_seleccion(a)
-
-            # Diferencia de scores: positivo = local es más fuerte
             diff_score = score_h - score_a
 
-            # Multiplicador lineal: 1 punto de diferencia de score → 100% de ajuste
-            # Con scores entre 0 y 1, el rango real es [-1, 1], dando multiplicadores de [0, 2]
             multiplicador_h = max(0.1, 1.0 + diff_score)
             multiplicador_a = max(0.1, 1.0 - diff_score)
 
             p_h_ajustada = p_h_raw * multiplicador_h
             p_a_ajustada = p_a_raw * multiplicador_a
-            p_d_ajustada = p_d_raw * 0.9  # Reducimos ligeramente empates cuando hay diferencia de nivel
+            p_d_ajustada = p_d_raw * 0.9
 
-            # Normalizar para que sumen 1
             suma_probs = p_h_ajustada + p_a_ajustada + p_d_ajustada
             p_h = p_h_ajustada / suma_probs
             p_a = p_a_ajustada / suma_probs
             p_d = p_d_ajustada / suma_probs
 
-            # 3. Cálculo de goles esperados (base para decidir resultado Y marcador)
             hist_h = df_hist_wc[df_hist_wc['HomeTeam'] == h]
             hist_a = df_hist_wc[df_hist_wc['AwayTeam'] == a]
 
@@ -1725,7 +1707,6 @@ elif menu == "Mundial 2026":
             xg_home = (gf_h + gc_a) / 2
             xg_away = (gf_a + gc_h) / 2
 
-            # Si un equipo tiene probabilidad aplastante (>60%), potenciamos sus goles
             if p_h > 0.60:
                 xg_home += 1.0
                 xg_away = max(0, xg_away - 0.5)
@@ -1733,61 +1714,31 @@ elif menu == "Mundial 2026":
                 xg_away += 1.0
                 xg_home = max(0, xg_home - 0.5)
 
-            # 4. Resultado: el xG diferencial pondera si un empate es creíble.
-            #
-            # La diferencia de goles esperados mide cuánto separa realmente a los equipos.
-            # - Si la diferencia es pequeña (< 0.4): el empate compite con el favorito.
-            # - Si la diferencia es grande (> 0.9): el favorito gana con claridad.
-            # - En el rango intermedio: se pondera suavemente entre ambos extremos.
-            #
-            # Para evitar que el modelo siempre elija el argmax (que ignora p_d),
-            # boost_draw escala p_d según lo reñido que está el xG, y luego
-            # volvemos a normalizar antes de decidir.
-
             xg_diff = abs(xg_home - xg_away)
 
-            if xg_diff < 0.4:
-                boost_draw = 1.6    # Partido muy igualado: el empate es muy probable
-            elif xg_diff < 0.9:
-                boost_draw = 1.2    # Ligera ventaja: el empate sigue siendo opción real
-            else:
-                boost_draw = 0.8    # Clara ventaja para uno: el empate pierde peso
+            if xg_diff < 0.4: boost_draw = 1.6
+            elif xg_diff < 0.9: boost_draw = 1.2
+            else: boost_draw = 0.8
 
-            p_h_w = p_h
-            p_a_w = p_a
-            p_d_w = p_d * boost_draw
+            p_h_w, p_a_w, p_d_w = p_h, p_a, p_d * boost_draw
             total_w = p_h_w + p_a_w + p_d_w
-            p_h_w /= total_w
-            p_a_w /= total_w
-            p_d_w /= total_w
+            p_h_w /= total_w; p_a_w /= total_w; p_d_w /= total_w
 
-            if p_d_w >= p_h_w and p_d_w >= p_a_w:
-                pts_h, pts_a = 1, 1
-            elif p_h_w >= p_a_w:
-                pts_h, pts_a = 3, 0
-            else:
-                pts_h, pts_a = 0, 3
+            if p_d_w >= p_h_w and p_d_w >= p_a_w: pts_h, pts_a = 1, 1
+            elif p_h_w >= p_a_w: pts_h, pts_a = 3, 0
+            else: pts_h, pts_a = 0, 3
 
-            # 5. Blindaje del marcador: ajustar xG flotantes antes de redondear
-            if pts_h == 3 and xg_home <= xg_away:
-                xg_home = xg_away + 0.6
-            elif pts_a == 3 and xg_away <= xg_home:
-                xg_away = xg_home + 0.6
+            if pts_h == 3 and xg_home <= xg_away: xg_home = xg_away + 0.6
+            elif pts_a == 3 and xg_away <= xg_home: xg_away = xg_home + 0.6
             elif pts_h == 1 and pts_a == 1:
                 avg = (xg_home + xg_away) / 2
                 xg_home = xg_away = avg
 
-            # Redondeamos una sola vez, al final, sobre los valores ya corregidos
-            gh = int(round(xg_home))
-            ga = int(round(xg_away))
+            gh, ga = int(round(xg_home)), int(round(xg_away))
 
-            # Garantía residual post-redondeo
-            if pts_h == 3 and gh <= ga:
-                gh = ga + 1
-            elif pts_a == 3 and ga <= gh:
-                ga = gh + 1
-            elif pts_h == 1 and pts_a == 1:
-                gh = ga = max(gh, ga)
+            if pts_h == 3 and gh <= ga: gh = ga + 1
+            elif pts_a == 3 and ga <= gh: ga = gh + 1
+            elif pts_h == 1 and pts_a == 1: gh = ga = max(gh, ga)
 
             return {
                 "Pts_H": pts_h, "Pts_A": pts_a,
@@ -1796,28 +1747,14 @@ elif menu == "Mundial 2026":
                 "Ganador": h if p_h >= p_a else a
             }
 
-        # ═════════════════════════════════════════════════════════════════
-        #  FASE DE GRUPOS — calcular todo antes de los tabs
-        # ═════════════════════════════════════════════════════════════════
         grupos_keys = list('ABCDEFGHIJKL')
-        posiciones  = {}          # "1A" → equipo, "2B" → equipo …
-        terceros    = []          # (pts, dg, gf, letra, equipo)
-        grupos_data = {}          # letra → {tabla: df, partidos: list}
-
-        # ── Asegurar columnas de resultado en fixture_mundial ─────────────
-        cursor_wc = conn.cursor()
-        cursor_wc.execute("PRAGMA table_info(fixture_mundial)")
-        cols_fixture = {r[1] for r in cursor_wc.fetchall()}
-        if 'FTHG' not in cols_fixture:
-            cursor_wc.execute("ALTER TABLE fixture_mundial ADD COLUMN FTHG INTEGER")
-        if 'FTAG' not in cols_fixture:
-            cursor_wc.execute("ALTER TABLE fixture_mundial ADD COLUMN FTAG INTEGER")
-        conn.commit()
+        posiciones  = {}
+        terceros    = []
+        grupos_data = {}
 
         for letra in grupos_keys:
             df_g = df_fixture_wc[df_fixture_wc['_letra'] == letra].copy()
-            if df_g.empty:
-                continue
+            if df_g.empty: continue
 
             tabla    = {}
             partidos = []
@@ -1825,47 +1762,19 @@ elif menu == "Mundial 2026":
             for _, p in df_g.iterrows():
                 h, a = str(p['HomeTeam']).strip(), str(p['AwayTeam']).strip()
 
-                # ── ¿Ya existe resultado real guardado? ──────────────────
-                fthg_db = p.get('FTHG', None)
-                ftag_db = p.get('FTAG', None)
-                tiene_resultado = (
-                    fthg_db is not None
-                    and ftag_db is not None
-                    and pd.notna(fthg_db)
-                    and pd.notna(ftag_db)
-                )
+                # ── Buscar resultado real en el historial ──
+                real_gh, real_ga = obtener_resultado_real_mundial(h, a)
+                tiene_resultado = (real_gh is not None and real_ga is not None and pd.notna(real_gh) and pd.notna(real_ga))
 
                 if tiene_resultado:
-                    # Usar resultado real; calcular puntos correctamente
-                    gh, ga = int(fthg_db), int(ftag_db)
-                    if gh > ga:
-                        pts_h, pts_a = 3, 0
-                    elif ga > gh:
-                        pts_h, pts_a = 0, 3
-                    else:
-                        pts_h, pts_a = 1, 1
-                    res = {'Pts_H': pts_h, 'Pts_A': pts_a, 'GH': gh, 'GA': ga,
-                           'p_h': 1.0 if pts_h == 3 else 0.0,
-                           'p_a': 1.0 if pts_a == 3 else 0.0}
+                    gh, ga = int(real_gh), int(real_ga)
+                    if gh > ga: pts_h, pts_a = 3, 0
+                    elif ga > gh: pts_h, pts_a = 0, 3
+                    else: pts_h, pts_a = 1, 1
+                    res = {'Pts_H': pts_h, 'Pts_A': pts_a, 'GH': gh, 'GA': ga}
                 else:
-                    # Simular con IA y guardar predicción en la BD
+                    # Si no hay resultado oficial, simular con la IA
                     res = predecir_wc(h, a)
-                    # Actualizar (o insertar) el resultado simulado en fixture_mundial
-                    # si la fila tiene un ID único usamos rowid implícito de SQLite
-                    try:
-                        if 'id' in p.index and pd.notna(p.get('id')):
-                            cursor_wc.execute(
-                                "UPDATE fixture_mundial SET FTHG=?, FTAG=? WHERE id=?",
-                                (res['GH'], res['GA'], int(p['id']))
-                            )
-                        else:
-                            cursor_wc.execute(
-                                "UPDATE fixture_mundial SET FTHG=?, FTAG=? WHERE HomeTeam=? AND AwayTeam=? AND Grupo=?",
-                                (res['GH'], res['GA'], h, a, p['Grupo'])
-                            )
-                        conn.commit()
-                    except Exception:
-                        pass  # No crítico — la simulación sigue funcionando
 
                 for eq in (h, a):
                     if eq not in tabla:
@@ -1875,8 +1784,7 @@ elif menu == "Mundial 2026":
                 tabla[h]['GC']  += res['GA'];    tabla[h]['PJ'] += 1
                 tabla[a]['Pts'] += res['Pts_A']; tabla[a]['GF'] += res['GA']
                 tabla[a]['GC']  += res['GH'];    tabla[a]['PJ'] += 1
-                partidos.append({'H': h, 'A': a, 'GH': res['GH'], 'GA': res['GA'],
-                                 'Real': tiene_resultado})
+                partidos.append({'H': h, 'A': a, 'GH': res['GH'], 'GA': res['GA'], 'Real': tiene_resultado})
 
             df_t = pd.DataFrame([
                 {'Sel': eq, 'PJ': v['PJ'], 'Pts': v['Pts'],
@@ -1892,7 +1800,6 @@ elif menu == "Mundial 2026":
 
             grupos_data[letra] = {'tabla': df_t, 'partidos': partidos}
 
-        # ── 8 mejores terceros ────────────────────────────────────────────
         terceros.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
         mejores_t8 = {x[4] for x in terceros[:8]}
 
@@ -1902,13 +1809,10 @@ elif menu == "Mundial 2026":
         def mejor_3ro(grupos_str):
             candidatos = {g.strip() for g in grupos_str.split('/')}
             for _, _, _, grp, eq in terceros:
-                if grp in candidatos and eq in mejores_t8:
-                    return eq
+                if grp in candidatos and eq in mejores_t8: return eq
             return f"3°({grupos_str})"
 
-        # ═════════════════════════════════════════════════════════════════
         tab_g, tab_f = st.tabs(["📊 Grupos", "⚔️ Ruta a la Copa"])
-        # ═════════════════════════════════════════════════════════════════
 
         with tab_g:
             st.markdown(
@@ -1922,25 +1826,19 @@ elif menu == "Mundial 2026":
                 letras_batch = grupos_keys[batch_start:batch_start+3]
                 cols = st.columns(3)
                 for ci, letra in enumerate(letras_batch):
-                    if letra not in grupos_data:
-                        continue
+                    if letra not in grupos_data: continue
                     df_t     = grupos_data[letra]['tabla']
                     partidos = grupos_data[letra]['partidos']
 
                     with cols[ci]:
-                        # — Tabla —
                         filas = ""
                         for ri, row in df_t.iterrows():
-                            if ri < 2:
-                                css, ico = "wc-pos12", "🟢"
-                            elif ri == 2 and row['Sel'] in mejores_t8:
-                                css, ico = "wc-pos3", "🟡"
-                            elif ri == 2:
-                                css, ico = "wc-pos3", "⚪"
-                            else:
-                                css, ico = "wc-pos4", ""
+                            if ri < 2: css, ico = "wc-pos12", "🟢"
+                            elif ri == 2 and row['Sel'] in mejores_t8: css, ico = "wc-pos3", "🟡"
+                            elif ri == 2: css, ico = "wc-pos3", "⚪"
+                            else: css, ico = "wc-pos4", ""
+                            
                             dg = f"+{int(row['DG'])}" if row['DG'] > 0 else str(int(row['DG']))
-                            # Truncar nombre largo
                             nombre = row['Sel'][:16] + ("…" if len(row['Sel']) > 16 else "")
                             filas += (
                                 f'<tr class="{css}">'
@@ -1956,59 +1854,65 @@ elif menu == "Mundial 2026":
                             f'<th>#</th><th>Selección</th>'
                             f'<th style="text-align:center">Pts</th>'
                             f'<th style="text-align:center">DG</th>'
-                            f'</tr></thead><tbody>{filas}</tbody></table>',
-                            unsafe_allow_html=True
+                            f'</tr></thead><tbody>{filas}</tbody></table>', unsafe_allow_html=True
                         )
 
-                        # — Resultados —
                         html_m = '<div class="wc-matches">'
                         for m in partidos:
                             gh, ga = m['GH'], m['GA']
                             h_n = m['H'][:13] + ("…" if len(m['H']) > 13 else "")
                             a_n = m['A'][:13] + ("…" if len(m['A']) > 13 else "")
-                            badge = ' <span style="color:#2ecc71;font-size:0.65rem">✅</span>' if m.get('Real') else ' <span style="color:#555;font-size:0.65rem">🔮</span>'
-                            if gh > ga:
-                                s = f'<span class="wc-win">{h_n} {gh}</span>–{ga} {a_n}{badge}'
-                            elif ga > gh:
-                                s = f'{h_n} {gh}–<span class="wc-win">{ga} {a_n}</span>{badge}'
-                            else:
-                                s = f'{h_n} <span class="wc-draw">{gh}–{ga}</span> {a_n}{badge}'
+                            badge = ' <span title="Resultado Real" style="color:#2ecc71;font-size:0.65rem">✅</span>' if m.get('Real') else ' <span title="Predicción IA" style="color:#555;font-size:0.65rem">🔮</span>'
+                            
+                            if gh > ga: s = f'<span class="wc-win">{h_n} {gh}</span>–{ga} {a_n}{badge}'
+                            elif ga > gh: s = f'{h_n} {gh}–<span class="wc-win">{ga} {a_n}</span>{badge}'
+                            else: s = f'{h_n} <span class="wc-draw">{gh}–{ga}</span> {a_n}{badge}'
                             html_m += f'<div class="wc-match">{s}</div>'
                         html_m += '</div>'
                         st.markdown(html_m, unsafe_allow_html=True)
 
-        # ═════════════════════════════════════════════════════════════════
         with tab_f:
-        # ═════════════════════════════════════════════════════════════════
-
             def simular_ko(h, a, label=""):
-                res = predecir_wc(h, a)
-                gh, ga = res['GH'], res['GA']
-                # Sin empate en KO
-                if gh == ga:
-                    if res['p_h'] >= res['p_a']: gh += 1
-                    else: ga += 1
-                ganador = h if gh > ga else a
-                return {'H': h, 'A': a, 'GH': gh, 'GA': ga,
-                        'Ganador': ganador, 'Label': label}
+                real_gh, real_ga = obtener_resultado_real_mundial(h, a)
+                es_real = (real_gh is not None and real_ga is not None and pd.notna(real_gh) and pd.notna(real_ga))
+
+                if es_real:
+                    gh, ga = int(real_gh), int(real_ga)
+                    # Si hubo empate en la vida real, dejamos que la IA decida quién ganó por penales
+                    if gh == ga:
+                        res = predecir_wc(h, a)
+                        if res['p_h'] >= res['p_a']: gh += 1
+                        else: ga += 1
+                    ganador = h if gh > ga else a
+                else:
+                    res = predecir_wc(h, a)
+                    gh, ga = res['GH'], res['GA']
+                    if gh == ga:
+                        if res['p_h'] >= res['p_a']: gh += 1
+                        else: ga += 1
+                    ganador = h if gh > ga else a
+
+                return {'H': h, 'A': a, 'GH': gh, 'GA': ga, 'Ganador': ganador, 'Label': label, 'Real': es_real}
 
             def card(m, extra_css=""):
                 h, a, gh, ga = m['H'], m['A'], m['GH'], m['GA']
                 lbl = m.get('Label', '')
+                es_real = m.get('Real', False)
+                
+                badge = ' <span title="Resultado Real" style="color:#2ecc71;font-size:0.65rem">✅</span>' if es_real else ' <span title="Predicción IA" style="color:#555;font-size:0.65rem">🔮</span>'
+
                 hn = h[:16] + ("…" if len(h) > 16 else "")
                 an = a[:16] + ("…" if len(a) > 16 else "")
-                if gh > ga:
-                    sc = f'<span class="wc-win">{hn}</span> <span style="color:#aaa">{gh}–{ga}</span> {an}'
-                else:
-                    sc = f'{hn} <span style="color:#aaa">{gh}–{ga}</span> <span class="wc-win">{an}</span>'
+                if gh > ga: sc = f'<span class="wc-win">{hn}</span> <span style="color:#aaa">{gh}–{ga}</span> {an}'
+                else: sc = f'{hn} <span style="color:#aaa">{gh}–{ga}</span> <span class="wc-win">{an}</span>'
+                
                 return (f'<div class="bk-card {extra_css}">'
-                        f'<div class="bk-label">{lbl}</div>'
+                        f'<div class="bk-label">{lbl}{badge}</div>'
                         f'<div>{sc}</div></div>')
 
             def resolver(c):
                 return mejor_3ro(c[2:]) if c.startswith("3_") else get_pos(c)
 
-            # ── Ronda de 32 ──────────────────────────────────────────────
             cruces_r32 = [
                 ("2A",  "2B",           "2°A vs 2°B"),
                 ("1C",  "2F",           "1°C vs 2°F"),
@@ -2030,38 +1934,21 @@ elif menu == "Mundial 2026":
             r32 = [simular_ko(resolver(ch), resolver(ca), lbl) for ch, ca, lbl in cruces_r32]
             gana_r32 = [m['Ganador'] for m in r32]
 
-            # ── Ronda de 16 ──────────────────────────────────────────────
-            # Cruces por pares consecutivos del bracket
-            r16 = [simular_ko(gana_r32[i], gana_r32[i+1], f"R16 · P{i//2+1}")
-                   for i in range(0, 16, 2)]
+            r16 = [simular_ko(gana_r32[i], gana_r32[i+1], f"R16 · P{i//2+1}") for i in range(0, 16, 2)]
             gana_r16 = [m['Ganador'] for m in r16]
 
-            # ── Cuartos ───────────────────────────────────────────────────
-            qf = [simular_ko(gana_r16[i], gana_r16[i+1], f"Cuartos · {i//2+1}")
-                  for i in range(0, 8, 2)]
+            qf = [simular_ko(gana_r16[i], gana_r16[i+1], f"Cuartos · {i//2+1}") for i in range(0, 8, 2)]
             gana_qf = [m['Ganador'] for m in qf]
 
-            # ── Semis ─────────────────────────────────────────────────────
-            sf = [
-                simular_ko(gana_qf[0], gana_qf[1], "Semifinal 1"),
-                simular_ko(gana_qf[2], gana_qf[3], "Semifinal 2"),
-            ]
+            sf = [simular_ko(gana_qf[0], gana_qf[1], "Semifinal 1"), simular_ko(gana_qf[2], gana_qf[3], "Semifinal 2")]
             gana_sf = [m['Ganador'] for m in sf]
-            pierde_sf = [
-                (sf[0]['A'] if sf[0]['Ganador'] == sf[0]['H'] else sf[0]['H']),
-                (sf[1]['A'] if sf[1]['Ganador'] == sf[1]['H'] else sf[1]['H']),
-            ]
+            pierde_sf = [(sf[0]['A'] if sf[0]['Ganador'] == sf[0]['H'] else sf[0]['H']),
+                         (sf[1]['A'] if sf[1]['Ganador'] == sf[1]['H'] else sf[1]['H'])]
 
-            # ── Final y 3° puesto ─────────────────────────────────────────
             tercer = simular_ko(pierde_sf[0], pierde_sf[1], "3° Puesto")
             final  = simular_ko(gana_sf[0],   gana_sf[1],   "⚽ Gran Final")
             campeon = final['Ganador']
 
-            # ══════════════════════════════════════════════════════════════
-            #  RENDER — de abajo a arriba: Campeón → Final → Semis → …
-            # ══════════════════════════════════════════════════════════════
-
-            # Campeón
             st.markdown(
                 f'<div class="bk-card champ" style="max-width:340px;margin:0 auto 18px;">'
                 f'<div style="text-align:center;color:#888;font-size:0.7rem;letter-spacing:1px;">🏆 CAMPEÓN PROYECTADO</div>'
@@ -2070,7 +1957,6 @@ elif menu == "Mundial 2026":
             )
             st.markdown("---")
 
-            # Final + 3° puesto
             cf1, cf2 = st.columns(2)
             with cf1:
                 st.markdown('<div class="bk-title">⚽ Gran Final</div>', unsafe_allow_html=True)
@@ -2080,36 +1966,28 @@ elif menu == "Mundial 2026":
                 st.markdown(card(tercer), unsafe_allow_html=True)
             st.markdown("---")
 
-            # Semis
             st.markdown('<div class="bk-title">Semifinales</div>', unsafe_allow_html=True)
             csf = st.columns(2)
             for i, m in enumerate(sf):
-                with csf[i]:
-                    st.markdown(card(m), unsafe_allow_html=True)
+                with csf[i]: st.markdown(card(m), unsafe_allow_html=True)
             st.markdown("---")
 
-            # Cuartos
             st.markdown('<div class="bk-title">Cuartos de Final</div>', unsafe_allow_html=True)
             cqf = st.columns(4)
             for i, m in enumerate(qf):
-                with cqf[i]:
-                    st.markdown(card(m), unsafe_allow_html=True)
+                with cqf[i]: st.markdown(card(m), unsafe_allow_html=True)
             st.markdown("---")
 
-            # R16
             st.markdown('<div class="bk-title">Ronda de 16</div>', unsafe_allow_html=True)
             cr16 = st.columns(4)
             for i, m in enumerate(r16):
-                with cr16[i % 4]:
-                    st.markdown(card(m), unsafe_allow_html=True)
+                with cr16[i % 4]: st.markdown(card(m), unsafe_allow_html=True)
             st.markdown("---")
 
-            # R32 en expander
             with st.expander("▶ Ver Ronda de 32 (16 partidos)"):
                 cr32 = st.columns(4)
                 for i, m in enumerate(r32):
-                    with cr32[i % 4]:
-                        st.markdown(card(m), unsafe_allow_html=True)
+                    with cr32[i % 4]: st.markdown(card(m), unsafe_allow_html=True)
 
     except Exception as e:
         import traceback
