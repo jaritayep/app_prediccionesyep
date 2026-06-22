@@ -147,17 +147,33 @@ if menu == "Análisis del Día":
 
             # ─────────────────────────────────────────────
             # SECCIÓN SELECTOR EN PANTALLA PRINCIPAL
+            # Un único key global evita que el for sobreescriba
+            # partido_texto con el valor de la última tab iterada.
             # ─────────────────────────────────────────────
             opciones_fecha = list(dict.fromkeys(df_jornada['Fecha_Display'].tolist()))
+
+            # Inicializar selección global la primera vez
+            if 'analisis_partido_sel' not in st.session_state:
+                _primera_lista = (
+                    (df_jornada[df_jornada['Fecha_Display'] == opciones_fecha[0]]['HomeTeam'] + " vs " +
+                     df_jornada[df_jornada['Fecha_Display'] == opciones_fecha[0]]['AwayTeam']).tolist()
+                    if es_mundial else
+                    (df_jornada[df_jornada['Fecha_Display'] == opciones_fecha[0]]['Local'] + " vs " +
+                     df_jornada[df_jornada['Fecha_Display'] == opciones_fecha[0]]['Visita']).tolist()
+                )
+                st.session_state['analisis_partido_sel'] = (
+                    opciones_fecha[0],
+                    _primera_lista[0] if _primera_lista else None
+                )
+
+            # Leer la selección actual ANTES de renderizar los tabs
+            _sel_fecha, _sel_partido = st.session_state['analisis_partido_sel']
 
             # ── Tabs de fecha (máx 7 para no colapsar en móvil) ──
             tabs_fechas = st.tabs(opciones_fecha[:7])
 
-            partido_texto  = None
-            dia_sel_str    = opciones_fecha[0]   # default
-
             for i, tab in enumerate(tabs_fechas):
-                fecha_label = opciones_fecha[i]
+                fecha_label  = opciones_fecha[i]
                 partidos_dia = df_jornada[df_jornada['Fecha_Display'] == fecha_label]
 
                 if es_mundial:
@@ -166,19 +182,14 @@ if menu == "Análisis del Día":
                     lista_partidos = (partidos_dia['Local'] + " vs " + partidos_dia['Visita']).tolist()
 
                 with tab:
-                    # Inicializar estado para esta pestaña
-                    _state_key = f"partido_sel_{i}"
-                    if _state_key not in st.session_state:
-                        st.session_state[_state_key] = lista_partidos[0] if lista_partidos else None
-
-                    # Renderizar cards clicables en columnas de 1 (móvil) o 2 (desktop)
                     for partido in lista_partidos:
-                        _h, _a = partido.split(" vs ")
-                        _activo = (st.session_state[_state_key] == partido)
-                        _border  = "#5dade2" if _activo else "#2c3050"
-                        _bg      = "#1a2540" if _activo else "#1e2129"
-                        _sombra  = "0 0 0 2px #5dade255" if _activo else "none"
-                        _check   = "✦" if _activo else ""
+                        _h, _a  = partido.split(" vs ")
+                        # Un partido está activo solo si coincide fecha Y nombre
+                        _activo = (_sel_fecha == fecha_label and _sel_partido == partido)
+                        _border = "#5dade2" if _activo else "#2c3050"
+                        _bg     = "#1a2540" if _activo else "#1e2129"
+                        _sombra = "0 0 0 2px #5dade255" if _activo else "none"
+                        _check  = "✦" if _activo else ""
 
                         st.markdown(f"""
                         <div style="
@@ -206,23 +217,13 @@ if menu == "Análisis del Día":
                             use_container_width=True,
                             type="primary" if _activo else "secondary",
                         ):
-                            st.session_state[_state_key] = partido
+                            # Guardar (fecha, partido) en el key global y releer
+                            st.session_state['analisis_partido_sel'] = (fecha_label, partido)
                             st.rerun()
 
-                    # Capturar el partido seleccionado en esta tab activa
-                    # (lo tomaremos si esta tab tiene selección)
-                    if st.session_state.get(_state_key):
-                        partido_texto = st.session_state[_state_key]
-                        dia_sel_str   = fecha_label
-
-            # ── Si ninguna tab tiene selección, usar la primera disponible ──
-            if partido_texto is None:
-                _fb_lista = (
-                    (df_jornada['HomeTeam'] + " vs " + df_jornada['AwayTeam']).tolist()
-                    if es_mundial else
-                    (df_jornada['Local'] + " vs " + df_jornada['Visita']).tolist()
-                )
-                partido_texto = _fb_lista[0] if _fb_lista else None
+            # La fuente de verdad es el key global, no el loop
+            dia_sel_str   = st.session_state['analisis_partido_sel'][0]
+            partido_texto = st.session_state['analisis_partido_sel'][1]
 
             if partido_texto is None:
                 st.info("No hay partidos programados en la base de datos.")
