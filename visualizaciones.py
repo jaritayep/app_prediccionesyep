@@ -792,6 +792,7 @@ if menu == "Análisis del Día":
     except Exception as e:
         st.error(f"Error al cargar dashboard: {e}")
 
+
 elif menu == "Auditoría (Resultados)":
     st.title("🎯 Auditoría de Precisión (Flexible)")
     st.markdown("Audita las proyecciones de la IA incluyendo márgenes de error (⚠️) para resultados cercanos.")
