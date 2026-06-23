@@ -2061,24 +2061,24 @@ elif menu == "Portafolio de Picks":
                                 try:
                                     res_df = pd.read_sql(q_res, conn)
                                 except Exception:
-                                    return 'Sin resultado', 0.0
+                                    return 'Pendiente', 0.0
 
                                 if res_df.empty:
-                                    return 'Sin resultado', 0.0
+                                    return 'Pendiente', 0.0
 
                                 match_f = process.extractOne(pick_row['Home'], res_df['HomeTeam'].tolist())
                                 if not match_f or match_f[1] < 75:
-                                    return 'Sin resultado', 0.0
+                                    return 'Pendiente', 0.0
 
                                 row_real = res_df[res_df['HomeTeam'] == match_f[0]].iloc[0]
                                 hg = row_real['FTHG'] if pd.notna(row_real.get('FTHG')) else None
                                 ag = row_real['FTAG'] if pd.notna(row_real.get('FTAG')) else None
                                 if hg is None or ag is None:
-                                    return 'Sin resultado', 0.0
+                                    return 'Pendiente', 0.0
 
                                 hg, ag = int(hg), int(ag)
-                                hc = int(row_real['HC']) if pd.notna(row_real.get('HC')) else 0
-                                ac = int(row_real['AC']) if pd.notna(row_real.get('AC')) else 0
+                                hc  = int(row_real['HC'])  if pd.notna(row_real.get('HC'))  else 0
+                                ac  = int(row_real['AC'])  if pd.notna(row_real.get('AC'))  else 0
                                 hst = int(row_real['HST']) if pd.notna(row_real.get('HST')) else 0
                                 ast = int(row_real['AST']) if pd.notna(row_real.get('AST')) else 0
 
@@ -2096,94 +2096,214 @@ elif menu == "Portafolio de Picks":
                                         val_l = float(m_liq.group(1)[1:])
                                         lin_m = float(m_liq.group(1))
                                         if "Hándicap" in mkt:
-                                            if "Local"  in mkt: ganada = (hg + lin_m > ag)
+                                            if "Local"   in mkt: ganada = (hg + lin_m > ag)
                                             elif "Visita" in mkt: ganada = (ag + lin_m > hg)
                                         else:
                                             score_liq = -1
-                                            if "Goles Local" in mkt:    score_liq = hg
-                                            elif "Goles Visita" in mkt:  score_liq = ag
-                                            elif "Goles" in mkt:         score_liq = hg + ag
-                                            elif "Córners Local" in mkt: score_liq = hc
-                                            elif "Córners Visita" in mkt:score_liq = ac
-                                            elif "Córners" in mkt:       score_liq = hc + ac
-                                            elif "Tiros Local" in mkt:   score_liq = hst
-                                            elif "Tiros Visita" in mkt:  score_liq = ast
-                                            elif "Tiros" in mkt:         score_liq = hst + ast
+                                            if "Goles Local"    in mkt: score_liq = hg
+                                            elif "Goles Visita" in mkt: score_liq = ag
+                                            elif "Goles"        in mkt: score_liq = hg + ag
+                                            elif "Córners Local"    in mkt: score_liq = hc
+                                            elif "Córners Visita"   in mkt: score_liq = ac
+                                            elif "Córners"          in mkt: score_liq = hc + ac
+                                            elif "Tiros Local"      in mkt: score_liq = hst
+                                            elif "Tiros Visita"     in mkt: score_liq = ast
+                                            elif "Tiros"            in mkt: score_liq = hst + ast
                                             if signo == '+': ganada = (score_liq > val_l)
                                             elif signo == '-': ganada = (score_liq < val_l)
 
                                 estado = 'Ganada' if ganada else 'Perdida'
-                                beneficio = (pick_row['Stake'] * pick_row['Cuota'] - pick_row['Stake']) if ganada else -pick_row['Stake']
-                                return estado, beneficio
+                                # Beneficio computed with placeholder stake=1; real stake applied later
+                                return estado, ganada
 
-                            # Liquidar todo el big portfolio
-                            estados_list = []
-                            beneficios_list = []
+                            # ── Liquidar todo el big portfolio (stake=1 placeholder) ──
+                            estados_list  = []
+                            ganada_list   = []
                             for _, pr in df_big.iterrows():
-                                est, ben = _liquidar_pick_hist(pr)
+                                est, gan = _liquidar_pick_hist(pr)
                                 estados_list.append(est)
-                                beneficios_list.append(ben)
+                                ganada_list.append(gan)
 
-                            df_big['Estado']        = estados_list
-                            df_big['Beneficio_Neto'] = beneficios_list
+                            df_big['Estado']  = estados_list
+                            df_big['_Ganada'] = ganada_list  # bool for stake recalc
+                            df_big['Date']    = pd.to_datetime(df_big['Date']).dt.date
 
-                            # Filtrar sólo los que tienen resultado real
-                            df_big_cerrado = df_big[df_big['Estado'].isin(['Ganada', 'Perdida'])].copy()
+                            # ── Sub-toggle: bankroll dinámico ────────────
+                            _col_toggle, _col_info = st.columns([1, 2])
+                            with _col_toggle:
+                                _modo_dyn = st.toggle(
+                                    "💹 Bankroll Dinámico",
+                                    key="hist_bankroll_dyn",
+                                    help="ON: el stake de cada día se calcula sobre el bankroll inicial + P&L acumulado de días anteriores. OFF: flat staking uniforme."
+                                )
+                            with _col_info:
+                                _bk_base_input = st.number_input(
+                                    "💰 Bankroll inicial ($)",
+                                    min_value=100, value=5000, step=500,
+                                    key="hist_bankroll_base",
+                                    label_visibility="visible"
+                                )
+
+                            # ── Asignar stakes reales día a día ──────────
+                            # Ordenar días cronológicamente
+                            fechas_con_picks = sorted(df_big['Date'].unique())
+                            bankroll_actual  = float(_bk_base_input)
+                            pnl_acum_dyn     = 0.0
+
+                            # Mapa fecha → stake_por_pick (recalculado si dinámico)
+                            stake_por_fecha = {}
+                            for _fd in fechas_con_picks:
+                                _picks_fd = df_big[df_big['Date'] == _fd]
+                                _n_picks  = len(_picks_fd)
+                                if _n_picks == 0:
+                                    continue
+                                if _modo_dyn:
+                                    _bk_hoy = bankroll_actual
+                                    _stake_hoy = _bk_hoy / _n_picks
+                                else:
+                                    _stake_hoy = float(_bk_base_input) / _n_picks
+
+                                stake_por_fecha[_fd] = _stake_hoy
+
+                                # Calcular P&L del día para actualizar bankroll (solo cerrados)
+                                _cerrados_fd = _picks_fd[_picks_fd['Estado'].isin(['Ganada', 'Perdida'])]
+                                for _, _pr in _cerrados_fd.iterrows():
+                                    if _pr['_Ganada']:
+                                        _ben = _stake_hoy * _pr['Cuota'] - _stake_hoy
+                                    else:
+                                        _ben = -_stake_hoy
+                                    pnl_acum_dyn += _ben
+                                if _modo_dyn:
+                                    bankroll_actual = float(_bk_base_input) + pnl_acum_dyn
+
+                            # Aplicar stakes y calcular beneficios reales
+                            def _calc_beneficio(row):
+                                _s = stake_por_fecha.get(row['Date'], float(_bk_base_input) / 10)
+                                if row['Estado'] == 'Ganada':
+                                    return _s, _s * row['Cuota'] - _s
+                                elif row['Estado'] == 'Perdida':
+                                    return _s, -_s
+                                else:
+                                    return _s, 0.0
+
+                            df_big[['Stake', 'Beneficio_Neto']] = df_big.apply(
+                                lambda r: pd.Series(_calc_beneficio(r)), axis=1
+                            )
+
+                            # ── Separar cerrados vs pendientes ───────────
+                            df_big_cerrado  = df_big[df_big['Estado'].isin(['Ganada', 'Perdida'])].copy()
+                            df_big_pendiente = df_big[df_big['Estado'] == 'Pendiente'].copy()
+
+                            n_dias_total    = len(fechas_con_picks)
+                            n_dias_cerrados = df_big_cerrado['Date'].nunique() if not df_big_cerrado.empty else 0
+                            n_dias_pend     = df_big_pendiente['Date'].nunique() if not df_big_pendiente.empty else 0
+
+                            # ── Aviso de cobertura ────────────────────────
+                            if n_dias_pend > 0:
+                                st.info(
+                                    f"📋 **{n_dias_total} días con odds** en total — "
+                                    f"**{n_dias_cerrados} días liquidados** ✅ | "
+                                    f"**{n_dias_pend} días pendientes** ⏳ (sin resultado en DB aún)"
+                                )
 
                             if df_big_cerrado.empty:
-                                st.info("Ninguno de los picks históricos tiene resultado registrado aún en la base de datos.")
+                                st.warning("Ningún pick histórico tiene resultado registrado en la base de datos todavía.")
                             else:
-                                # ── KPIs globales del big portfolio ──────────
+                                # ── KPIs globales ─────────────────────────
                                 total_picks  = len(df_big_cerrado)
                                 ganadas_big  = (df_big_cerrado['Estado'] == 'Ganada').sum()
                                 win_rate_big = ganadas_big / total_picks * 100
                                 stake_total  = df_big_cerrado['Stake'].sum()
                                 pnl_total    = df_big_cerrado['Beneficio_Neto'].sum()
                                 yield_big    = (pnl_total / stake_total * 100) if stake_total > 0 else 0.0
+                                _modo_lbl    = "💹 Dinámico" if _modo_dyn else "📐 Flat"
 
                                 k1, k2, k3, k4 = st.columns(4)
-                                k1.metric("📊 Picks Evaluados", f"{total_picks:,}")
-                                k2.metric("🎯 Win Rate",        f"{win_rate_big:.1f}%")
-                                k3.metric("📈 Yield (ROI)",     f"{yield_big:.2f}%")
-                                k4.metric("💰 Ganancia Neta",   f"${pnl_total:,.0f}")
+                                k1.metric("📊 Picks Cerrados", f"{total_picks:,}")
+                                k2.metric("🎯 Win Rate",       f"{win_rate_big:.1f}%")
+                                k3.metric("📈 Yield (ROI)",    f"{yield_big:.2f}%", _modo_lbl)
+                                k4.metric("💰 Ganancia Neta",  f"${pnl_total:,.0f}")
 
                                 st.divider()
 
-                                # ── Curva de equity por día ───────────────
-                                df_big_cerrado['Date'] = pd.to_datetime(df_big_cerrado['Date']).dt.date
-                                _dias_big = (
+                                # ── Construir tabla de días (todos, cerrados + pendientes) ──
+                                # Primero los cerrados agrupados
+                                _dias_cerr = (
                                     df_big_cerrado.groupby('Date')
                                     .agg(
-                                        Picks=('Estado', 'count'),
-                                        Ganadas=('Estado', lambda x: (x == 'Ganada').sum()),
+                                        Picks   =('Estado', 'count'),
+                                        Ganadas =('Estado', lambda x: (x == 'Ganada').sum()),
                                         Perdidas=('Estado', lambda x: (x == 'Perdida').sum()),
                                         Invertido=('Stake', 'sum'),
-                                        PnL_Dia=('Beneficio_Neto', 'sum'),
+                                        PnL_Dia =('Beneficio_Neto', 'sum'),
                                     )
                                     .reset_index()
-                                    .sort_values('Date')
                                 )
-                                _dias_big['Win%']    = (_dias_big['Ganadas'] / _dias_big['Picks'] * 100).round(1)
-                                _dias_big['PnL_Acum'] = _dias_big['PnL_Dia'].cumsum()
+                                _dias_cerr['Estado_Dia'] = 'cerrado'
+
+                                # Luego los pendientes agrupados
+                                if not df_big_pendiente.empty:
+                                    _dias_pend = (
+                                        df_big_pendiente.groupby('Date')
+                                        .agg(Picks=('Estado', 'count'))
+                                        .reset_index()
+                                    )
+                                    _dias_pend['Ganadas']    = 0
+                                    _dias_pend['Perdidas']   = 0
+                                    _dias_pend['Invertido']  = _dias_pend['Date'].map(
+                                        lambda d: stake_por_fecha.get(d, 0) * len(df_big_pendiente[df_big_pendiente['Date'] == d])
+                                    )
+                                    _dias_pend['PnL_Dia']    = float('nan')
+                                    _dias_pend['Estado_Dia'] = 'pendiente'
+                                    _dias_big = pd.concat([_dias_cerr, _dias_pend], ignore_index=True)
+                                else:
+                                    _dias_big = _dias_cerr.copy()
+
+                                _dias_big = _dias_big.sort_values('Date').reset_index(drop=True)
+                                _dias_big['Win%'] = (_dias_big['Ganadas'] / _dias_big['Picks'].replace(0, np.nan) * 100).round(1)
+
+                                # Equity acumulada: sólo días cerrados contribuyen al P&L; pendientes se muestran como NaN
+                                _pnl_acum = 0.0
+                                _equity_vals = []
+                                for _, _dr in _dias_big.iterrows():
+                                    if _dr['Estado_Dia'] == 'cerrado':
+                                        _pnl_acum += _dr['PnL_Dia']
+                                        _equity_vals.append(_pnl_acum)
+                                    else:
+                                        _equity_vals.append(float('nan'))
+                                _dias_big['PnL_Acum'] = _equity_vals
+
+                                # ── Curva de equity ───────────────────────
+                                _dias_cerr_plot = _dias_big[_dias_big['Estado_Dia'] == 'cerrado']
+                                _col_bars = ['#2ecc71' if v >= 0 else '#e74c3c' for v in _dias_cerr_plot['PnL_Dia']]
 
                                 fig_big = go.Figure()
-                                _col_bars = ['#2ecc71' if v >= 0 else '#e74c3c' for v in _dias_big['PnL_Dia']]
                                 fig_big.add_trace(go.Bar(
-                                    x=_dias_big['Date'].astype(str),
-                                    y=_dias_big['PnL_Dia'],
+                                    x=_dias_cerr_plot['Date'].astype(str),
+                                    y=_dias_cerr_plot['PnL_Dia'],
                                     name='P&L Día',
                                     marker_color=_col_bars,
                                     opacity=0.7,
                                     yaxis='y2'
                                 ))
                                 fig_big.add_trace(go.Scatter(
-                                    x=_dias_big['Date'].astype(str),
-                                    y=_dias_big['PnL_Acum'],
+                                    x=_dias_cerr_plot['Date'].astype(str),
+                                    y=_dias_cerr_plot['PnL_Acum'],
                                     name='Equity Acumulada',
                                     mode='lines+markers',
                                     line=dict(color='#5dade2', width=2.5),
                                     marker=dict(size=7),
                                 ))
+                                # Pendientes como puntos grises en el eje equity
+                                _dias_pend_plot = _dias_big[_dias_big['Estado_Dia'] == 'pendiente']
+                                if not _dias_pend_plot.empty:
+                                    fig_big.add_trace(go.Scatter(
+                                        x=_dias_pend_plot['Date'].astype(str),
+                                        y=[_pnl_acum] * len(_dias_pend_plot),
+                                        name='Pendiente',
+                                        mode='markers',
+                                        marker=dict(color='#f39c12', size=9, symbol='circle-open'),
+                                    ))
                                 fig_big.update_layout(
                                     dragmode=False,
                                     plot_bgcolor='#1e2129',
@@ -2191,41 +2311,44 @@ elif menu == "Portafolio de Picks":
                                     font=dict(color='#aab0c0'),
                                     legend=dict(orientation='h', y=1.08),
                                     margin=dict(t=20, b=30, l=0, r=0),
-                                    yaxis=dict(title='Equity Acum. ($)', fixedrange=True, gridcolor='#2c3050'),
+                                    yaxis =dict(title='Equity Acum. ($)', fixedrange=True, gridcolor='#2c3050'),
                                     yaxis2=dict(title='P&L Día ($)', overlaying='y', side='right', fixedrange=True),
-                                    xaxis=dict(fixedrange=True),
+                                    xaxis =dict(fixedrange=True),
                                 )
                                 st.plotly_chart(fig_big, use_container_width=True, config=CONFIG_FIJA)
 
-                                # ── Tabla resumen día a día ───────────────
+                                # ── Tabla resumen día a día (todos los días) ──
                                 def _color_pnl(val):
-                                    if isinstance(val, (int, float)):
+                                    if isinstance(val, (int, float)) and not np.isnan(val):
                                         if val > 0: return 'color: #2ecc71; font-weight: bold'
                                         elif val < 0: return 'color: #e74c3c'
                                     return ''
 
-                                _dias_mostrar = _dias_big[['Date','Picks','Ganadas','Perdidas','Win%','Invertido','PnL_Dia','PnL_Acum']].copy()
-                                _dias_mostrar.columns = ['Fecha','Picks','✅ Won','❌ Lost','Win %','Invertido ($)','P&L Día ($)','Equity Acum. ($)']
+                                _dias_mostrar = _dias_big[['Date','Picks','Ganadas','Perdidas','Win%','Invertido','PnL_Dia','PnL_Acum','Estado_Dia']].copy()
+                                _dias_mostrar.columns = ['Fecha','Picks','✅ Won','❌ Lost','Win %','Invertido ($)','P&L Día ($)','Equity Acum. ($)','Estado']
                                 _dias_mostrar['Invertido ($)']    = _dias_mostrar['Invertido ($)'].map('${:,.0f}'.format)
-                                _dias_mostrar['P&L Día ($)']      = _dias_mostrar['P&L Día ($)'].round(0)
-                                _dias_mostrar['Equity Acum. ($)'] = _dias_mostrar['Equity Acum. ($)'].round(0)
+                                _dias_mostrar['P&L Día ($)']      = _dias_mostrar['P&L Día ($)'].apply(lambda v: round(v, 0) if not (isinstance(v, float) and np.isnan(v)) else '⏳')
+                                _dias_mostrar['Equity Acum. ($)'] = _dias_mostrar['Equity Acum. ($)'].apply(lambda v: round(v, 0) if not (isinstance(v, float) and np.isnan(v)) else '⏳')
+                                _dias_mostrar['Estado'] = _dias_mostrar['Estado'].map({'cerrado': '✅', 'pendiente': '⏳'})
+
                                 st.dataframe(
                                     _dias_mostrar.style.map(_color_pnl, subset=['P&L Día ($)', 'Equity Acum. ($)']),
                                     hide_index=True,
                                     use_container_width=True
                                 )
 
-                                # ── Acordeones por día ────────────────────
+                                # ── Acordeones por día (todos) ────────────
                                 st.markdown("#### 📋 Detalle por Día")
                                 for _, _d in _dias_big.iterrows():
                                     _fecha_d  = str(_d['Date'])
-                                    _pnl_d    = _d['PnL_Dia']
-                                    _icon_d   = "🟢" if _pnl_d >= 0 else "🔴"
-                                    _picks_d  = df_big_cerrado[df_big_cerrado['Date'] == _d['Date']]
+                                    _es_pend  = (_d['Estado_Dia'] == 'pendiente')
+                                    _pnl_d    = _d['PnL_Dia'] if not _es_pend else 0.0
+                                    _icon_d   = "⏳" if _es_pend else ("🟢" if _pnl_d >= 0 else "🔴")
+                                    _picks_d  = df_big[df_big['Date'] == _d['Date']]
+                                    _enc_pnl  = f"P&L: ⏳" if _es_pend else f"P&L: ${_pnl_d:+,.0f}  |  Acum: ${_d['PnL_Acum']:+,.0f}"
                                     with st.expander(
                                         f"{_icon_d} {_fecha_d}  —  {int(_d['Picks'])} picks  |  "
-                                        f"Won: {int(_d['Ganadas'])}  Lost: {int(_d['Perdidas'])}  |  "
-                                        f"P&L: ${_pnl_d:+,.0f}  |  Acum: ${_d['PnL_Acum']:+,.0f}"
+                                        f"Won: {int(_d['Ganadas'])}  Lost: {int(_d['Perdidas'])}  |  {_enc_pnl}"
                                     ):
                                         _df_exp = _picks_d[['Home','Away','Mercado','Cuota','Stake','Estado','Beneficio_Neto']].copy()
                                         _df_exp.columns = ['Local','Visita','Mercado','Cuota','Stake','Estado','Beneficio']
@@ -2233,8 +2356,9 @@ elif menu == "Portafolio de Picks":
                                         _df_exp['Stake']     = _df_exp['Stake'].map('${:,.0f}'.format)
                                         _df_exp['Beneficio'] = _df_exp['Beneficio'].round(0)
                                         def _ce_big(v):
-                                            if v == 'Ganada':  return 'color: #2ecc71; font-weight: bold'
+                                            if v == 'Ganada':    return 'color: #2ecc71; font-weight: bold'
                                             elif v == 'Perdida': return 'color: #e74c3c'
+                                            elif v == 'Pendiente': return 'color: #f39c12'
                                             return ''
                                         st.dataframe(_df_exp.style.map(_ce_big, subset=['Estado']), hide_index=True, use_container_width=True)
 
