@@ -1724,7 +1724,6 @@ elif menu == "Portafolio de Picks":
                     st.error(f"Error al importar: {e}")
 
         st.divider()
-
         if not df_hist.empty:
             df_cerradas = df_hist[df_hist['Estado'] != 'Pendiente']
             
@@ -1744,719 +1743,713 @@ elif menu == "Portafolio de Picks":
                 st.metric("Ganancia Neta Global", f"${beneficio_total:,.0f}")
 
             st.divider()
+            # ── Vista estándar (picks individuales) ───────────────
+            # ── Descarga del portafolio ───────────────────────────
+            st.write("📋 **Historial de Picks**")
+            col_dl1, col_dl2, col_dl3 = st.columns([2, 1, 1])
+            df_dl = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto', 'Prob_IA', 'Edge']].copy()
 
-            # ══════════════════════════════════════════════════════
-            # PORTAFOLIO HISTÓRICO — "Big Portfolio" acumulado
-            # ══════════════════════════════════════════════════════
-            modo_hist_toggle = st.toggle(
-                "📅 Vista Portafolio Histórico",
-                key="modo_historico_toggle",
-                help="Recorre TODOS los días con datos de odds, une todos los portafolios y muestra el rendimiento del 'gran portafolio' acumulado."
+            with col_dl2:
+                csv_bytes = df_dl.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="⬇️ Descargar CSV",
+                    data=csv_bytes,
+                    file_name=f"portafolio_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
+            with col_dl3:
+                json_bytes = df_dl.to_json(orient='records', force_ascii=False, indent=2).encode('utf-8')
+                st.download_button(
+                    label="⬇️ Descargar JSON",
+                    data=json_bytes,
+                    file_name=f"portafolio_{pd.Timestamp.now().strftime('%Y%m%d')}.json",
+                    mime="application/json"
+                )
+            
+            df_mostrar = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto']].copy()
+            df_mostrar['Es_Pendiente'] = df_mostrar['Estado'] == 'Pendiente'
+            df_mostrar = df_mostrar.sort_values(by=['Es_Pendiente', 'Date'], ascending=[False, False]).drop(columns=['Es_Pendiente'])
+            
+            def color_estado(val):
+                if val == 'Ganada': return 'color: #00FF00; font-weight: bold'
+                elif val == 'Perdida': return 'color: #FF4B4B'
+                elif val == 'Pendiente': return 'color: #FFD700'
+                return ''
+                
+            st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
+
+        # ════════════════════════════════════════════════════════
+        # PORTAFOLIO HISTÓRICO — siempre visible (sin toggle)
+        # ════════════════════════════════════════════════════════
+        st.divider()
+        st.subheader("📅 Vista Portafolio Histórico")
+        import plotly.graph_objects as go
+
+        # ══════════════════════════════════════════════════════
+        # FUENTE 1: picks ya guardados en portafolio_historico
+        # ══════════════════════════════════════════════════════
+        df_db_hist = pd.read_sql("SELECT * FROM portafolio_historico", conn)
+        fechas_en_db = set()
+        big_portfolio_from_db = []
+        if not df_db_hist.empty:
+            df_db_hist['Date'] = df_db_hist['Date'].astype(str).str.strip().str.slice(0, 10)
+            fechas_en_db = set(df_db_hist['Date'].unique())
+            for _, r in df_db_hist.iterrows():
+                big_portfolio_from_db.append({
+                    'Date':    r['Date'],
+                    'Home':    r['HomeTeam'],
+                    'Away':    r['AwayTeam'],
+                    'Mercado': r['Mercado'],
+                    'Cuota':   r['Cuota'],
+                    'Prob_IA': r.get('Prob_IA', 0.0),
+                    'Edge':    r.get('Edge', 0.0),
+                    'Stake':   r.get('Stake', 500),
+                    'Estado':  r['Estado'],
+                    'Beneficio_Neto': r.get('Beneficio_Neto', 0.0),
+                    '_from_db': True,
+                })
+
+        # ══════════════════════════════════════════════════════
+        # FUENTE 2: re-escanear CSVs de odds para dias SIN DB
+        # ══════════════════════════════════════════════════════
+        directorio_odds_hist = Path("odds_data")
+        archivos_hist = list(directorio_odds_hist.glob("*.csv")) if directorio_odds_hist.exists() else []
+        big_portfolio_from_csv = []
+
+        if archivos_hist:
+            modelo_clubes_hist = cargar_modelo()
+            try:
+                modelo_wc_hist  = joblib.load('modelo_selecciones_rf.pkl')
+                encoder_wc_hist = joblib.load('encoder_equipos_selecciones.pkl')
+            except Exception:
+                modelo_wc_hist  = None
+                encoder_wc_hist = None
+
+            equipos_clubes_hist = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
+            try:
+                equipos_wc_hist = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_selecciones_ml", conn)['HomeTeam'].tolist()
+            except Exception:
+                equipos_wc_hist = []
+
+            lista_dfs_hist = []
+            for f_hist in archivos_hist:
+                try:
+                    df_t = pd.read_csv(f_hist)
+                    if df_t.empty:
+                        continue
+                    df_t['Es_Mundial'] = 'worldcup' in f_hist.name.lower()
+                    match_dash = re.search(r'(\d{4})-(\d{2})-(\d{2})', f_hist.name)
+                    match_pure = re.search(r'(\d{4})(\d{2})(\d{2})', f_hist.name)
+                    if match_dash:
+                        fecha_fb = match_dash.group(0)
+                    elif match_pure:
+                        fecha_fb = f"{match_pure.group(1)}-{match_pure.group(2)}-{match_pure.group(3)}"
+                    else:
+                        import os as _os
+                        fecha_fb = datetime.fromtimestamp(_os.path.getmtime(f_hist)).strftime('%Y-%m-%d')
+                    df_t.columns = [c.lower() for c in df_t.columns]
+                    if 'hometeam' in df_t.columns and 'home' not in df_t.columns:
+                        df_t = df_t.rename(columns={'hometeam': 'home'})
+                    if 'awayteam' in df_t.columns and 'away' not in df_t.columns:
+                        df_t = df_t.rename(columns={'awayteam': 'away'})
+                    if 'inicio_local' not in df_t.columns or df_t['inicio_local'].isna().all():
+                        df_t['inicio_local'] = fecha_fb + " 12:00"
+                    else:
+                        df_t['inicio_local'] = df_t['inicio_local'].fillna(fecha_fb + " 12:00")
+                    # Fecha_Match derivada de inicio_local (cada fila puede ser un dia distinto)
+                    df_t['Fecha_Match'] = df_t['inicio_local'].astype(str).str.strip().str.slice(0, 10)
+                    df_t = df_t[df_t['Fecha_Match'].str.match(r'^\d{4}-\d{2}-\d{2}$', na=False)]
+                    # Incluir TODOS los dias del CSV; el loop de re-escaneo ya salta
+                    # los dias cubiertos por la DB con "if fecha_d in fechas_en_db: continue"
+                    if not df_t.empty:
+                        lista_dfs_hist.append(df_t)
+                except Exception:
+                    continue
+
+            if lista_dfs_hist:
+                df_master_hist = pd.concat(lista_dfs_hist, ignore_index=True)
+                df_master_hist = df_master_hist.drop_duplicates(subset=['home', 'away', 'inicio_local'])
+                fechas_csv_nuevas = sorted(df_master_hist['Fecha_Match'].unique())
+            else:
+                df_master_hist    = pd.DataFrame()
+                fechas_csv_nuevas = []
+        else:
+            df_master_hist    = pd.DataFrame()
+            fechas_csv_nuevas = []
+
+        # ══════════════════════════════════════════════════════
+        # Combinacion de ambas fuentes
+        # ══════════════════════════════════════════════════════
+        n_dias_db  = len(fechas_en_db)
+        n_dias_csv = len(fechas_csv_nuevas)
+
+        if n_dias_db == 0 and n_dias_csv == 0:
+            st.warning("No hay datos en portafolio_historico ni archivos de odds CSV. No hay historial que mostrar.")
+        else:
+            st.caption(
+                f"Fuente: **{n_dias_db} dias desde la base de datos** "
+                + (f"+ **{n_dias_csv} dias re-escaneados desde odds CSVs**" if n_dias_csv > 0 else "")
             )
 
-            if modo_hist_toggle:
-                import plotly.graph_objects as go
+            fechas_hist_todas = sorted(
+                list(fechas_en_db) + [f for f in fechas_csv_nuevas if f not in fechas_en_db]
+            )
 
-                # ══════════════════════════════════════════════════════
-                # FUENTE 1: picks ya guardados en portafolio_historico
-                # ══════════════════════════════════════════════════════
-                df_db_hist = pd.read_sql("SELECT * FROM portafolio_historico", conn)
-                fechas_en_db = set()
-                big_portfolio_from_db = []
-                if not df_db_hist.empty:
-                    df_db_hist['Date'] = df_db_hist['Date'].astype(str).str.strip().str.slice(0, 10)
-                    fechas_en_db = set(df_db_hist['Date'].unique())
-                    for _, r in df_db_hist.iterrows():
-                        big_portfolio_from_db.append({
-                            'Date':    r['Date'],
-                            'Home':    r['HomeTeam'],
-                            'Away':    r['AwayTeam'],
-                            'Mercado': r['Mercado'],
-                            'Cuota':   r['Cuota'],
-                            'Prob_IA': r.get('Prob_IA', 0.0),
-                            'Edge':    r.get('Edge', 0.0),
-                            'Stake':   r.get('Stake', 500),
-                            'Estado':  r['Estado'],
-                            'Beneficio_Neto': r.get('Beneficio_Neto', 0.0),
-                            '_from_db': True,
-                        })
+                # ── Función reutilizada del escáner para evaluar un día ──
+            def _escanear_dia_hist(fecha_str, df_odds_dia):
+                oportunidades = []
+                for _, row in df_odds_dia.iterrows():
+                    h_csv = str(row['home'])
+                    a_csv = str(row['away'])
+                    es_mundial = row.get('Es_Mundial', False)
+                    fecha_partido = str(row['inicio_local']).split()[0] if pd.notna(row.get('inicio_local')) else fecha_str
 
-                # ══════════════════════════════════════════════════════
-                # FUENTE 2: re-escanear CSVs de odds para dias SIN DB
-                # ══════════════════════════════════════════════════════
-                directorio_odds_hist = Path("odds_data")
-                archivos_hist = list(directorio_odds_hist.glob("*.csv")) if directorio_odds_hist.exists() else []
-                big_portfolio_from_csv = []
+                    lista_ref = equipos_wc_hist if es_mundial else equipos_clubes_hist
+                    h_match = process.extractOne(h_csv, lista_ref) if lista_ref else None
+                    a_match = process.extractOne(a_csv, lista_ref) if lista_ref else None
+                    if not h_match or not a_match or h_match[1] < 80 or a_match[1] < 80:
+                        continue
+                    h_db = h_match[0]
+                    a_db = a_match[0]
 
-                if archivos_hist:
-                    modelo_clubes_hist = cargar_modelo()
                     try:
-                        modelo_wc_hist  = joblib.load('modelo_selecciones_rf.pkl')
-                        encoder_wc_hist = joblib.load('encoder_equipos_selecciones.pkl')
-                    except Exception:
-                        modelo_wc_hist  = None
-                        encoder_wc_hist = None
-
-                    equipos_clubes_hist = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
-                    try:
-                        equipos_wc_hist = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_selecciones_ml", conn)['HomeTeam'].tolist()
-                    except Exception:
-                        equipos_wc_hist = []
-
-                    lista_dfs_hist = []
-                    for f_hist in archivos_hist:
-                        try:
-                            df_t = pd.read_csv(f_hist)
-                            if df_t.empty:
+                        if es_mundial:
+                            if not modelo_wc_hist:
                                 continue
-                            df_t['Es_Mundial'] = 'worldcup' in f_hist.name.lower()
-                            match_dash = re.search(r'(\d{4})-(\d{2})-(\d{2})', f_hist.name)
-                            match_pure = re.search(r'(\d{4})(\d{2})(\d{2})', f_hist.name)
-                            if match_dash:
-                                fecha_fb = match_dash.group(0)
-                            elif match_pure:
-                                fecha_fb = f"{match_pure.group(1)}-{match_pure.group(2)}-{match_pure.group(3)}"
+                            df_sh = pd.read_sql(f'SELECT * FROM historial_selecciones_ml WHERE HomeTeam="{h_db}" OR AwayTeam="{h_db}" ORDER BY Date DESC LIMIT 6', conn)
+                            df_sa = pd.read_sql(f'SELECT * FROM historial_selecciones_ml WHERE HomeTeam="{a_db}" OR AwayTeam="{a_db}" ORDER BY Date DESC LIMIT 6', conn)
+                            def _sm(df, col, dv): return df[col].mean() if not df.empty and col in df.columns and pd.notna(df[col].mean()) else dv
+                            hst = _sm(df_sh, 'HST', 4.0); hc = _sm(df_sh, 'HC', 4.5)
+                            ast = _sm(df_sa, 'AST', 3.5); ac = _sm(df_sa, 'AC', 4.0)
+                            gf_h = _sm(df_sh, 'FTHG', 1.5); gc_h = _sm(df_sh, 'FTAG', 1.0)
+                            gf_a = _sm(df_sa, 'FTHG', 1.2); gc_a = _sm(df_sa, 'FTAG', 1.3)
+                            if h_db in encoder_wc_hist.classes_ and a_db in encoder_wc_hist.classes_:
+                                h_c = encoder_wc_hist.transform([h_db])[0]
+                                a_c = encoder_wc_hist.transform([a_db])[0]
+                                X_in = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                                prbs = modelo_wc_hist.predict_proba(X_in)[0]
+                                prob_visita, prob_empate, prob_local = prbs[0], prbs[1], prbs[2]
                             else:
-                                import os as _os
-                                fecha_fb = datetime.fromtimestamp(_os.path.getmtime(f_hist)).strftime('%Y-%m-%d')
-                            df_t.columns = [c.lower() for c in df_t.columns]
-                            if 'hometeam' in df_t.columns and 'home' not in df_t.columns:
-                                df_t = df_t.rename(columns={'hometeam': 'home'})
-                            if 'awayteam' in df_t.columns and 'away' not in df_t.columns:
-                                df_t = df_t.rename(columns={'awayteam': 'away'})
-                            if 'inicio_local' not in df_t.columns or df_t['inicio_local'].isna().all():
-                                df_t['inicio_local'] = fecha_fb + " 12:00"
+                                prob_visita, prob_empate, prob_local = 0.33, 0.34, 0.33
+                            pred_goles_home = (gf_h + gc_a) / 2
+                            pred_goles_away = (gf_a + gc_h) / 2
+                            prom_goles_total = pred_goles_home + pred_goles_away
+                            prom_corners_total = (hc + ac) / 2
+                            prom_shots_total = (hst + ast) / 2
+                            stats_h_loc = {'HC': hc, 'HST': hst}
+                            stats_a_loc = {'AC': ac, 'AST': ast}
+                        else:
+                            if not modelo_clubes_hist:
+                                continue
+                            stats_h_loc = get_recent_stats(h_db, conn)
+                            stats_a_loc = get_recent_stats(a_db, conn)
+                            xg_h = stats_h_loc.get('xG_home', 1.0)
+                            xg_a = stats_a_loc.get('xG_away', 1.0)
+                            xg_diff = xg_h - xg_a
+                            pts_h = obtener_puntos_temporada(h_db, conn)
+                            pts_a = obtener_puntos_temporada(a_db, conn)
+                            dif_tabla = pts_h - pts_a
+                            descanso_h = obtener_dias_descanso(h_db, conn)
+                            descanso_a = obtener_dias_descanso(a_db, conn)
+                            ventaja_fisica = descanso_h - descanso_a
+                            eff_h = stats_h_loc['FTHG'] / (xg_h + 0.01)
+                            eff_a = stats_a_loc['FTAG'] / (xg_a + 0.01)
+                            input_data = [[
+                                stats_h_loc['FTHG'], stats_h_loc['FTAG'], stats_h_loc['HS'], stats_h_loc['AS'],
+                                stats_h_loc['HST'], stats_h_loc['AST'], stats_h_loc['HC'], stats_h_loc['AC'],
+                                stats_h_loc['HY'], stats_h_loc['AY'], xg_h, xg_a, eff_h, xg_diff,
+                                dif_tabla, ventaja_fisica
+                            ]]
+                            pred_probs = modelo_clubes_hist.predict_proba(input_data)[0]
+                            prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
+                            pred_goles_home = (stats_h_loc['FTHG'] + stats_a_loc['FTAG']) / 2
+                            pred_goles_away = (stats_a_loc['FTHG'] + stats_h_loc['FTAG']) / 2
+                            prom_goles_total = pred_goles_home + pred_goles_away
+                            prom_corners_total = (stats_h_loc['HC'] + stats_a_loc['AC']) / 2
+                            prom_shots_total = (stats_h_loc['HST'] + stats_a_loc['AST']) / 2
+                    except Exception:
+                        continue
+
+                    # Evaluar mercados (mismo criterio que el escáner en vivo)
+                    def _buscar_cuota(r, cols):
+                        for c in cols:
+                            if c in r.index and pd.notna(r[c]) and str(r[c]).strip() != '':
+                                return r[c]
+                        return None
+
+                    mercados_ev = [
+                        ("Ganador (Local)",   _buscar_cuota(row, ['1x2_home']), prob_local),
+                        ("Empate",            _buscar_cuota(row, ['1x2_draw']), prob_empate),
+                        ("Ganador (Visita)",  _buscar_cuota(row, ['1x2_away']), prob_visita),
+                    ]
+
+                    def _prob_under_loc(prom, umb): return 1 - prob_over(prom, umb)
+                    def _prob_hdp(pf, pc, linea):
+                        pa = 0.0
+                        for gf in range(15):
+                            for gc in range(15):
+                                if (gf + linea) > gc:
+                                    pa += (math.exp(-pf)*(pf**gf)/math.factorial(gf)) * (math.exp(-pc)*(pc**gc)/math.factorial(gc))
+                        return pa
+
+                    for col_name, val in row.items():
+                        if pd.isna(val) or str(val).strip() == '': continue
+                        col_str = str(col_name).lower()
+                        if col_str in ['es_mundial','liga','pais','partido_id','home','away','inicio_utc','inicio_local','fecha_match']: continue
+                        try:
+                            val_num = float(val)
+                            if val_num <= 1.0: continue
+                        except ValueError: continue
+                        if 'btts' in col_str or 'ambos' in col_str:
+                            prob_btts = (1 - math.exp(-pred_goles_home)) * (1 - math.exp(-pred_goles_away))
+                            if 'yes' in col_str or 'si' in col_str: mercados_ev.append(("Ambos Anotan (Sí)", val_num, prob_btts))
+                            elif 'no' in col_str: mercados_ev.append(("Ambos Anotan (No)", val_num, 1 - prob_btts))
+                            continue
+                        m_linea = re.search(r'(-?\d+\.5)', col_str)
+                        if not m_linea: continue
+                        linea = float(m_linea.group(1))
+                        if 'hdp' in col_str or 'handicap' in col_str:
+                            if 'home' in col_str: mercados_ev.append((f"Hándicap Local ({linea:+})", val_num, _prob_hdp(pred_goles_home, pred_goles_away, linea)))
+                            elif 'away' in col_str: mercados_ev.append((f"Hándicap Visita ({linea:+})", val_num, _prob_hdp(pred_goles_away, pred_goles_home, linea)))
+                        elif 'corners' in col_str:
+                            hc_v = stats_h_loc.get('HC', prom_corners_total)
+                            ac_v = stats_a_loc.get('AC', prom_corners_total)
+                            if 'home' in col_str:
+                                if 'over' in col_str: mercados_ev.append((f"Córners Local (+{linea})", val_num, prob_over(hc_v, linea)))
+                                elif 'under' in col_str: mercados_ev.append((f"Córners Local (-{linea})", val_num, _prob_under_loc(hc_v, linea)))
+                            elif 'away' in col_str:
+                                if 'over' in col_str: mercados_ev.append((f"Córners Visita (+{linea})", val_num, prob_over(ac_v, linea)))
+                                elif 'under' in col_str: mercados_ev.append((f"Córners Visita (-{linea})", val_num, _prob_under_loc(ac_v, linea)))
+                            elif 'total' in col_str:
+                                if 'over' in col_str: mercados_ev.append((f"Córners Totales (+{linea})", val_num, prob_over(prom_corners_total, linea)))
+                                elif 'under' in col_str: mercados_ev.append((f"Córners Totales (-{linea})", val_num, _prob_under_loc(prom_corners_total, linea)))
+                        elif 'shots' in col_str:
+                            hst_v = stats_h_loc.get('HST', prom_shots_total)
+                            ast_v = stats_a_loc.get('AST', prom_shots_total)
+                            if 'home' in col_str:
+                                if 'over' in col_str: mercados_ev.append((f"Tiros Local (+{linea})", val_num, prob_over(hst_v, linea)))
+                                elif 'under' in col_str: mercados_ev.append((f"Tiros Local (-{linea})", val_num, _prob_under_loc(hst_v, linea)))
+                            elif 'away' in col_str:
+                                if 'over' in col_str: mercados_ev.append((f"Tiros Visita (+{linea})", val_num, prob_over(ast_v, linea)))
+                                elif 'under' in col_str: mercados_ev.append((f"Tiros Visita (-{linea})", val_num, _prob_under_loc(ast_v, linea)))
+                            elif 'total' in col_str:
+                                if 'over' in col_str: mercados_ev.append((f"Tiros a Puerta Totales (+{linea})", val_num, prob_over(prom_shots_total, linea)))
+                                elif 'under' in col_str: mercados_ev.append((f"Tiros a Puerta Totales (-{linea})", val_num, _prob_under_loc(prom_shots_total, linea)))
+                        elif 'goles' in col_str or 'total' in col_str:
+                            if 'tt_home' in col_str:
+                                if 'over' in col_str: mercados_ev.append((f"Goles Local (+{linea})", val_num, prob_over(pred_goles_home, linea)))
+                                elif 'under' in col_str: mercados_ev.append((f"Goles Local (-{linea})", val_num, _prob_under_loc(pred_goles_home, linea)))
+                            elif 'tt_away' in col_str:
+                                if 'over' in col_str: mercados_ev.append((f"Goles Visita (+{linea})", val_num, prob_over(pred_goles_away, linea)))
+                                elif 'under' in col_str: mercados_ev.append((f"Goles Visita (-{linea})", val_num, _prob_under_loc(pred_goles_away, linea)))
                             else:
-                                df_t['inicio_local'] = df_t['inicio_local'].fillna(fecha_fb + " 12:00")
-                            # Fecha_Match derivada de inicio_local (cada fila puede ser un dia distinto)
-                            df_t['Fecha_Match'] = df_t['inicio_local'].astype(str).str.strip().str.slice(0, 10)
-                            df_t = df_t[df_t['Fecha_Match'].str.match(r'^\d{4}-\d{2}-\d{2}$', na=False)]
-                            # Filtrar ROW a ROW: solo filas cuya fecha NO este ya cubierta por la DB
-                            df_t = df_t[~df_t['Fecha_Match'].isin(fechas_en_db)]
-                            if not df_t.empty:
-                                lista_dfs_hist.append(df_t)
+                                if 'over' in col_str: mercados_ev.append((f"Goles Totales (+{linea})", val_num, prob_over(prom_goles_total, linea)))
+                                elif 'under' in col_str: mercados_ev.append((f"Goles Totales (-{linea})", val_num, _prob_under_loc(prom_goles_total, linea)))
+
+                    for nombre_mk, cuota_mk, prob_mk in mercados_ev:
+                        if cuota_mk is None: continue
+                        try:
+                            cuota_f = float(cuota_mk)
+                            edge = prob_mk - (1 / cuota_f)
+                            if 0.02 <= edge <= 0.15:
+                                oportunidades.append({
+                                    'Date': fecha_partido, 'Home': h_db, 'Away': a_db,
+                                    'Mercado': nombre_mk, 'Cuota': cuota_f,
+                                    'Prob_IA': prob_mk, 'Edge': edge
+                                })
+                        except Exception:
+                            pass
+                return oportunidades
+
+            # ── Construir el big portfolio ────────────────────
+            # Dias DB: usar picks tal como estan guardados
+            big_portfolio_rows = list(big_portfolio_from_db)
+
+            # Dias CSV: re-escanear solo los dias que no estan en DB
+            if not df_master_hist.empty and fechas_csv_nuevas:
+                with st.spinner("Re-escaneando dias adicionales desde odds CSVs..."):
+                    stake_unitario = 500
+                    for fecha_d in fechas_csv_nuevas:
+                        if fecha_d in fechas_en_db:
+                            continue  # ya cubierto por DB
+                        df_dia_odds = df_master_hist[df_master_hist['Fecha_Match'] == fecha_d]
+                        try:
+                            ops_dia = _escanear_dia_hist(fecha_d, df_dia_odds)
                         except Exception:
                             continue
+                        if not ops_dia:
+                            continue
+                        df_dia_ops = pd.DataFrame(ops_dia).sort_values('Edge', ascending=False)
+                        df_dia_ops['Partido'] = df_dia_ops['Home'] + " vs " + df_dia_ops['Away']
+                        df_dia_ops = df_dia_ops.drop_duplicates(subset=['Partido', 'Mercado']).reset_index(drop=True)
+                        seleccionados = []
+                        usados_partidos = set()
+                        for _, r in df_dia_ops.iterrows():
+                            if r['Partido'] not in usados_partidos:
+                                seleccionados.append(r.to_dict())
+                                usados_partidos.add(r['Partido'])
+                                break
+                        buckets_def = [('alto', 2.50, 9999), ('medio', 1.90, 2.50), ('bajo', 0.0, 1.90)]
+                        for _, min_c, max_c in buckets_def:
+                            cnt = 0
+                            for _, r in df_dia_ops.iterrows():
+                                if cnt >= 3: break
+                                if r['Partido'] in usados_partidos: continue
+                                if min_c <= r['Cuota'] < max_c:
+                                    seleccionados.append(r.to_dict())
+                                    usados_partidos.add(r['Partido'])
+                                    cnt += 1
+                        if len(seleccionados) < 10:
+                            for _, r in df_dia_ops.iterrows():
+                                if len(seleccionados) >= 10: break
+                                ya = any((s['Partido'] == r['Partido'] and s['Mercado'] == r['Mercado']) for s in seleccionados)
+                                if not ya:
+                                    seleccionados.append(r.to_dict())
+                        for s in seleccionados:
+                            s['Stake'] = stake_unitario
+                            s['_from_db'] = False
+                            big_portfolio_rows.append(s)
 
-                    if lista_dfs_hist:
-                        df_master_hist = pd.concat(lista_dfs_hist, ignore_index=True)
-                        df_master_hist = df_master_hist.drop_duplicates(subset=['home', 'away', 'inicio_local'])
-                        fechas_csv_nuevas = sorted(df_master_hist['Fecha_Match'].unique())
-                    else:
-                        df_master_hist    = pd.DataFrame()
-                        fechas_csv_nuevas = []
-                else:
-                    df_master_hist    = pd.DataFrame()
-                    fechas_csv_nuevas = []
-
-                # ══════════════════════════════════════════════════════
-                # Combinacion de ambas fuentes
-                # ══════════════════════════════════════════════════════
-                n_dias_db  = len(fechas_en_db)
-                n_dias_csv = len(fechas_csv_nuevas)
-
-                if n_dias_db == 0 and n_dias_csv == 0:
-                    st.warning("No hay datos en portafolio_historico ni archivos de odds CSV. No hay historial que mostrar.")
-                else:
-                    st.caption(
-                        f"Fuente: **{n_dias_db} dias desde la base de datos** "
-                        + (f"+ **{n_dias_csv} dias re-escaneados desde odds CSVs**" if n_dias_csv > 0 else "")
-                    )
-
-                    fechas_hist_todas = sorted(
-                        list(fechas_en_db) + [f for f in fechas_csv_nuevas if f not in fechas_en_db]
-                    )
-
-                        # ── Función reutilizada del escáner para evaluar un día ──
-                    def _escanear_dia_hist(fecha_str, df_odds_dia):
-                        oportunidades = []
-                        for _, row in df_odds_dia.iterrows():
-                            h_csv = str(row['home'])
-                            a_csv = str(row['away'])
-                            es_mundial = row.get('Es_Mundial', False)
-                            fecha_partido = str(row['inicio_local']).split()[0] if pd.notna(row.get('inicio_local')) else fecha_str
-
-                            lista_ref = equipos_wc_hist if es_mundial else equipos_clubes_hist
-                            h_match = process.extractOne(h_csv, lista_ref) if lista_ref else None
-                            a_match = process.extractOne(a_csv, lista_ref) if lista_ref else None
-                            if not h_match or not a_match or h_match[1] < 80 or a_match[1] < 80:
-                                continue
-                            h_db = h_match[0]
-                            a_db = a_match[0]
-
-                            try:
-                                if es_mundial:
-                                    if not modelo_wc_hist:
-                                        continue
-                                    df_sh = pd.read_sql(f'SELECT * FROM historial_selecciones_ml WHERE HomeTeam="{h_db}" OR AwayTeam="{h_db}" ORDER BY Date DESC LIMIT 6', conn)
-                                    df_sa = pd.read_sql(f'SELECT * FROM historial_selecciones_ml WHERE HomeTeam="{a_db}" OR AwayTeam="{a_db}" ORDER BY Date DESC LIMIT 6', conn)
-                                    def _sm(df, col, dv): return df[col].mean() if not df.empty and col in df.columns and pd.notna(df[col].mean()) else dv
-                                    hst = _sm(df_sh, 'HST', 4.0); hc = _sm(df_sh, 'HC', 4.5)
-                                    ast = _sm(df_sa, 'AST', 3.5); ac = _sm(df_sa, 'AC', 4.0)
-                                    gf_h = _sm(df_sh, 'FTHG', 1.5); gc_h = _sm(df_sh, 'FTAG', 1.0)
-                                    gf_a = _sm(df_sa, 'FTHG', 1.2); gc_a = _sm(df_sa, 'FTAG', 1.3)
-                                    if h_db in encoder_wc_hist.classes_ and a_db in encoder_wc_hist.classes_:
-                                        h_c = encoder_wc_hist.transform([h_db])[0]
-                                        a_c = encoder_wc_hist.transform([a_db])[0]
-                                        X_in = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                                        prbs = modelo_wc_hist.predict_proba(X_in)[0]
-                                        prob_visita, prob_empate, prob_local = prbs[0], prbs[1], prbs[2]
-                                    else:
-                                        prob_visita, prob_empate, prob_local = 0.33, 0.34, 0.33
-                                    pred_goles_home = (gf_h + gc_a) / 2
-                                    pred_goles_away = (gf_a + gc_h) / 2
-                                    prom_goles_total = pred_goles_home + pred_goles_away
-                                    prom_corners_total = (hc + ac) / 2
-                                    prom_shots_total = (hst + ast) / 2
-                                    stats_h_loc = {'HC': hc, 'HST': hst}
-                                    stats_a_loc = {'AC': ac, 'AST': ast}
-                                else:
-                                    if not modelo_clubes_hist:
-                                        continue
-                                    stats_h_loc = get_recent_stats(h_db, conn)
-                                    stats_a_loc = get_recent_stats(a_db, conn)
-                                    xg_h = stats_h_loc.get('xG_home', 1.0)
-                                    xg_a = stats_a_loc.get('xG_away', 1.0)
-                                    xg_diff = xg_h - xg_a
-                                    pts_h = obtener_puntos_temporada(h_db, conn)
-                                    pts_a = obtener_puntos_temporada(a_db, conn)
-                                    dif_tabla = pts_h - pts_a
-                                    descanso_h = obtener_dias_descanso(h_db, conn)
-                                    descanso_a = obtener_dias_descanso(a_db, conn)
-                                    ventaja_fisica = descanso_h - descanso_a
-                                    eff_h = stats_h_loc['FTHG'] / (xg_h + 0.01)
-                                    eff_a = stats_a_loc['FTAG'] / (xg_a + 0.01)
-                                    input_data = [[
-                                        stats_h_loc['FTHG'], stats_h_loc['FTAG'], stats_h_loc['HS'], stats_h_loc['AS'],
-                                        stats_h_loc['HST'], stats_h_loc['AST'], stats_h_loc['HC'], stats_h_loc['AC'],
-                                        stats_h_loc['HY'], stats_h_loc['AY'], xg_h, xg_a, eff_h, xg_diff,
-                                        dif_tabla, ventaja_fisica
-                                    ]]
-                                    pred_probs = modelo_clubes_hist.predict_proba(input_data)[0]
-                                    prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
-                                    pred_goles_home = (stats_h_loc['FTHG'] + stats_a_loc['FTAG']) / 2
-                                    pred_goles_away = (stats_a_loc['FTHG'] + stats_h_loc['FTAG']) / 2
-                                    prom_goles_total = pred_goles_home + pred_goles_away
-                                    prom_corners_total = (stats_h_loc['HC'] + stats_a_loc['AC']) / 2
-                                    prom_shots_total = (stats_h_loc['HST'] + stats_a_loc['AST']) / 2
-                            except Exception:
-                                continue
-
-                            # Evaluar mercados (mismo criterio que el escáner en vivo)
-                            def _buscar_cuota(r, cols):
-                                for c in cols:
-                                    if c in r.index and pd.notna(r[c]) and str(r[c]).strip() != '':
-                                        return r[c]
-                                return None
-
-                            mercados_ev = [
-                                ("Ganador (Local)",   _buscar_cuota(row, ['1x2_home']), prob_local),
-                                ("Empate",            _buscar_cuota(row, ['1x2_draw']), prob_empate),
-                                ("Ganador (Visita)",  _buscar_cuota(row, ['1x2_away']), prob_visita),
-                            ]
-
-                            def _prob_under_loc(prom, umb): return 1 - prob_over(prom, umb)
-                            def _prob_hdp(pf, pc, linea):
-                                pa = 0.0
-                                for gf in range(15):
-                                    for gc in range(15):
-                                        if (gf + linea) > gc:
-                                            pa += (math.exp(-pf)*(pf**gf)/math.factorial(gf)) * (math.exp(-pc)*(pc**gc)/math.factorial(gc))
-                                return pa
-
-                            for col_name, val in row.items():
-                                if pd.isna(val) or str(val).strip() == '': continue
-                                col_str = str(col_name).lower()
-                                if col_str in ['es_mundial','liga','pais','partido_id','home','away','inicio_utc','inicio_local','fecha_match']: continue
-                                try:
-                                    val_num = float(val)
-                                    if val_num <= 1.0: continue
-                                except ValueError: continue
-                                if 'btts' in col_str or 'ambos' in col_str:
-                                    prob_btts = (1 - math.exp(-pred_goles_home)) * (1 - math.exp(-pred_goles_away))
-                                    if 'yes' in col_str or 'si' in col_str: mercados_ev.append(("Ambos Anotan (Sí)", val_num, prob_btts))
-                                    elif 'no' in col_str: mercados_ev.append(("Ambos Anotan (No)", val_num, 1 - prob_btts))
-                                    continue
-                                m_linea = re.search(r'(-?\d+\.5)', col_str)
-                                if not m_linea: continue
-                                linea = float(m_linea.group(1))
-                                if 'hdp' in col_str or 'handicap' in col_str:
-                                    if 'home' in col_str: mercados_ev.append((f"Hándicap Local ({linea:+})", val_num, _prob_hdp(pred_goles_home, pred_goles_away, linea)))
-                                    elif 'away' in col_str: mercados_ev.append((f"Hándicap Visita ({linea:+})", val_num, _prob_hdp(pred_goles_away, pred_goles_home, linea)))
-                                elif 'corners' in col_str:
-                                    hc_v = stats_h_loc.get('HC', prom_corners_total)
-                                    ac_v = stats_a_loc.get('AC', prom_corners_total)
-                                    if 'home' in col_str:
-                                        if 'over' in col_str: mercados_ev.append((f"Córners Local (+{linea})", val_num, prob_over(hc_v, linea)))
-                                        elif 'under' in col_str: mercados_ev.append((f"Córners Local (-{linea})", val_num, _prob_under_loc(hc_v, linea)))
-                                    elif 'away' in col_str:
-                                        if 'over' in col_str: mercados_ev.append((f"Córners Visita (+{linea})", val_num, prob_over(ac_v, linea)))
-                                        elif 'under' in col_str: mercados_ev.append((f"Córners Visita (-{linea})", val_num, _prob_under_loc(ac_v, linea)))
-                                    elif 'total' in col_str:
-                                        if 'over' in col_str: mercados_ev.append((f"Córners Totales (+{linea})", val_num, prob_over(prom_corners_total, linea)))
-                                        elif 'under' in col_str: mercados_ev.append((f"Córners Totales (-{linea})", val_num, _prob_under_loc(prom_corners_total, linea)))
-                                elif 'shots' in col_str:
-                                    hst_v = stats_h_loc.get('HST', prom_shots_total)
-                                    ast_v = stats_a_loc.get('AST', prom_shots_total)
-                                    if 'home' in col_str:
-                                        if 'over' in col_str: mercados_ev.append((f"Tiros Local (+{linea})", val_num, prob_over(hst_v, linea)))
-                                        elif 'under' in col_str: mercados_ev.append((f"Tiros Local (-{linea})", val_num, _prob_under_loc(hst_v, linea)))
-                                    elif 'away' in col_str:
-                                        if 'over' in col_str: mercados_ev.append((f"Tiros Visita (+{linea})", val_num, prob_over(ast_v, linea)))
-                                        elif 'under' in col_str: mercados_ev.append((f"Tiros Visita (-{linea})", val_num, _prob_under_loc(ast_v, linea)))
-                                    elif 'total' in col_str:
-                                        if 'over' in col_str: mercados_ev.append((f"Tiros a Puerta Totales (+{linea})", val_num, prob_over(prom_shots_total, linea)))
-                                        elif 'under' in col_str: mercados_ev.append((f"Tiros a Puerta Totales (-{linea})", val_num, _prob_under_loc(prom_shots_total, linea)))
-                                elif 'goles' in col_str or 'total' in col_str:
-                                    if 'tt_home' in col_str:
-                                        if 'over' in col_str: mercados_ev.append((f"Goles Local (+{linea})", val_num, prob_over(pred_goles_home, linea)))
-                                        elif 'under' in col_str: mercados_ev.append((f"Goles Local (-{linea})", val_num, _prob_under_loc(pred_goles_home, linea)))
-                                    elif 'tt_away' in col_str:
-                                        if 'over' in col_str: mercados_ev.append((f"Goles Visita (+{linea})", val_num, prob_over(pred_goles_away, linea)))
-                                        elif 'under' in col_str: mercados_ev.append((f"Goles Visita (-{linea})", val_num, _prob_under_loc(pred_goles_away, linea)))
-                                    else:
-                                        if 'over' in col_str: mercados_ev.append((f"Goles Totales (+{linea})", val_num, prob_over(prom_goles_total, linea)))
-                                        elif 'under' in col_str: mercados_ev.append((f"Goles Totales (-{linea})", val_num, _prob_under_loc(prom_goles_total, linea)))
-
-                            for nombre_mk, cuota_mk, prob_mk in mercados_ev:
-                                if cuota_mk is None: continue
-                                try:
-                                    cuota_f = float(cuota_mk)
-                                    edge = prob_mk - (1 / cuota_f)
-                                    if 0.02 <= edge <= 0.15:
-                                        oportunidades.append({
-                                            'Date': fecha_partido, 'Home': h_db, 'Away': a_db,
-                                            'Mercado': nombre_mk, 'Cuota': cuota_f,
-                                            'Prob_IA': prob_mk, 'Edge': edge
-                                        })
-                                except Exception:
-                                    pass
-                        return oportunidades
-
-                    # ── Construir el big portfolio ────────────────────
-                    # Dias DB: usar picks tal como estan guardados
-                    big_portfolio_rows = list(big_portfolio_from_db)
-
-                    # Dias CSV: re-escanear solo los dias que no estan en DB
-                    if not df_master_hist.empty and fechas_csv_nuevas:
-                        with st.spinner("Re-escaneando dias adicionales desde odds CSVs..."):
-                            stake_unitario = 500
-                            for fecha_d in fechas_csv_nuevas:
-                                if fecha_d in fechas_en_db:
-                                    continue  # ya cubierto por DB
-                                df_dia_odds = df_master_hist[df_master_hist['Fecha_Match'] == fecha_d]
-                                try:
-                                    ops_dia = _escanear_dia_hist(fecha_d, df_dia_odds)
-                                except Exception:
-                                    continue
-                                if not ops_dia:
-                                    continue
-                                df_dia_ops = pd.DataFrame(ops_dia).sort_values('Edge', ascending=False)
-                                df_dia_ops['Partido'] = df_dia_ops['Home'] + " vs " + df_dia_ops['Away']
-                                df_dia_ops = df_dia_ops.drop_duplicates(subset=['Partido', 'Mercado']).reset_index(drop=True)
-                                seleccionados = []
-                                usados_partidos = set()
-                                for _, r in df_dia_ops.iterrows():
-                                    if r['Partido'] not in usados_partidos:
-                                        seleccionados.append(r.to_dict())
-                                        usados_partidos.add(r['Partido'])
-                                        break
-                                buckets_def = [('alto', 2.50, 9999), ('medio', 1.90, 2.50), ('bajo', 0.0, 1.90)]
-                                for _, min_c, max_c in buckets_def:
-                                    cnt = 0
-                                    for _, r in df_dia_ops.iterrows():
-                                        if cnt >= 3: break
-                                        if r['Partido'] in usados_partidos: continue
-                                        if min_c <= r['Cuota'] < max_c:
-                                            seleccionados.append(r.to_dict())
-                                            usados_partidos.add(r['Partido'])
-                                            cnt += 1
-                                if len(seleccionados) < 10:
-                                    for _, r in df_dia_ops.iterrows():
-                                        if len(seleccionados) >= 10: break
-                                        ya = any((s['Partido'] == r['Partido'] and s['Mercado'] == r['Mercado']) for s in seleccionados)
-                                        if not ya:
-                                            seleccionados.append(r.to_dict())
-                                for s in seleccionados:
-                                    s['Stake'] = stake_unitario
-                                    s['_from_db'] = False
-                                    big_portfolio_rows.append(s)
-
-                    if not big_portfolio_rows:
-                        st.info("No se encontraron oportunidades históricas con edge en los archivos de odds disponibles.")
-                    else:
-                        df_big = pd.DataFrame(big_portfolio_rows)
-
-                        # ── Liquidar contra el historial real ───────────
-                        def _liquidar_pick_hist(pick_row):
-                            fecha_d = str(pick_row['Date'])
-                            try:
-                                fd = datetime.strptime(fecha_d, '%Y-%m-%d')
-                                f_ini = (fd - timedelta(days=1)).strftime('%Y-%m-%d')
-                                f_fin = (fd + timedelta(days=1)).strftime('%Y-%m-%d')
-                            except Exception:
-                                f_ini = f_fin = fecha_d
-
-                            q_res = f"""
-                            SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST FROM historial_multiliga_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
-                            UNION ALL
-                            SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST FROM historial_selecciones_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
-                            """
-                            try:
-                                res_df = pd.read_sql(q_res, conn)
-                            except Exception:
-                                return 'Pendiente', 0.0
-
-                            if res_df.empty:
-                                return 'Pendiente', 0.0
-
-                            match_f = process.extractOne(pick_row['Home'], res_df['HomeTeam'].tolist())
-                            if not match_f or match_f[1] < 75:
-                                return 'Pendiente', 0.0
-
-                            row_real = res_df[res_df['HomeTeam'] == match_f[0]].iloc[0]
-                            hg = row_real['FTHG'] if pd.notna(row_real.get('FTHG')) else None
-                            ag = row_real['FTAG'] if pd.notna(row_real.get('FTAG')) else None
-                            if hg is None or ag is None:
-                                return 'Pendiente', 0.0
-
-                            hg, ag = int(hg), int(ag)
-                            hc  = int(row_real['HC'])  if pd.notna(row_real.get('HC'))  else 0
-                            ac  = int(row_real['AC'])  if pd.notna(row_real.get('AC'))  else 0
-                            hst = int(row_real['HST']) if pd.notna(row_real.get('HST')) else 0
-                            ast = int(row_real['AST']) if pd.notna(row_real.get('AST')) else 0
-
-                            mkt = pick_row['Mercado']
-                            ganada = False
-                            if mkt == "Ganador (Local)":      ganada = (hg > ag)
-                            elif mkt == "Empate":              ganada = (hg == ag)
-                            elif mkt == "Ganador (Visita)":    ganada = (ag > hg)
-                            elif mkt == "Ambos Anotan (Sí)":   ganada = (hg > 0 and ag > 0)
-                            elif mkt == "Ambos Anotan (No)":   ganada = (hg == 0 or ag == 0)
-                            else:
-                                m_liq = re.search(r'\(([+-]\d+\.5)\)', mkt)
-                                if m_liq:
-                                    signo = m_liq.group(1)[0]
-                                    val_l = float(m_liq.group(1)[1:])
-                                    lin_m = float(m_liq.group(1))
-                                    if "Hándicap" in mkt:
-                                        if "Local"   in mkt: ganada = (hg + lin_m > ag)
-                                        elif "Visita" in mkt: ganada = (ag + lin_m > hg)
-                                    else:
-                                        score_liq = -1
-                                        if "Goles Local"    in mkt: score_liq = hg
-                                        elif "Goles Visita" in mkt: score_liq = ag
-                                        elif "Goles"        in mkt: score_liq = hg + ag
-                                        elif "Córners Local"    in mkt: score_liq = hc
-                                        elif "Córners Visita"   in mkt: score_liq = ac
-                                        elif "Córners"          in mkt: score_liq = hc + ac
-                                        elif "Tiros Local"      in mkt: score_liq = hst
-                                        elif "Tiros Visita"     in mkt: score_liq = ast
-                                        elif "Tiros"            in mkt: score_liq = hst + ast
-                                        if signo == '+': ganada = (score_liq > val_l)
-                                        elif signo == '-': ganada = (score_liq < val_l)
-
-                            estado = 'Ganada' if ganada else 'Perdida'
-                            # Beneficio computed with placeholder stake=1; real stake applied later
-                            return estado, ganada
-
-                        # ── Liquidar big portfolio ──────────────────────
-                        # DB picks: ya tienen Estado y Beneficio_Neto reales → no re-liquidar
-                        # CSV picks: liquidar contra historial
-                        estados_list = []
-                        ganada_list  = []
-                        for _, pr in df_big.iterrows():
-                            if pr.get('_from_db', False):
-                                # Usar estado ya guardado en DB
-                                est_db = pr['Estado']
-                                gan_db = (est_db == 'Ganada')
-                                estados_list.append(est_db)
-                                ganada_list.append(gan_db)
-                            else:
-                                est, gan = _liquidar_pick_hist(pr)
-                                estados_list.append(est)
-                                ganada_list.append(gan)
-
-                        df_big['Estado']  = estados_list
-                        df_big['_Ganada'] = ganada_list  # bool para recalculo de stake
-                        df_big['Date']    = pd.to_datetime(df_big['Date']).dt.date
-
-                        # ── Sub-toggle: bankroll dinámico ────────────
-                        _col_toggle, _col_info = st.columns([1, 2])
-                        with _col_toggle:
-                            _modo_dyn = st.toggle(
-                                "💹 Bankroll Dinámico",
-                                key="hist_bankroll_dyn",
-                                help="ON: el stake de cada día se calcula sobre el bankroll inicial + P&L acumulado de días anteriores. OFF: flat staking uniforme."
-                            )
-                        with _col_info:
-                            _bk_base_input = st.number_input(
-                                "💰 Bankroll inicial ($)",
-                                min_value=100, value=5000, step=500,
-                                key="hist_bankroll_base",
-                                label_visibility="visible"
-                            )
-
-                        # ── Asignar stakes reales día a día ──────────
-                        # Ordenar días cronológicamente
-                        fechas_con_picks = sorted(df_big['Date'].unique())
-                        bankroll_actual  = float(_bk_base_input)
-                        pnl_acum_dyn     = 0.0
-
-                        # Mapa fecha → stake_por_pick (recalculado si dinámico)
-                        stake_por_fecha = {}
-                        for _fd in fechas_con_picks:
-                            _picks_fd = df_big[df_big['Date'] == _fd]
-                            _n_picks  = len(_picks_fd)
-                            if _n_picks == 0:
-                                continue
-                            if _modo_dyn:
-                                _bk_hoy = bankroll_actual
-                                _stake_hoy = _bk_hoy / _n_picks
-                            else:
-                                _stake_hoy = float(_bk_base_input) / _n_picks
-
-                            stake_por_fecha[_fd] = _stake_hoy
-
-                            # Calcular P&L del día para actualizar bankroll (solo cerrados)
-                            _cerrados_fd = _picks_fd[_picks_fd['Estado'].isin(['Ganada', 'Perdida'])]
-                            for _, _pr in _cerrados_fd.iterrows():
-                                if _pr['_Ganada']:
-                                    _ben = _stake_hoy * _pr['Cuota'] - _stake_hoy
-                                else:
-                                    _ben = -_stake_hoy
-                                pnl_acum_dyn += _ben
-                            if _modo_dyn:
-                                bankroll_actual = float(_bk_base_input) + pnl_acum_dyn
-
-                        # Aplicar stakes y calcular beneficios reales
-                        def _calc_beneficio(row):
-                            _is_db = row.get('_from_db', False)
-                            if not _modo_dyn and _is_db:
-                                # Flat mode + DB pick: usar stake y beneficio reales ya almacenados
-                                _s   = row.get('Stake', float(_bk_base_input) / 10)
-                                _ben = row.get('Beneficio_Neto', 0.0)
-                                return _s, _ben
-                            # Dynamic mode o picks CSV: recalcular desde stake del dia
-                            _s = stake_por_fecha.get(row['Date'], float(_bk_base_input) / 10)
-                            if row['Estado'] == 'Ganada':
-                                return _s, _s * row['Cuota'] - _s
-                            elif row['Estado'] == 'Perdida':
-                                return _s, -_s
-                            else:
-                                return _s, 0.0
-
-                        df_big[['Stake', 'Beneficio_Neto']] = df_big.apply(
-                            lambda r: pd.Series(_calc_beneficio(r)), axis=1
-                        )
-
-                        # ── Separar cerrados vs pendientes ───────────
-                        df_big_cerrado  = df_big[df_big['Estado'].isin(['Ganada', 'Perdida'])].copy()
-                        df_big_pendiente = df_big[df_big['Estado'] == 'Pendiente'].copy()
-
-                        n_dias_total    = len(fechas_con_picks)
-                        n_dias_cerrados = df_big_cerrado['Date'].nunique() if not df_big_cerrado.empty else 0
-                        n_dias_pend     = df_big_pendiente['Date'].nunique() if not df_big_pendiente.empty else 0
-
-                        # ── Aviso de cobertura ────────────────────────
-                        if n_dias_pend > 0:
-                            st.info(
-                                f"📋 **{n_dias_total} días con odds** en total — "
-                                f"**{n_dias_cerrados} días liquidados** ✅ | "
-                                f"**{n_dias_pend} días pendientes** ⏳ (sin resultado en DB aún)"
-                            )
-
-                        if df_big_cerrado.empty:
-                            st.warning("Ningún pick histórico tiene resultado registrado en la base de datos todavía.")
-                        else:
-                            # ── KPIs globales ─────────────────────────
-                            total_picks  = len(df_big_cerrado)
-                            ganadas_big  = (df_big_cerrado['Estado'] == 'Ganada').sum()
-                            win_rate_big = ganadas_big / total_picks * 100
-                            stake_total  = df_big_cerrado['Stake'].sum()
-                            pnl_total    = df_big_cerrado['Beneficio_Neto'].sum()
-                            yield_big    = (pnl_total / stake_total * 100) if stake_total > 0 else 0.0
-                            _modo_lbl    = "💹 Dinámico" if _modo_dyn else "📐 Flat"
-
-                            k1, k2, k3, k4 = st.columns(4)
-                            k1.metric("📊 Picks Cerrados", f"{total_picks:,}")
-                            k2.metric("🎯 Win Rate",       f"{win_rate_big:.1f}%")
-                            k3.metric("📈 Yield (ROI)",    f"{yield_big:.2f}%", _modo_lbl)
-                            k4.metric("💰 Ganancia Neta",  f"${pnl_total:,.0f}")
-
-                            st.divider()
-
-                            # ── Construir tabla de días (todos, cerrados + pendientes) ──
-                            # Primero los cerrados agrupados
-                            _dias_cerr = (
-                                df_big_cerrado.groupby('Date')
-                                .agg(
-                                    Picks   =('Estado', 'count'),
-                                    Ganadas =('Estado', lambda x: (x == 'Ganada').sum()),
-                                    Perdidas=('Estado', lambda x: (x == 'Perdida').sum()),
-                                    Invertido=('Stake', 'sum'),
-                                    PnL_Dia =('Beneficio_Neto', 'sum'),
-                                )
-                                .reset_index()
-                            )
-                            _dias_cerr['Estado_Dia'] = 'cerrado'
-
-                            # Luego los pendientes agrupados
-                            if not df_big_pendiente.empty:
-                                _dias_pend = (
-                                    df_big_pendiente.groupby('Date')
-                                    .agg(Picks=('Estado', 'count'))
-                                    .reset_index()
-                                )
-                                _dias_pend['Ganadas']    = 0
-                                _dias_pend['Perdidas']   = 0
-                                _dias_pend['Invertido']  = _dias_pend['Date'].map(
-                                    lambda d: stake_por_fecha.get(d, 0) * len(df_big_pendiente[df_big_pendiente['Date'] == d])
-                                )
-                                _dias_pend['PnL_Dia']    = float('nan')
-                                _dias_pend['Estado_Dia'] = 'pendiente'
-                                _dias_big = pd.concat([_dias_cerr, _dias_pend], ignore_index=True)
-                            else:
-                                _dias_big = _dias_cerr.copy()
-
-                            _dias_big = _dias_big.sort_values('Date').reset_index(drop=True)
-                            _dias_big['Win%'] = (_dias_big['Ganadas'] / _dias_big['Picks'].replace(0, np.nan) * 100).round(1)
-
-                            # Equity acumulada: sólo días cerrados contribuyen al P&L; pendientes se muestran como NaN
-                            _pnl_acum = 0.0
-                            _equity_vals = []
-                            for _, _dr in _dias_big.iterrows():
-                                if _dr['Estado_Dia'] == 'cerrado':
-                                    _pnl_acum += _dr['PnL_Dia']
-                                    _equity_vals.append(_pnl_acum)
-                                else:
-                                    _equity_vals.append(float('nan'))
-                            _dias_big['PnL_Acum'] = _equity_vals
-
-                            # ── Curva de equity ───────────────────────
-                            _dias_cerr_plot = _dias_big[_dias_big['Estado_Dia'] == 'cerrado']
-                            _col_bars = ['#2ecc71' if v >= 0 else '#e74c3c' for v in _dias_cerr_plot['PnL_Dia']]
-
-                            fig_big = go.Figure()
-                            fig_big.add_trace(go.Bar(
-                                x=_dias_cerr_plot['Date'].astype(str),
-                                y=_dias_cerr_plot['PnL_Dia'],
-                                name='P&L Día',
-                                marker_color=_col_bars,
-                                opacity=0.7,
-                                yaxis='y2'
-                            ))
-                            fig_big.add_trace(go.Scatter(
-                                x=_dias_cerr_plot['Date'].astype(str),
-                                y=_dias_cerr_plot['PnL_Acum'],
-                                name='Equity Acumulada',
-                                mode='lines+markers',
-                                line=dict(color='#5dade2', width=2.5),
-                                marker=dict(size=7),
-                            ))
-                            # Pendientes como puntos grises en el eje equity
-                            _dias_pend_plot = _dias_big[_dias_big['Estado_Dia'] == 'pendiente']
-                            if not _dias_pend_plot.empty:
-                                fig_big.add_trace(go.Scatter(
-                                    x=_dias_pend_plot['Date'].astype(str),
-                                    y=[_pnl_acum] * len(_dias_pend_plot),
-                                    name='Pendiente',
-                                    mode='markers',
-                                    marker=dict(color='#f39c12', size=9, symbol='circle-open'),
-                                ))
-                            fig_big.update_layout(
-                                dragmode=False,
-                                plot_bgcolor='#1e2129',
-                                paper_bgcolor='#1e2129',
-                                font=dict(color='#aab0c0'),
-                                legend=dict(orientation='h', y=1.08),
-                                margin=dict(t=20, b=30, l=0, r=0),
-                                yaxis =dict(title='Equity Acum. ($)', fixedrange=True, gridcolor='#2c3050'),
-                                yaxis2=dict(title='P&L Día ($)', overlaying='y', side='right', fixedrange=True),
-                                xaxis =dict(fixedrange=True),
-                            )
-                            st.plotly_chart(fig_big, use_container_width=True, config=CONFIG_FIJA)
-
-                            # ── Tabla resumen día a día (todos los días) ──
-                            def _color_pnl(val):
-                                if isinstance(val, (int, float)) and not np.isnan(val):
-                                    if val > 0: return 'color: #2ecc71; font-weight: bold'
-                                    elif val < 0: return 'color: #e74c3c'
-                                return ''
-
-                            _dias_mostrar = _dias_big[['Date','Picks','Ganadas','Perdidas','Win%','Invertido','PnL_Dia','PnL_Acum','Estado_Dia']].copy()
-                            _dias_mostrar.columns = ['Fecha','Picks','✅ Won','❌ Lost','Win %','Invertido ($)','P&L Día ($)','Equity Acum. ($)','Estado']
-                            _dias_mostrar['Invertido ($)']    = _dias_mostrar['Invertido ($)'].map('${:,.0f}'.format)
-                            _dias_mostrar['P&L Día ($)']      = _dias_mostrar['P&L Día ($)'].apply(lambda v: round(v, 0) if not (isinstance(v, float) and np.isnan(v)) else '⏳')
-                            _dias_mostrar['Equity Acum. ($)'] = _dias_mostrar['Equity Acum. ($)'].apply(lambda v: round(v, 0) if not (isinstance(v, float) and np.isnan(v)) else '⏳')
-                            _dias_mostrar['Estado'] = _dias_mostrar['Estado'].map({'cerrado': '✅', 'pendiente': '⏳'})
-
-                            st.dataframe(
-                                _dias_mostrar.style.map(_color_pnl, subset=['P&L Día ($)', 'Equity Acum. ($)']),
-                                hide_index=True,
-                                use_container_width=True
-                            )
-
-                            # ── Acordeones por día (todos) ────────────
-                            st.markdown("#### 📋 Detalle por Día")
-                            for _, _d in _dias_big.iterrows():
-                                _fecha_d  = str(_d['Date'])
-                                _es_pend  = (_d['Estado_Dia'] == 'pendiente')
-                                _pnl_d    = _d['PnL_Dia'] if not _es_pend else 0.0
-                                _icon_d   = "⏳" if _es_pend else ("🟢" if _pnl_d >= 0 else "🔴")
-                                _picks_d  = df_big[df_big['Date'] == _d['Date']]
-                                _enc_pnl  = f"P&L: ⏳" if _es_pend else f"P&L: ${_pnl_d:+,.0f}  |  Acum: ${_d['PnL_Acum']:+,.0f}"
-                                with st.expander(
-                                    f"{_icon_d} {_fecha_d}  —  {int(_d['Picks'])} picks  |  "
-                                    f"Won: {int(_d['Ganadas'])}  Lost: {int(_d['Perdidas'])}  |  {_enc_pnl}"
-                                ):
-                                    _df_exp = _picks_d[['Home','Away','Mercado','Cuota','Stake','Estado','Beneficio_Neto']].copy()
-                                    _df_exp.columns = ['Local','Visita','Mercado','Cuota','Stake','Estado','Beneficio']
-                                    _df_exp['Cuota']     = _df_exp['Cuota'].round(2)
-                                    _df_exp['Stake']     = _df_exp['Stake'].map('${:,.0f}'.format)
-                                    _df_exp['Beneficio'] = _df_exp['Beneficio'].round(0)
-                                    def _ce_big(v):
-                                        if v == 'Ganada':    return 'color: #2ecc71; font-weight: bold'
-                                        elif v == 'Perdida': return 'color: #e74c3c'
-                                        elif v == 'Pendiente': return 'color: #f39c12'
-                                        return ''
-                                    st.dataframe(_df_exp.style.map(_ce_big, subset=['Estado']), hide_index=True, use_container_width=True)
-
+            if not big_portfolio_rows:
+                st.info("No se encontraron oportunidades históricas con edge en los archivos de odds disponibles.")
             else:
-                # ── Vista estándar (picks individuales) ───────────────
-                # ── Descarga del portafolio ───────────────────────────
-                st.write("📋 **Historial de Picks**")
-                col_dl1, col_dl2, col_dl3 = st.columns([2, 1, 1])
-                df_dl = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto', 'Prob_IA', 'Edge']].copy()
+                df_big = pd.DataFrame(big_portfolio_rows)
 
-                with col_dl2:
-                    csv_bytes = df_dl.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="⬇️ Descargar CSV",
-                        data=csv_bytes,
-                        file_name=f"portafolio_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv"
+                # ── Liquidar contra el historial real ───────────
+                def _liquidar_pick_hist(pick_row):
+                    fecha_d = str(pick_row['Date'])
+                    try:
+                        fd = datetime.strptime(fecha_d, '%Y-%m-%d')
+                        f_ini = (fd - timedelta(days=1)).strftime('%Y-%m-%d')
+                        f_fin = (fd + timedelta(days=1)).strftime('%Y-%m-%d')
+                    except Exception:
+                        f_ini = f_fin = fecha_d
+
+                    q_res = f"""
+                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST FROM historial_multiliga_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
+                    UNION ALL
+                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST FROM historial_selecciones_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
+                    """
+                    try:
+                        res_df = pd.read_sql(q_res, conn)
+                    except Exception:
+                        return 'Pendiente', 0.0
+
+                    if res_df.empty:
+                        return 'Pendiente', 0.0
+
+                    match_f = process.extractOne(pick_row['Home'], res_df['HomeTeam'].tolist())
+                    if not match_f or match_f[1] < 75:
+                        return 'Pendiente', 0.0
+
+                    row_real = res_df[res_df['HomeTeam'] == match_f[0]].iloc[0]
+                    hg = row_real['FTHG'] if pd.notna(row_real.get('FTHG')) else None
+                    ag = row_real['FTAG'] if pd.notna(row_real.get('FTAG')) else None
+                    if hg is None or ag is None:
+                        return 'Pendiente', 0.0
+
+                    hg, ag = int(hg), int(ag)
+                    hc  = int(row_real['HC'])  if pd.notna(row_real.get('HC'))  else 0
+                    ac  = int(row_real['AC'])  if pd.notna(row_real.get('AC'))  else 0
+                    hst = int(row_real['HST']) if pd.notna(row_real.get('HST')) else 0
+                    ast = int(row_real['AST']) if pd.notna(row_real.get('AST')) else 0
+
+                    mkt = pick_row['Mercado']
+                    ganada = False
+                    if mkt == "Ganador (Local)":      ganada = (hg > ag)
+                    elif mkt == "Empate":              ganada = (hg == ag)
+                    elif mkt == "Ganador (Visita)":    ganada = (ag > hg)
+                    elif mkt == "Ambos Anotan (Sí)":   ganada = (hg > 0 and ag > 0)
+                    elif mkt == "Ambos Anotan (No)":   ganada = (hg == 0 or ag == 0)
+                    else:
+                        m_liq = re.search(r'\(([+-]\d+\.5)\)', mkt)
+                        if m_liq:
+                            signo = m_liq.group(1)[0]
+                            val_l = float(m_liq.group(1)[1:])
+                            lin_m = float(m_liq.group(1))
+                            if "Hándicap" in mkt:
+                                if "Local"   in mkt: ganada = (hg + lin_m > ag)
+                                elif "Visita" in mkt: ganada = (ag + lin_m > hg)
+                            else:
+                                score_liq = -1
+                                if "Goles Local"    in mkt: score_liq = hg
+                                elif "Goles Visita" in mkt: score_liq = ag
+                                elif "Goles"        in mkt: score_liq = hg + ag
+                                elif "Córners Local"    in mkt: score_liq = hc
+                                elif "Córners Visita"   in mkt: score_liq = ac
+                                elif "Córners"          in mkt: score_liq = hc + ac
+                                elif "Tiros Local"      in mkt: score_liq = hst
+                                elif "Tiros Visita"     in mkt: score_liq = ast
+                                elif "Tiros"            in mkt: score_liq = hst + ast
+                                if signo == '+': ganada = (score_liq > val_l)
+                                elif signo == '-': ganada = (score_liq < val_l)
+
+                    estado = 'Ganada' if ganada else 'Perdida'
+                    # Beneficio computed with placeholder stake=1; real stake applied later
+                    return estado, ganada
+
+                # ── Liquidar big portfolio ──────────────────────
+                # DB picks: ya tienen Estado y Beneficio_Neto reales → no re-liquidar
+                # CSV picks: liquidar contra historial
+                estados_list = []
+                ganada_list  = []
+                for _, pr in df_big.iterrows():
+                    if pr.get('_from_db', False):
+                        # Usar estado ya guardado en DB
+                        est_db = pr['Estado']
+                        gan_db = (est_db == 'Ganada')
+                        estados_list.append(est_db)
+                        ganada_list.append(gan_db)
+                    else:
+                        est, gan = _liquidar_pick_hist(pr)
+                        estados_list.append(est)
+                        ganada_list.append(gan)
+
+                df_big['Estado']  = estados_list
+                df_big['_Ganada'] = ganada_list  # bool para recalculo de stake
+                df_big['Date']    = pd.to_datetime(df_big['Date']).dt.date
+
+                # ── Sub-toggle: bankroll dinámico ────────────
+                _col_toggle, _col_info = st.columns([1, 2])
+                with _col_toggle:
+                    _modo_dyn = st.toggle(
+                        "💹 Bankroll Dinámico",
+                        key="hist_bankroll_dyn",
+                        help="ON: el stake de cada día se calcula sobre el bankroll inicial + P&L acumulado de días anteriores. OFF: flat staking uniforme."
                     )
-                with col_dl3:
-                    json_bytes = df_dl.to_json(orient='records', force_ascii=False, indent=2).encode('utf-8')
-                    st.download_button(
-                        label="⬇️ Descargar JSON",
-                        data=json_bytes,
-                        file_name=f"portafolio_{pd.Timestamp.now().strftime('%Y%m%d')}.json",
-                        mime="application/json"
+                with _col_info:
+                    _bk_base_input = st.number_input(
+                        "💰 Bankroll inicial ($)",
+                        min_value=100, value=5000, step=500,
+                        key="hist_bankroll_base",
+                        label_visibility="visible"
                     )
-                
-                df_mostrar = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto']].copy()
-                df_mostrar['Es_Pendiente'] = df_mostrar['Estado'] == 'Pendiente'
-                df_mostrar = df_mostrar.sort_values(by=['Es_Pendiente', 'Date'], ascending=[False, False]).drop(columns=['Es_Pendiente'])
-                
-                def color_estado(val):
-                    if val == 'Ganada': return 'color: #00FF00; font-weight: bold'
-                    elif val == 'Perdida': return 'color: #FF4B4B'
-                    elif val == 'Pendiente': return 'color: #FFD700'
-                    return ''
-                    
-                st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
+
+                # ── Asignar stakes reales día a día ──────────
+                # Ordenar días cronológicamente
+                fechas_con_picks = sorted(df_big['Date'].unique())
+                bankroll_actual  = float(_bk_base_input)
+                pnl_acum_dyn     = 0.0
+
+                # Mapa fecha → stake_por_pick (recalculado si dinámico)
+                stake_por_fecha = {}
+                for _fd in fechas_con_picks:
+                    _picks_fd = df_big[df_big['Date'] == _fd]
+                    _n_picks  = len(_picks_fd)
+                    if _n_picks == 0:
+                        continue
+                    if _modo_dyn:
+                        _bk_hoy = bankroll_actual
+                        _stake_hoy = _bk_hoy / _n_picks
+                    else:
+                        _stake_hoy = float(_bk_base_input) / _n_picks
+
+                    stake_por_fecha[_fd] = _stake_hoy
+
+                    # Calcular P&L del día para actualizar bankroll (solo cerrados)
+                    _cerrados_fd = _picks_fd[_picks_fd['Estado'].isin(['Ganada', 'Perdida'])]
+                    for _, _pr in _cerrados_fd.iterrows():
+                        if _pr['_Ganada']:
+                            _ben = _stake_hoy * _pr['Cuota'] - _stake_hoy
+                        else:
+                            _ben = -_stake_hoy
+                        pnl_acum_dyn += _ben
+                    if _modo_dyn:
+                        bankroll_actual = float(_bk_base_input) + pnl_acum_dyn
+
+                # Aplicar stakes y calcular beneficios reales
+                def _calc_beneficio(row):
+                    _is_db = row.get('_from_db', False)
+                    if not _modo_dyn and _is_db:
+                        # Flat mode + DB pick: usar stake y beneficio reales ya almacenados
+                        _s   = row.get('Stake', float(_bk_base_input) / 10)
+                        _ben = row.get('Beneficio_Neto', 0.0)
+                        return _s, _ben
+                    # Dynamic mode o picks CSV: recalcular desde stake del dia
+                    _s = stake_por_fecha.get(row['Date'], float(_bk_base_input) / 10)
+                    if row['Estado'] == 'Ganada':
+                        return _s, _s * row['Cuota'] - _s
+                    elif row['Estado'] == 'Perdida':
+                        return _s, -_s
+                    else:
+                        return _s, 0.0
+
+                df_big[['Stake', 'Beneficio_Neto']] = df_big.apply(
+                    lambda r: pd.Series(_calc_beneficio(r)), axis=1
+                )
+
+                # ── Separar cerrados vs pendientes ───────────
+                df_big_cerrado  = df_big[df_big['Estado'].isin(['Ganada', 'Perdida'])].copy()
+                df_big_pendiente = df_big[df_big['Estado'] == 'Pendiente'].copy()
+
+                n_dias_total    = len(fechas_con_picks)
+                n_dias_cerrados = df_big_cerrado['Date'].nunique() if not df_big_cerrado.empty else 0
+                n_dias_pend     = df_big_pendiente['Date'].nunique() if not df_big_pendiente.empty else 0
+
+                # ── Aviso de cobertura ────────────────────────
+                if n_dias_pend > 0:
+                    st.info(
+                        f"📋 **{n_dias_total} días con odds** en total — "
+                        f"**{n_dias_cerrados} días liquidados** ✅ | "
+                        f"**{n_dias_pend} días pendientes** ⏳ (sin resultado en DB aún)"
+                    )
+
+                if df_big_cerrado.empty:
+                    st.warning("Ningún pick histórico tiene resultado registrado en la base de datos todavía.")
+                else:
+                    # ── KPIs globales ─────────────────────────
+                    total_picks  = len(df_big_cerrado)
+                    ganadas_big  = (df_big_cerrado['Estado'] == 'Ganada').sum()
+                    win_rate_big = ganadas_big / total_picks * 100
+                    stake_total  = df_big_cerrado['Stake'].sum()
+                    pnl_total    = df_big_cerrado['Beneficio_Neto'].sum()
+                    yield_big    = (pnl_total / stake_total * 100) if stake_total > 0 else 0.0
+                    _modo_lbl    = "💹 Dinámico" if _modo_dyn else "📐 Flat"
+
+                    k1, k2, k3, k4 = st.columns(4)
+                    k1.metric("📊 Picks Cerrados", f"{total_picks:,}")
+                    k2.metric("🎯 Win Rate",       f"{win_rate_big:.1f}%")
+                    k3.metric("📈 Yield (ROI)",    f"{yield_big:.2f}%", _modo_lbl)
+                    k4.metric("💰 Ganancia Neta",  f"${pnl_total:,.0f}")
+
+                    st.divider()
+
+                    # ── Construir tabla de días (todos, cerrados + pendientes) ──
+                    # Primero los cerrados agrupados
+                    _dias_cerr = (
+                        df_big_cerrado.groupby('Date')
+                        .agg(
+                            Picks   =('Estado', 'count'),
+                            Ganadas =('Estado', lambda x: (x == 'Ganada').sum()),
+                            Perdidas=('Estado', lambda x: (x == 'Perdida').sum()),
+                            Invertido=('Stake', 'sum'),
+                            PnL_Dia =('Beneficio_Neto', 'sum'),
+                        )
+                        .reset_index()
+                    )
+                    _dias_cerr['Estado_Dia'] = 'cerrado'
+
+                    # Luego los pendientes agrupados
+                    if not df_big_pendiente.empty:
+                        _dias_pend = (
+                            df_big_pendiente.groupby('Date')
+                            .agg(Picks=('Estado', 'count'))
+                            .reset_index()
+                        )
+                        _dias_pend['Ganadas']    = 0
+                        _dias_pend['Perdidas']   = 0
+                        _dias_pend['Invertido']  = _dias_pend['Date'].map(
+                            lambda d: stake_por_fecha.get(d, 0) * len(df_big_pendiente[df_big_pendiente['Date'] == d])
+                        )
+                        _dias_pend['PnL_Dia']    = float('nan')
+                        _dias_pend['Estado_Dia'] = 'pendiente'
+                        _dias_big = pd.concat([_dias_cerr, _dias_pend], ignore_index=True)
+                    else:
+                        _dias_big = _dias_cerr.copy()
+
+                    _dias_big = _dias_big.sort_values('Date').reset_index(drop=True)
+                    _dias_big['Win%'] = (_dias_big['Ganadas'] / _dias_big['Picks'].replace(0, np.nan) * 100).round(1)
+
+                    # Equity acumulada: sólo días cerrados contribuyen al P&L; pendientes se muestran como NaN
+                    _pnl_acum = 0.0
+                    _equity_vals = []
+                    for _, _dr in _dias_big.iterrows():
+                        if _dr['Estado_Dia'] == 'cerrado':
+                            _pnl_acum += _dr['PnL_Dia']
+                            _equity_vals.append(_pnl_acum)
+                        else:
+                            _equity_vals.append(float('nan'))
+                    _dias_big['PnL_Acum'] = _equity_vals
+
+                    # ── Curva de equity ───────────────────────
+                    _dias_cerr_plot = _dias_big[_dias_big['Estado_Dia'] == 'cerrado']
+                    _col_bars = ['#2ecc71' if v >= 0 else '#e74c3c' for v in _dias_cerr_plot['PnL_Dia']]
+
+                    fig_big = go.Figure()
+                    fig_big.add_trace(go.Bar(
+                        x=_dias_cerr_plot['Date'].astype(str),
+                        y=_dias_cerr_plot['PnL_Dia'],
+                        name='P&L Día',
+                        marker_color=_col_bars,
+                        opacity=0.7,
+                        yaxis='y2'
+                    ))
+                    fig_big.add_trace(go.Scatter(
+                        x=_dias_cerr_plot['Date'].astype(str),
+                        y=_dias_cerr_plot['PnL_Acum'],
+                        name='Equity Acumulada',
+                        mode='lines+markers',
+                        line=dict(color='#5dade2', width=2.5),
+                        marker=dict(size=7),
+                    ))
+                    # Pendientes como puntos grises en el eje equity
+                    _dias_pend_plot = _dias_big[_dias_big['Estado_Dia'] == 'pendiente']
+                    if not _dias_pend_plot.empty:
+                        fig_big.add_trace(go.Scatter(
+                            x=_dias_pend_plot['Date'].astype(str),
+                            y=[_pnl_acum] * len(_dias_pend_plot),
+                            name='Pendiente',
+                            mode='markers',
+                            marker=dict(color='#f39c12', size=9, symbol='circle-open'),
+                        ))
+                    fig_big.update_layout(
+                        dragmode=False,
+                        plot_bgcolor='#1e2129',
+                        paper_bgcolor='#1e2129',
+                        font=dict(color='#aab0c0'),
+                        legend=dict(orientation='h', y=1.08),
+                        margin=dict(t=20, b=30, l=0, r=0),
+                        yaxis =dict(title='Equity Acum. ($)', fixedrange=True, gridcolor='#2c3050'),
+                        yaxis2=dict(title='P&L Día ($)', overlaying='y', side='right', fixedrange=True),
+                        xaxis =dict(fixedrange=True),
+                    )
+                    st.plotly_chart(fig_big, use_container_width=True, config=CONFIG_FIJA)
+
+                    # ── Tabla resumen día a día (todos los días) ──
+                    def _color_pnl(val):
+                        if isinstance(val, (int, float)) and not np.isnan(val):
+                            if val > 0: return 'color: #2ecc71; font-weight: bold'
+                            elif val < 0: return 'color: #e74c3c'
+                        return ''
+
+                    _dias_mostrar = _dias_big[['Date','Picks','Ganadas','Perdidas','Win%','Invertido','PnL_Dia','PnL_Acum','Estado_Dia']].copy()
+                    _dias_mostrar.columns = ['Fecha','Picks','✅ Won','❌ Lost','Win %','Invertido ($)','P&L Día ($)','Equity Acum. ($)','Estado']
+                    _dias_mostrar['Invertido ($)']    = _dias_mostrar['Invertido ($)'].map('${:,.0f}'.format)
+                    _dias_mostrar['P&L Día ($)']      = _dias_mostrar['P&L Día ($)'].apply(lambda v: round(v, 0) if not (isinstance(v, float) and np.isnan(v)) else '⏳')
+                    _dias_mostrar['Equity Acum. ($)'] = _dias_mostrar['Equity Acum. ($)'].apply(lambda v: round(v, 0) if not (isinstance(v, float) and np.isnan(v)) else '⏳')
+                    _dias_mostrar['Estado'] = _dias_mostrar['Estado'].map({'cerrado': '✅', 'pendiente': '⏳'})
+
+                    st.dataframe(
+                        _dias_mostrar.style.map(_color_pnl, subset=['P&L Día ($)', 'Equity Acum. ($)']),
+                        hide_index=True,
+                        use_container_width=True
+                    )
+
+                    # ── Acordeones por día (todos) ────────────
+                    st.markdown("#### 📋 Detalle por Día")
+                    for _, _d in _dias_big.iterrows():
+                        _fecha_d  = str(_d['Date'])
+                        _es_pend  = (_d['Estado_Dia'] == 'pendiente')
+                        _pnl_d    = _d['PnL_Dia'] if not _es_pend else 0.0
+                        _icon_d   = "⏳" if _es_pend else ("🟢" if _pnl_d >= 0 else "🔴")
+                        _picks_d  = df_big[df_big['Date'] == _d['Date']]
+                        _enc_pnl  = f"P&L: ⏳" if _es_pend else f"P&L: ${_pnl_d:+,.0f}  |  Acum: ${_d['PnL_Acum']:+,.0f}"
+                        with st.expander(
+                            f"{_icon_d} {_fecha_d}  —  {int(_d['Picks'])} picks  |  "
+                            f"Won: {int(_d['Ganadas'])}  Lost: {int(_d['Perdidas'])}  |  {_enc_pnl}"
+                        ):
+                            _df_exp = _picks_d[['Home','Away','Mercado','Cuota','Stake','Estado','Beneficio_Neto']].copy()
+                            _df_exp.columns = ['Local','Visita','Mercado','Cuota','Stake','Estado','Beneficio']
+                            _df_exp['Cuota']     = _df_exp['Cuota'].round(2)
+                            _df_exp['Stake']     = _df_exp['Stake'].map('${:,.0f}'.format)
+                            _df_exp['Beneficio'] = _df_exp['Beneficio'].round(0)
+                            def _ce_big(v):
+                                if v == 'Ganada':    return 'color: #2ecc71; font-weight: bold'
+                                elif v == 'Perdida': return 'color: #e74c3c'
+                                elif v == 'Pendiente': return 'color: #f39c12'
+                                return ''
+                            st.dataframe(_df_exp.style.map(_ce_big, subset=['Estado']), hide_index=True, use_container_width=True)
+
 elif menu == "Mundial 2026":
     st.title("Simulación Mundial 2026")
     st.markdown("Proyección oficial basada en formato FIFA 48 selecciones. (✅ Real | 🔮 IA)")
