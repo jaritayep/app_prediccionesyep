@@ -1012,6 +1012,29 @@ elif menu == "Portafolio de Picks":
             c1, c2 = st.columns(2)
             with c1:
                 inversion_total = st.number_input("💰 Inversión TOTAL Portafolio ($)", min_value=1000, value=5000, step=500)
+                modo_compuesto = st.toggle(
+                    "💹 Modo Compuesto (bankroll dinámico)",
+                    key="modo_compuesto",
+                    help="ON: el stake de cada día se calcula sobre tu bankroll actual (capital inicial + P&L acumulado). OFF: flat staking sobre el valor ingresado arriba."
+                )
+                if modo_compuesto:
+                    _pnl_cerrado = pd.read_sql(
+                        "SELECT COALESCE(SUM(Beneficio_Neto),0) as total FROM portafolio_historico WHERE Estado != 'Pendiente'",
+                        conn
+                    ).iloc[0]['total']
+                    _bankroll_actual = inversion_total + _pnl_cerrado
+                    _delta_str = f"{_pnl_cerrado:+,.0f}"
+                    _color = "#2ecc71" if _pnl_cerrado >= 0 else "#e74c3c"
+                    st.markdown(
+                        f'<div style="background:#1a2a1a;border:1px solid {_color}33;border-radius:8px;'
+                        f'padding:8px 12px;margin-top:4px;">'
+                        f'<span style="color:#888;font-size:0.75rem;">Bankroll actual</span><br>'
+                        f'<span style="font-size:1.2rem;font-weight:800;color:#e8ecf5;">'
+                        f'${_bankroll_actual:,.0f}</span>'
+                        f'<span style="color:{_color};font-size:0.8rem;margin-left:8px;">'
+                        f'({_delta_str} P&L)</span></div>',
+                        unsafe_allow_html=True
+                    )
             with c2:
                 if fechas_disponibles:
                     hoy_str = str(pd.Timestamp.now().date())
@@ -1489,14 +1512,24 @@ elif menu == "Portafolio de Picks":
                     if df_final_a_guardar.empty:
                         st.warning("No seleccionaste ningún pick.")
                     else:
-                        stake_por_pick = inversion_total / len(df_final_a_guardar)
+                        _modo_cmp = st.session_state.get("modo_compuesto", False)
+                        if _modo_cmp:
+                            _pnl_hist = pd.read_sql(
+                                "SELECT COALESCE(SUM(Beneficio_Neto),0) as total FROM portafolio_historico WHERE Estado != 'Pendiente'",
+                                conn
+                            ).iloc[0]['total']
+                            _base_inversion = inversion_total + _pnl_hist
+                        else:
+                            _base_inversion = inversion_total
+                        stake_por_pick = _base_inversion / len(df_final_a_guardar)
                         for _, row in df_final_a_guardar.iterrows():
                             cursor.execute("""
                                 INSERT INTO portafolio_historico (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob_IA'], row['Edge'], stake_por_pick))
                         conn.commit()
-                        st.success(f"✅ ¡{len(df_final_a_guardar)} picks guardados en el portafolio activo! (Inversión por pick: ${stake_por_pick:,.0f})")
+                        _modo_badge = "💹 Compuesto" if _modo_cmp else "📐 Flat"
+                        st.success(f"✅ ¡{len(df_final_a_guardar)} picks guardados! ({_modo_badge} — Bankroll: ${_base_inversion:,.0f} | Stake/pick: ${stake_por_pick:,.0f})")
                         del st.session_state['portafolio_escaneado']
 
         except Exception as e:
@@ -1712,39 +1745,149 @@ elif menu == "Portafolio de Picks":
 
             st.divider()
 
-            # ── Descarga del portafolio ───────────────────────────
-            st.write("📋 **Historial de Picks**")
-            col_dl1, col_dl2, col_dl3 = st.columns([2, 1, 1])
-            df_dl = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto', 'Prob_IA', 'Edge']].copy()
+            # ══════════════════════════════════════════════════════
+            # PORTAFOLIO HISTÓRICO (toggle vista día a día)
+            # ══════════════════════════════════════════════════════
+            modo_hist_toggle = st.toggle(
+                "📅 Vista Portafolio Histórico (día a día)",
+                key="modo_historico_toggle",
+                help="Muestra cómo se desempeñaron los 10 picks recomendados en cada día, con curva de equity acumulada."
+            )
 
-            with col_dl2:
-                csv_bytes = df_dl.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="⬇️ Descargar CSV",
-                    data=csv_bytes,
-                    file_name=f"portafolio_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv"
-                )
-            with col_dl3:
-                json_bytes = df_dl.to_json(orient='records', force_ascii=False, indent=2).encode('utf-8')
-                st.download_button(
-                    label="⬇️ Descargar JSON",
-                    data=json_bytes,
-                    file_name=f"portafolio_{pd.Timestamp.now().strftime('%Y%m%d')}.json",
-                    mime="application/json"
-                )
-            
-            df_mostrar = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto']].copy()
-            df_mostrar['Es_Pendiente'] = df_mostrar['Estado'] == 'Pendiente'
-            df_mostrar = df_mostrar.sort_values(by=['Es_Pendiente', 'Date'], ascending=[False, False]).drop(columns=['Es_Pendiente'])
-            
-            def color_estado(val):
-                if val == 'Ganada': return 'color: #00FF00; font-weight: bold'
-                elif val == 'Perdida': return 'color: #FF4B4B'
-                elif val == 'Pendiente': return 'color: #FFD700'
-                return ''
+            if modo_hist_toggle:
+                if df_cerradas.empty:
+                    st.info("Aún no hay picks cerrados para mostrar el historial día a día. Liquida tus apuestas primero.")
+                else:
+                    # ── Agrupar por fecha ──────────────────────────────
+                    df_c = df_cerradas.copy()
+                    df_c['Date'] = pd.to_datetime(df_c['Date']).dt.date
+
+                    _dias = (
+                        df_c.groupby('Date')
+                        .agg(
+                            Picks=('id', 'count'),
+                            Ganadas=('Estado', lambda x: (x == 'Ganada').sum()),
+                            Perdidas=('Estado', lambda x: (x == 'Perdida').sum()),
+                            Invertido=('Stake', 'sum'),
+                            PnL_Dia=('Beneficio_Neto', 'sum'),
+                        )
+                        .reset_index()
+                        .sort_values('Date')
+                    )
+                    _dias['Win%'] = (_dias['Ganadas'] / _dias['Picks'] * 100).round(1)
+                    _dias['PnL_Acum'] = _dias['PnL_Dia'].cumsum()
+
+                    # ── Curva de equity ───────────────────────────────
+                    import plotly.graph_objects as go
+                    fig_eq = go.Figure()
+                    _colores_dias = ['#2ecc71' if v >= 0 else '#e74c3c' for v in _dias['PnL_Dia']]
+                    fig_eq.add_trace(go.Bar(
+                        x=_dias['Date'].astype(str),
+                        y=_dias['PnL_Dia'],
+                        name='P&L Día',
+                        marker_color=_colores_dias,
+                        opacity=0.75,
+                        yaxis='y2'
+                    ))
+                    fig_eq.add_trace(go.Scatter(
+                        x=_dias['Date'].astype(str),
+                        y=_dias['PnL_Acum'],
+                        name='Equity Acumulada',
+                        mode='lines+markers',
+                        line=dict(color='#5dade2', width=2.5),
+                        marker=dict(size=7),
+                    ))
+                    fig_eq.update_layout(
+                        dragmode=False,
+                        plot_bgcolor='#1e2129',
+                        paper_bgcolor='#1e2129',
+                        font=dict(color='#aab0c0'),
+                        legend=dict(orientation='h', y=1.08),
+                        margin=dict(t=20, b=30, l=0, r=0),
+                        yaxis=dict(title='Equity Acum. ($)', fixedrange=True, gridcolor='#2c3050'),
+                        yaxis2=dict(title='P&L Día ($)', overlaying='y', side='right', fixedrange=True),
+                        xaxis=dict(fixedrange=True),
+                    )
+                    st.plotly_chart(fig_eq, use_container_width=True, config=CONFIG_FIJA)
+
+                    # ── Tabla día a día ────────────────────────────────
+                    def _color_pnl(val):
+                        if isinstance(val, (int, float)):
+                            if val > 0: return 'color: #2ecc71; font-weight: bold'
+                            elif val < 0: return 'color: #e74c3c'
+                        return ''
+
+                    _dias_mostrar = _dias[['Date','Picks','Ganadas','Perdidas','Win%','Invertido','PnL_Dia','PnL_Acum']].copy()
+                    _dias_mostrar.columns = ['Fecha','Picks','✅ Won','❌ Lost','Win %','Invertido ($)','P&L Día ($)','Equity Acum. ($)']
+                    _dias_mostrar['Invertido ($)']    = _dias_mostrar['Invertido ($)'].map('${:,.0f}'.format)
+                    _dias_mostrar['P&L Día ($)']      = _dias_mostrar['P&L Día ($)'].round(0)
+                    _dias_mostrar['Equity Acum. ($)'] = _dias_mostrar['Equity Acum. ($)'].round(0)
+
+                    st.dataframe(
+                        _dias_mostrar.style
+                            .map(_color_pnl, subset=['P&L Día ($)', 'Equity Acum. ($)']),
+                        hide_index=True,
+                        use_container_width=True
+                    )
+
+                    # ── Acordeones por día ────────────────────────────
+                    st.markdown("#### 📋 Detalle por Día")
+                    for _, _d in _dias.iterrows():
+                        _fecha_d = str(_d['Date'])
+                        _pnl_d = _d['PnL_Dia']
+                        _icon = "🟢" if _pnl_d >= 0 else "🔴"
+                        _picks_dia = df_c[df_c['Date'] == _d['Date']]
+                        with st.expander(
+                            f"{_icon} {_fecha_d}  —  {int(_d['Picks'])} picks  |  "
+                            f"Won: {int(_d['Ganadas'])}  Lost: {int(_d['Perdidas'])}  |  "
+                            f"P&L: ${_pnl_d:+,.0f}  |  Acum: ${_d['PnL_Acum']:+,.0f}"
+                        ):
+                            _p_cols = ['HomeTeam','AwayTeam','Mercado','Cuota','Stake','Estado','Beneficio_Neto']
+                            _df_exp = _picks_dia[_p_cols].copy()
+                            _df_exp['Cuota'] = _df_exp['Cuota'].round(2)
+                            _df_exp['Stake'] = _df_exp['Stake'].map('${:,.0f}'.format)
+                            _df_exp['Beneficio_Neto'] = _df_exp['Beneficio_Neto'].round(0)
+                            def _ce(v):
+                                if v == 'Ganada': return 'color: #2ecc71; font-weight: bold'
+                                elif v == 'Perdida': return 'color: #e74c3c'
+                                return ''
+                            st.dataframe(_df_exp.style.map(_ce, subset=['Estado']), hide_index=True, use_container_width=True)
+
+            else:
+                # ── Vista estándar (picks individuales) ───────────────
+                # ── Descarga del portafolio ───────────────────────────
+                st.write("📋 **Historial de Picks**")
+                col_dl1, col_dl2, col_dl3 = st.columns([2, 1, 1])
+                df_dl = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto', 'Prob_IA', 'Edge']].copy()
+
+                with col_dl2:
+                    csv_bytes = df_dl.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="⬇️ Descargar CSV",
+                        data=csv_bytes,
+                        file_name=f"portafolio_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv"
+                    )
+                with col_dl3:
+                    json_bytes = df_dl.to_json(orient='records', force_ascii=False, indent=2).encode('utf-8')
+                    st.download_button(
+                        label="⬇️ Descargar JSON",
+                        data=json_bytes,
+                        file_name=f"portafolio_{pd.Timestamp.now().strftime('%Y%m%d')}.json",
+                        mime="application/json"
+                    )
                 
-            st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
+                df_mostrar = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto']].copy()
+                df_mostrar['Es_Pendiente'] = df_mostrar['Estado'] == 'Pendiente'
+                df_mostrar = df_mostrar.sort_values(by=['Es_Pendiente', 'Date'], ascending=[False, False]).drop(columns=['Es_Pendiente'])
+                
+                def color_estado(val):
+                    if val == 'Ganada': return 'color: #00FF00; font-weight: bold'
+                    elif val == 'Perdida': return 'color: #FF4B4B'
+                    elif val == 'Pendiente': return 'color: #FFD700'
+                    return ''
+                    
+                st.dataframe(df_mostrar.style.map(color_estado, subset=['Estado']), hide_index=True, use_container_width=True)
 elif menu == "Mundial 2026":
     st.title("Simulación Mundial 2026")
     st.markdown("Proyección oficial basada en formato FIFA 48 selecciones. (✅ Real | 🔮 IA)")
