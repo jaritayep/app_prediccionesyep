@@ -1828,18 +1828,19 @@ elif menu == "Portafolio de Picks":
                                 df_t['inicio_local'] = fecha_fb + " 12:00"
                             else:
                                 df_t['inicio_local'] = df_t['inicio_local'].fillna(fecha_fb + " 12:00")
+                            # Fecha_Match derivada de inicio_local (cada fila puede ser un dia distinto)
                             df_t['Fecha_Match'] = df_t['inicio_local'].astype(str).str.strip().str.slice(0, 10)
-                            # Solo cargar dias que NO esten ya en la DB
-                            fechas_nuevas = [f for f in df_t['Fecha_Match'].unique() if f not in fechas_en_db]
-                            if fechas_nuevas:
-                                lista_dfs_hist.append(df_t[df_t['Fecha_Match'].isin(fechas_nuevas)])
+                            df_t = df_t[df_t['Fecha_Match'].str.match(r'^\d{4}-\d{2}-\d{2}$', na=False)]
+                            # Filtrar ROW a ROW: solo filas cuya fecha NO este ya cubierta por la DB
+                            df_t = df_t[~df_t['Fecha_Match'].isin(fechas_en_db)]
+                            if not df_t.empty:
+                                lista_dfs_hist.append(df_t)
                         except Exception:
                             continue
 
                     if lista_dfs_hist:
                         df_master_hist = pd.concat(lista_dfs_hist, ignore_index=True)
                         df_master_hist = df_master_hist.drop_duplicates(subset=['home', 'away', 'inicio_local'])
-                        df_master_hist = df_master_hist[df_master_hist['Fecha_Match'].str.match(r'^\d{4}-\d{2}-\d{2}$', na=False)]
                         fechas_csv_nuevas = sorted(df_master_hist['Fecha_Match'].unique())
                     else:
                         df_master_hist    = pd.DataFrame()
