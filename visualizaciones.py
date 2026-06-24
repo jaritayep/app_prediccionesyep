@@ -2257,8 +2257,10 @@ elif menu == "Portafolio de Picks":
                                     if len(seleccionados) >= 10: break
                                     _hist_add(r.to_dict())
 
+                        # Si el día tiene menos de 8 picks, flat stake de 5000 por pick
+                        stake_dia = 5000 if len(seleccionados) < 8 else stake_unitario
                         for s in seleccionados:
-                            s['Stake'] = stake_unitario
+                            s['Stake'] = stake_dia
                             s['_from_db'] = False
                             big_portfolio_rows.append(s)
 
