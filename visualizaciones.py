@@ -1278,12 +1278,28 @@ elif menu == "Portafolio de Picks":
                 def _mercados_elegidos(partido):
                     return {r.iloc[0]['Mercado'] for r in df_top_10_list if r.iloc[0]['Partido'] == partido}
 
+                # Mercados 1x2 — para evitar picks duplicados del mismo partido
+                MERCADOS_1X2 = {"Ganador (Local)", "Empate", "Ganador (Visita)"}
+
+                def _tiene_1x2(partido):
+                    """Retorna True si ya hay un pick 1x2 (Local/Empate/Visita) de este partido."""
+                    for r in df_top_10_list:
+                        row0 = r.iloc[0]
+                        if row0['Partido'] == partido and row0['Mercado'] in MERCADOS_1X2:
+                            return True
+                    return False
+
                 def add_pick(row_or_idx, nivel_label, from_df=True):
-                    """Agrega pick. from_df=True usa índice de df_ops, False recibe dict."""
+                    """Agrega pick. from_df=True usa índice de df_ops, False recibe dict.
+                    Bloquea múltiples picks 1x2 del mismo partido en todo el portafolio."""
                     if from_df:
                         row = df_ops.loc[row_or_idx]
                         partido = row['Partido']
+                        mercado = row['Mercado']
                         if partido in used_matches:
+                            return False
+                        # Evitar dos picks 1x2 del mismo partido
+                        if mercado in MERCADOS_1X2 and _tiene_1x2(partido):
                             return False
                         used_matches.add(partido)
                         selected_indices.append(row_or_idx)
@@ -1291,7 +1307,11 @@ elif menu == "Portafolio de Picks":
                     else:
                         d = row_or_idx
                         partido = d['Partido']
-                        if (partido, d['Mercado']) in {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}:
+                        mercado = d['Mercado']
+                        if (partido, mercado) in {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}:
+                            return False
+                        # Evitar dos picks 1x2 del mismo partido
+                        if mercado in MERCADOS_1X2 and _tiene_1x2(partido):
                             return False
                         used_matches.add(partido)
                         df_top_10_list.append(pd.DataFrame([d]))
@@ -1346,7 +1366,8 @@ elif menu == "Portafolio de Picks":
                     bucket_counts[bi] = fill_bucket(bi, 3, lbl, EDGE_STD_MIN, EDGE_STD_MAX)
 
                 # ══════════════════════════════════════════════════════════
-                # FASE 2 — ampliar edge HASTA 30% (en pasos), bucket por bucket
+                # FASE 2 — ampliar edge HASTA 30% (en pasos), manteniendo
+                #          la estructura 1-3-3-3 bucket por bucket.
                 #          NUNCA superar 30% de edge máximo.
                 # ══════════════════════════════════════════════════════════
                 EDGE_PASOS = [
@@ -1365,11 +1386,16 @@ elif menu == "Portafolio de Picks":
                             lbl = f'{BUCKETS[bi][0]} — {lbl_suf}'
                             added = fill_bucket(bi, falt, lbl, edge_min_exp, edge_max_exp)
                             bucket_counts[bi] += added
+                # La estructura 1-3-3-3 se preserva porque fill_bucket sólo toma
+                # picks del rango de cuota del bucket correspondiente.
 
                 # ══════════════════════════════════════════════════════════
-                # FASE 3 — estructura flexible: llenar con lo que haya (≤30% edge)
-                # Usa el pool completo (mercados_evaluados_completos).
-                # Permite repetir partido si es mercado distinto.
+                # FASE 3 — estructura flexible con dos pasos:
+                #   Paso A: intentar completar la 1-3-3-3 con el pool completo
+                #           (≤30% edge, cada pick en su bucket por cuota).
+                #   Paso B: slots aún vacíos → rellenar SÓLO con cuota < 2.0.
+                # Permite repetir partido si el mercado es distinto,
+                # pero nunca dos picks 1x2 del mismo partido.
                 # ══════════════════════════════════════════════════════════
                 if len(df_top_10_list) < TARGET_PICKS:
                     faltantes_f3 = TARGET_PICKS - len(df_top_10_list)
@@ -1388,53 +1414,86 @@ elif menu == "Portafolio de Picks":
                         # Respetar el tope de edge del 30%
                         df_f3 = df_f3[df_f3['Edge'] <= 0.30]
 
-                        # Excluir mercados exactos ya elegidos (partido+mercado)
+                        # Construir set de mercados exactos ya elegidos (partido+mercado)
                         mercados_ya_en_portfolio = set()
                         for item in df_top_10_list:
                             r = item.iloc[0]
                             mercados_ya_en_portfolio.add((r['Partido'], r['Mercado']))
 
                         df_f3 = df_f3[
-                            ~df_f3.apply(lambda r: (r['Partido'], r['Mercado']) in mercados_ya_en_portfolio, axis=1)
+                            ~df_f3.apply(
+                                lambda r: (r['Partido'], r['Mercado']) in mercados_ya_en_portfolio,
+                                axis=1
+                            )
                         ]
 
                         # Ordenar: preferir partidos nuevos, luego mayor edge
                         df_f3['es_partido_nuevo'] = (~df_f3['Partido'].isin(used_matches)).astype(int)
                         df_f3 = df_f3.sort_values(['es_partido_nuevo', 'Edge'], ascending=[False, False])
 
-                        picks_f3 = 0
-                        for _, row_f3 in df_f3.iterrows():
-                            if picks_f3 >= faltantes_f3:
-                                break
-                            cuota_f3 = row_f3['Cuota']
-                            if cuota_f3 >= 2.50:
-                                nivel_f3 = '🔴 Flexible (alto)'
-                                bi_f3 = 0
-                            elif cuota_f3 >= 1.90:
-                                nivel_f3 = '🟡 Flexible (medio)'
-                                bi_f3 = 1
-                            else:
-                                nivel_f3 = '🟢 Flexible (bajo)'
-                                bi_f3 = 2
+                        _picks_f3 = [0]  # contador mutable para uso dentro de _add_f3
 
+                        def _add_f3(row_f3, nivel_f3, bi_f3):
+                            """Intenta agregar un pick de Fase 3; retorna True si lo logró."""
+                            partido_f3 = row_f3['Partido']
+                            mercado_f3 = row_f3['Mercado']
+                            if (partido_f3, mercado_f3) in mercados_ya_en_portfolio:
+                                return False
+                            if mercado_f3 in MERCADOS_1X2 and _tiene_1x2(partido_f3):
+                                return False
                             entry = {
                                 'Date': row_f3['Date'], 'Home': row_f3['Home'], 'Away': row_f3['Away'],
-                                'Mercado': row_f3['Mercado'], 'Cuota': cuota_f3,
+                                'Mercado': mercado_f3, 'Cuota': row_f3['Cuota'],
                                 'Prob_IA': row_f3['Prob_IA'], 'Edge': row_f3['Edge'],
                                 'Prob_IA_Str': row_f3['Prob_IA_Str'], 'Edge_Str': row_f3['Edge_Str'],
-                                'Partido': row_f3['Partido'], 'Nivel': nivel_f3
+                                'Partido': partido_f3, 'Nivel': nivel_f3
                             }
-                            # Permitimos mismo partido si es mercado distinto
-                            partido_f3 = row_f3['Partido']
                             if partido_f3 not in used_matches:
                                 used_matches.add(partido_f3)
+                            mercados_ya_en_portfolio.add((partido_f3, mercado_f3))
                             df_top_10_list.append(pd.DataFrame([entry]))
                             bucket_counts[bi_f3] += 1
-                            picks_f3 += 1
+                            _picks_f3[0] += 1
+                            return True
 
-                        if picks_f3 > 0:
+                        # ── Paso A: completar slots 1-3-3-3 faltantes ──────────
+                        # Golden si sigue vacío
+                        n_golden_f3 = sum(
+                            1 for d in df_top_10_list
+                            if 'Golden' in str(d.iloc[0].get('Nivel', ''))
+                        )
+                        if n_golden_f3 == 0 and _picks_f3[0] < faltantes_f3:
+                            for _, row_f3 in df_f3.iterrows():
+                                if _add_f3(row_f3, '⭐ Golden Pick (Flexible)', 0):
+                                    break  # sólo 1 golden
+
+                        # Buckets faltantes en orden alto → medio → bajo
+                        for bi in range(3):
+                            falt_bi = faltantes_bucket(bucket_counts[bi])
+                            if falt_bi == 0 or _picks_f3[0] >= faltantes_f3:
+                                continue
+                            _, min_c, max_c = BUCKETS[bi]
+                            lbl_bi = f'{BUCKETS[bi][0]} — flexible'
+                            cnt_bi = 0
+                            for _, row_f3 in df_f3.iterrows():
+                                if cnt_bi >= falt_bi or _picks_f3[0] >= faltantes_f3:
+                                    break
+                                if not (min_c <= row_f3['Cuota'] < max_c):
+                                    continue
+                                if _add_f3(row_f3, lbl_bi, bi):
+                                    cnt_bi += 1
+
+                        # ── Paso B: slots aún vacíos → sólo cuota < 2.0 ───────
+                        if _picks_f3[0] < faltantes_f3:
+                            df_f3_bajo = df_f3[df_f3['Cuota'] < 2.0].copy()
+                            for _, row_f3 in df_f3_bajo.iterrows():
+                                if _picks_f3[0] >= faltantes_f3:
+                                    break
+                                _add_f3(row_f3, '🟢 Flexible bajo (<2.0)', 2)
+
+                        if _picks_f3[0] > 0:
                             st.warning(
-                                f"⚠️ **Modo flexible activado (≤30% edge):** Se añadieron {picks_f3} pick(s) "
+                                f"⚠️ **Modo flexible activado (≤30% edge):** Se añadieron {_picks_f3[0]} pick(s) "
                                 f"con el mejor edge disponible fuera del rango estándar (2%–15%). "
                                 f"Aparecen como 'Flexible' en la tabla — úsalos con criterio."
                             )
@@ -2059,7 +2118,9 @@ elif menu == "Portafolio de Picks":
                         try:
                             cuota_f = float(cuota_mk)
                             edge = prob_mk - (1 / cuota_f)
-                            if 0.02 <= edge <= 0.15:
+                            # Recopilar todo hasta 30% de edge; el portfolio builder
+                            # aplica sus propias fases (1/2/3) con los rangos correctos.
+                            if 0.001 <= edge <= 0.30:
                                 oportunidades.append({
                                     'Date': fecha_partido, 'Home': h_db, 'Away': a_db,
                                     'Mercado': nombre_mk, 'Cuota': cuota_f,
@@ -2093,29 +2154,109 @@ elif menu == "Portafolio de Picks":
                         df_dia_ops = pd.DataFrame(ops_dia).sort_values('Edge', ascending=False)
                         df_dia_ops['Partido'] = df_dia_ops['Home'] + " vs " + df_dia_ops['Away']
                         df_dia_ops = df_dia_ops.drop_duplicates(subset=['Partido', 'Mercado']).reset_index(drop=True)
+
+                        _HIST_1X2 = {"Ganador (Local)", "Empate", "Ganador (Visita)"}
+                        _HIST_BUCKETS = [
+                            ('alto',  2.50, 9999.0),
+                            ('medio', 1.90,  2.50),
+                            ('bajo',  0.0,   1.90),
+                        ]
                         seleccionados = []
                         usados_partidos = set()
-                        for _, r in df_dia_ops.iterrows():
+                        sel_mercados = set()  # (Partido, Mercado)
+
+                        def _hist_tiene_1x2(partido):
+                            for s in seleccionados:
+                                if s['Partido'] == partido and s['Mercado'] in _HIST_1X2:
+                                    return True
+                            return False
+
+                        def _hist_add(r_dict):
+                            partido = r_dict['Partido']
+                            mercado = r_dict['Mercado']
+                            if (partido, mercado) in sel_mercados:
+                                return False
+                            if mercado in _HIST_1X2 and _hist_tiene_1x2(partido):
+                                return False
+                            seleccionados.append(r_dict)
+                            usados_partidos.add(partido)
+                            sel_mercados.add((partido, mercado))
+                            return True
+
+                        # ── Fase 1 hist: estructura 1-3-3-3, edge estándar 2%–15% ──
+                        df_std = df_dia_ops[
+                            (df_dia_ops['Edge'] >= 0.02) & (df_dia_ops['Edge'] <= 0.15)
+                        ].copy()
+
+                        # Golden pick
+                        for _, r in df_std.iterrows():
                             if r['Partido'] not in usados_partidos:
-                                seleccionados.append(r.to_dict())
-                                usados_partidos.add(r['Partido'])
-                                break
-                        buckets_def = [('alto', 2.50, 9999), ('medio', 1.90, 2.50), ('bajo', 0.0, 1.90)]
-                        for _, min_c, max_c in buckets_def:
+                                if _hist_add(r.to_dict()):
+                                    break
+
+                        # Buckets estándar
+                        _hist_bucket_counts = [0, 0, 0]
+                        for bi, (_, min_c, max_c) in enumerate(_HIST_BUCKETS):
                             cnt = 0
-                            for _, r in df_dia_ops.iterrows():
+                            for _, r in df_std.iterrows():
                                 if cnt >= 3: break
                                 if r['Partido'] in usados_partidos: continue
                                 if min_c <= r['Cuota'] < max_c:
-                                    seleccionados.append(r.to_dict())
-                                    usados_partidos.add(r['Partido'])
-                                    cnt += 1
+                                    if _hist_add(r.to_dict()):
+                                        cnt += 1
+                            _hist_bucket_counts[bi] = cnt
+
+                        # ── Fase 2 hist: ampliar edge hasta 30%, mantener 1-3-3-3 ──
+                        _HIST_EDGE_PASOS = [(0.01, 0.20), (0.005, 0.25), (0.001, 0.30)]
+                        for e_min, e_max in _HIST_EDGE_PASOS:
+                            if all(c >= 3 for c in _hist_bucket_counts):
+                                break
+                            df_exp = df_dia_ops[
+                                (df_dia_ops['Edge'] >= e_min) & (df_dia_ops['Edge'] <= e_max)
+                            ].copy()
+                            for bi, (_, min_c, max_c) in enumerate(_HIST_BUCKETS):
+                                falt = max(0, 3 - _hist_bucket_counts[bi])
+                                if not falt: continue
+                                cnt = 0
+                                for _, r in df_exp.iterrows():
+                                    if cnt >= falt: break
+                                    if r['Partido'] in usados_partidos: continue
+                                    if min_c <= r['Cuota'] < max_c:
+                                        if _hist_add(r.to_dict()):
+                                            cnt += 1
+                                _hist_bucket_counts[bi] += cnt
+
+                        # ── Fase 3 hist: flexible — Paso A 1-3-3-3, Paso B cuota<2.0 ──
                         if len(seleccionados) < 10:
-                            for _, r in df_dia_ops.iterrows():
-                                if len(seleccionados) >= 10: break
-                                ya = any((s['Partido'] == r['Partido'] and s['Mercado'] == r['Mercado']) for s in seleccionados)
-                                if not ya:
-                                    seleccionados.append(r.to_dict())
+                            df_flex = df_dia_ops[df_dia_ops['Edge'] <= 0.30].copy()
+                            df_flex['es_nuevo'] = (~df_flex['Partido'].isin(usados_partidos)).astype(int)
+                            df_flex = df_flex.sort_values(['es_nuevo', 'Edge'], ascending=[False, False])
+
+                            # Paso A: completar 1-3-3-3
+                            n_golden_h = sum(1 for s in seleccionados if 'Golden' in str(s.get('Nivel', '')))
+                            if n_golden_h == 0 and len(seleccionados) < 10:
+                                for _, r in df_flex.iterrows():
+                                    if r['Partido'] not in usados_partidos:
+                                        if _hist_add(r.to_dict()):
+                                            break
+                            for bi, (_, min_c, max_c) in enumerate(_HIST_BUCKETS):
+                                falt_bi = max(0, 3 - _hist_bucket_counts[bi])
+                                if not falt_bi or len(seleccionados) >= 10: continue
+                                cnt = 0
+                                for _, r in df_flex.iterrows():
+                                    if cnt >= falt_bi or len(seleccionados) >= 10: break
+                                    if not (min_c <= r['Cuota'] < max_c): continue
+                                    if _hist_add(r.to_dict()):
+                                        cnt += 1
+                                _hist_bucket_counts[bi] += cnt
+
+                            # Paso B: slots restantes, sólo cuota < 2.0
+                            if len(seleccionados) < 10:
+                                df_bajo = df_flex[df_flex['Cuota'] < 2.0].copy()
+                                for _, r in df_bajo.iterrows():
+                                    if len(seleccionados) >= 10: break
+                                    _hist_add(r.to_dict())
+
                         for s in seleccionados:
                             s['Stake'] = stake_unitario
                             s['_from_db'] = False
