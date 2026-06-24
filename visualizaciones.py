@@ -1678,11 +1678,21 @@ elif menu == "Portafolio de Picks":
                 "US":                       "United States",
                 "Leverkusen":               "Bayer Leverkusen",
                 "Ein Frankfurt":            "Eintracht Frankfurt",
+                "Borussia Monchengladbach": "Borussia Monchengladbach",
+                "South Korea":              "Korea Republic",
+                "Czechia":                  "Czech Republic",
+                "Bosnia-Herzegovina":       "Bosnia and Herzegovina",
+                "Congo DR":                 "DR Congo",
+                "Cape Verde Islands":       "Cape Verde",
             }
 
             def _liq_norm(nombre):
-                """Normaliza un nombre de equipo via alias map."""
-                return _LIQ_ALIAS.get(str(nombre), str(nombre))
+                """Normaliza un nombre de equipo via alias map (case-insensitive)."""
+                s = str(nombre)
+                for key, val in _LIQ_ALIAS.items():
+                    if key.lower() == s.lower():
+                        return val
+                return s
 
             def _encontrar_fila(res_df, pick_home_raw, pick_away_raw):
                 """Busca la fila del partido en res_df normalizando AMBOS lados
@@ -2376,11 +2386,20 @@ elif menu == "Portafolio de Picks":
                     "Paraguay":               "Paraguay",
                     "Hoffenheim":             "TSG Hoffenheim",
                     "TSG 1899 Hoffenheim":    "TSG Hoffenheim",
+                    "South Korea":            "Korea Republic",
+                    "Czechia":                "Czech Republic",
+                    "Bosnia-Herzegovina":     "Bosnia and Herzegovina",
+                    "Congo DR":               "DR Congo",
+                    "Cape Verde Islands":     "Cape Verde",
                 }
 
                 def _resolver_nombre(nombre):
-                    """Devuelve el nombre normalizado via alias, o el original si no hay alias."""
-                    return _ALIAS_EQUIPOS.get(nombre, nombre)
+                    """Devuelve el nombre normalizado via alias (case-insensitive), o el original si no hay alias."""
+                    s = str(nombre)
+                    for key, val in _ALIAS_EQUIPOS.items():
+                        if key.lower() == s.lower():
+                            return val
+                    return s
 
                 def _liquidar_pick_hist(pick_row):
                     fecha_d = str(pick_row['Date'])
@@ -2435,7 +2454,7 @@ elif menu == "Portafolio de Picks":
                                 h_s = fuzz.token_set_ratio(pick_home, ch)
                                 a_s = fuzz.token_set_ratio(pick_away, ca)
                                 combined = (h_s + a_s) / 2
-                                if combined > best_score and h_s >= 60 and a_s >= 60:
+                                if combined > best_score and h_s >= 75 and a_s >= 75:
                                     best_score = combined
                                     row_real = candidate
                         if row_real is None:
