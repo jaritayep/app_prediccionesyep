@@ -2275,11 +2275,16 @@ elif menu == "Portafolio de Picks":
                     "USA":                    "United States",
                     "United States":          "United States",
                     "US":                     "United States",
+                    # ── Borussia M'gladbach – todas las variantes conocidas ──
                     "M'Gladbach":             "Borussia Monchengladbach",
                     "Monchengladbach":        "Borussia Monchengladbach",
                     "Gladbach":               "Borussia Monchengladbach",
                     "B. Monchengladbach":     "Borussia Monchengladbach",
                     "Borussia M'gladbach":    "Borussia Monchengladbach",
+                    "Borussia Mönchengladbach": "Borussia Monchengladbach",
+                    "Mönchengladbach":        "Borussia Monchengladbach",
+                    "Borussia Monchengladbach": "Borussia Monchengladbach",
+                    "BMG":                    "Borussia Monchengladbach",
                     "Man United":             "Manchester United",
                     "Man City":               "Manchester City",
                     "Man Utd":                "Manchester United",
@@ -2361,8 +2366,11 @@ elif menu == "Portafolio de Picks":
                         row_real = exact.iloc[0]
                     else:
                         # 2. Fallback fuzzy sobre ambos equipos
+                        # Threshold: 55 (vs 60 anterior) para capturar nombres compuestos
+                        # como "Borussia Monchengladbach" vs "M'Gladbach"
                         row_real = None
                         best_score = 0
+                        FUZZY_THRESHOLD = 55   # ← bajado de 60 a 55
                         for _, candidate in res_df.iterrows():
                             for ch, ca in [
                                 (candidate['HomeTeam'], candidate['AwayTeam']),
@@ -2371,7 +2379,7 @@ elif menu == "Portafolio de Picks":
                                 h_s = fuzz.token_set_ratio(pick_home, ch)
                                 a_s = fuzz.token_set_ratio(pick_away, ca)
                                 combined = (h_s + a_s) / 2
-                                if combined > best_score and h_s >= 60 and a_s >= 60:
+                                if combined > best_score and h_s >= FUZZY_THRESHOLD and a_s >= FUZZY_THRESHOLD:
                                     best_score = combined
                                     row_real = candidate
                         if row_real is None:
