@@ -2292,11 +2292,23 @@ elif menu == "Portafolio de Picks":
                     if res_df.empty:
                         return 'Pendiente', 0.0
 
-                    match_f = process.extractOne(pick_row['Home'], res_df['HomeTeam'].tolist())
-                    if not match_f or match_f[1] < 75:
+                    # Fuzzy-match both Home and Away to find the right row
+                    pick_home = str(pick_row['Home'])
+                    pick_away = str(pick_row['Away'])
+                    row_real = None
+                    best_score = 0
+                    for _, candidate in res_df.iterrows():
+                        h_score = process.extractOne(pick_home, [candidate['HomeTeam']], scorer=fuzz.token_set_ratio)
+                        a_score = process.extractOne(pick_away, [candidate['AwayTeam']], scorer=fuzz.token_set_ratio)
+                        if h_score and a_score:
+                            combined = (h_score[1] + a_score[1]) / 2
+                            if combined > best_score and h_score[1] >= 70 and a_score[1] >= 70:
+                                best_score = combined
+                                row_real = candidate
+
+                    if row_real is None:
                         return 'Pendiente', 0.0
 
-                    row_real = res_df[res_df['HomeTeam'] == match_f[0]].iloc[0]
                     hg = row_real['FTHG'] if pd.notna(row_real.get('FTHG')) else None
                     ag = row_real['FTAG'] if pd.notna(row_real.get('FTAG')) else None
                     if hg is None or ag is None:
