@@ -1632,12 +1632,13 @@ elif menu == "Portafolio de Picks":
             stake_reciente = 0.0
 
             import re
-            from thefuzz import process as fuzz_process, fuzz as fuzz_lib
+            from thefuzz import fuzz as fuzz_lib
             from datetime import datetime, timedelta
 
-            # ── Alias map: normaliza nombres del portafolio al formato de la DB ──
+            # Alias map: normaliza nombres del portafolio Y de la DB al mismo canonical
+            # Clave: cualquier variante conocida  →  valor: nombre exacto en la mayoria de registros DB
             _LIQ_ALIAS = {
-                "M'Gladbach":               "Borussia Monchengladbach",
+                "M'gladbach":               "Borussia Monchengladbach",
                 "Monchengladbach":          "Borussia Monchengladbach",
                 "Gladbach":                 "Borussia Monchengladbach",
                 "B. Monchengladbach":       "Borussia Monchengladbach",
@@ -1675,36 +1676,37 @@ elif menu == "Portafolio de Picks":
                 "TSG 1899 Hoffenheim":      "TSG Hoffenheim",
                 "USA":                      "United States",
                 "US":                       "United States",
+                "Leverkusen":               "Bayer Leverkusen",
+                "Ein Frankfurt":            "Eintracht Frankfurt",
             }
 
-            def _liq_resolver(nombre):
-                return _LIQ_ALIAS.get(nombre, nombre)
+            def _liq_norm(nombre):
+                """Normaliza un nombre de equipo via alias map."""
+                return _LIQ_ALIAS.get(str(nombre), str(nombre))
 
             def _encontrar_fila(res_df, pick_home_raw, pick_away_raw):
-                """Busca la fila correcta en res_df usando alias + fuzzy en AMBOS equipos."""
-                pick_h = _liq_resolver(pick_home_raw)
-                pick_a = _liq_resolver(pick_away_raw)
-
-                # 1. Intento exacto con nombres normalizados
-                exact = res_df[(res_df['HomeTeam'] == pick_h) & (res_df['AwayTeam'] == pick_a)]
-                if not exact.empty:
-                    return exact.iloc[0]
-
-                # 2. Intento exacto con nombres originales (por si ya coinciden)
-                exact2 = res_df[(res_df['HomeTeam'] == pick_home_raw) & (res_df['AwayTeam'] == pick_away_raw)]
-                if not exact2.empty:
-                    return exact2.iloc[0]
-
-                # 3. Fallback fuzzy: evalúa AMBOS equipos juntos con token_set_ratio
+                """Busca la fila del partido en res_df normalizando AMBOS lados
+                (pick Y candidatos DB) antes de comparar. Esto resuelve el caso
+                en que la DB guarda el mismo equipo con nombres distintos segun
+                la temporada (ej. M'gladbach vs Borussia Monchengladbach)."""
+                pick_h = _liq_norm(pick_home_raw)
+                pick_a = _liq_norm(pick_away_raw)
+                # 1. Comparar normalizando el lado DB tambien
+                for _, cand in res_df.iterrows():
+                    if _liq_norm(cand["HomeTeam"]) == pick_h and _liq_norm(cand["AwayTeam"]) == pick_a:
+                        return cand
+                # 2. Fuzzy sobre nombres ya normalizados en ambos lados
                 best_row, best_score = None, 0
-                for _, candidate in res_df.iterrows():
-                    h_s = fuzz_lib.token_set_ratio(pick_h, candidate['HomeTeam'])
-                    a_s = fuzz_lib.token_set_ratio(pick_a, candidate['AwayTeam'])
+                for _, cand in res_df.iterrows():
+                    db_h = _liq_norm(cand["HomeTeam"])
+                    db_a = _liq_norm(cand["AwayTeam"])
+                    h_s = fuzz_lib.token_set_ratio(pick_h, db_h)
+                    a_s = fuzz_lib.token_set_ratio(pick_a, db_a)
                     combined = (h_s + a_s) / 2
-                    if combined > best_score and h_s >= 55 and a_s >= 55:
+                    if combined > best_score and h_s >= 70 and a_s >= 70:
                         best_score = combined
-                        best_row = candidate
-                return best_row  # None si no hay match
+                        best_row = cand
+                return best_row
 
             for _, pick in df_pendientes.iterrows():
                 try:
@@ -1731,20 +1733,18 @@ elif menu == "Portafolio de Picks":
                 if row is None:
                     continue
 
-                hg = row['FTHG'] if pd.notna(row.get('FTHG')) else None
-                ag = row['FTAG'] if pd.notna(row.get('FTAG')) else None
+                hg  = row['FTHG'] if pd.notna(row.get('FTHG')) else None
+                ag  = row['FTAG'] if pd.notna(row.get('FTAG')) else None
                 if hg is None or ag is None:
                     continue
-
+                hg, ag = int(hg), int(ag)
                 hc  = int(row['HC'])  if pd.notna(row.get('HC'))  else 0
                 ac  = int(row['AC'])  if pd.notna(row.get('AC'))  else 0
                 hst = int(row['HST']) if pd.notna(row.get('HST')) else 0
                 ast = int(row['AST']) if pd.notna(row.get('AST')) else 0
-                hg, ag = int(hg), int(ag)
 
                 mkt = pick['Mercado']
                 ganada = False
-
                 if mkt == "Ganador (Local)":    ganada = (hg > ag)
                 elif mkt == "Empate":            ganada = (hg == ag)
                 elif mkt == "Ganador (Visita)":  ganada = (ag > hg)
@@ -1753,17 +1753,17 @@ elif menu == "Portafolio de Picks":
                 else:
                     match = re.search(r'\(([+-]\d+\.5)\)', mkt)
                     if match:
-                        signo          = match.group(1)[0]
-                        valor_linea    = float(match.group(1)[1:])
+                        signo            = match.group(1)[0]
+                        valor_linea      = float(match.group(1)[1:])
                         linea_matematica = float(match.group(1))
                         if "Hándicap" in mkt:
-                            if "Local"   in mkt: ganada = (hg + linea_matematica > ag)
+                            if "Local"    in mkt: ganada = (hg + linea_matematica > ag)
                             elif "Visita" in mkt: ganada = (ag + linea_matematica > hg)
                         else:
                             score = -1
-                            if "Goles Local"   in mkt: score = hg
-                            elif "Goles Visita" in mkt: score = ag
-                            elif "Goles"        in mkt: score = hg + ag
+                            if "Goles Local"       in mkt: score = hg
+                            elif "Goles Visita"    in mkt: score = ag
+                            elif "Goles"           in mkt: score = hg + ag
                             elif "Córners Local"   in mkt: score = hc
                             elif "Córners Visita"  in mkt: score = ac
                             elif "Córners"         in mkt: score = hc + ac
@@ -1773,25 +1773,22 @@ elif menu == "Portafolio de Picks":
                             if signo == '+': ganada = (score > valor_linea)
                             elif signo == '-': ganada = (score < valor_linea)
 
-                estado   = 'Ganada' if ganada else 'Perdida'
+                estado    = 'Ganada' if ganada else 'Perdida'
                 beneficio = (pick['Stake'] * pick['Cuota']) - pick['Stake'] if ganada else -pick['Stake']
-
                 cursor.execute(
                     "UPDATE portafolio_historico SET Estado = ?, Beneficio_Neto = ? WHERE id = ?",
                     (estado, beneficio, pick['id'])
                 )
-                liquidadas        += 1
+                liquidadas         += 1
                 beneficio_reciente += beneficio
                 stake_reciente     += pick['Stake']
 
             conn.commit()
-
             if liquidadas > 0:
                 yield_tanda = (beneficio_reciente / stake_reciente * 100) if stake_reciente > 0 else 0
                 st.success(f"¡Se liquidaron {liquidadas} partidos! 📈 Beneficio de esta tanda: **${beneficio_reciente:,.0f}** (Yield: **{yield_tanda:.2f}%**)")
             else:
                 st.info("No hay partidos nuevos terminados para liquidar.")
-                
         df_hist = pd.read_sql("SELECT * FROM portafolio_historico", conn)
 
         # ── Importar portafolio externo ───────────────────────────
