@@ -2270,12 +2270,60 @@ elif menu == "Portafolio de Picks":
                 df_big = pd.DataFrame(big_portfolio_rows)
 
                 # ── Liquidar contra el historial real ───────────
+                # Alias conocidos: nombre en pick → nombre exacto en DB
+                _ALIAS_EQUIPOS = {
+                    "USA":                    "United States",
+                    "United States":          "United States",
+                    "US":                     "United States",
+                    "M'Gladbach":             "Borussia Monchengladbach",
+                    "Monchengladbach":        "Borussia Monchengladbach",
+                    "Gladbach":               "Borussia Monchengladbach",
+                    "B. Monchengladbach":     "Borussia Monchengladbach",
+                    "Borussia M'gladbach":    "Borussia Monchengladbach",
+                    "Man United":             "Manchester United",
+                    "Man City":               "Manchester City",
+                    "Man Utd":                "Manchester United",
+                    "Atletico Madrid":        "Atletico Madrid",
+                    "Atlético Madrid":        "Atletico Madrid",
+                    "Atlético de Madrid":     "Atletico Madrid",
+                    "PSG":                    "Paris Saint-Germain",
+                    "Paris SG":               "Paris Saint-Germain",
+                    "Inter":                  "Inter Milan",
+                    "Internazionale":         "Inter Milan",
+                    "FC Bayern":              "Bayern Munich",
+                    "Bayern":                 "Bayern Munich",
+                    "Bayer Leverkusen":       "Bayer Leverkusen",
+                    "RB Leipzig":             "RB Leipzig",
+                    "Köln":                   "FC Koln",
+                    "FC Köln":                "FC Koln",
+                    "Dortmund":               "Borussia Dortmund",
+                    "BVB":                    "Borussia Dortmund",
+                    "Spurs":                  "Tottenham",
+                    "Tottenham Hotspur":      "Tottenham",
+                    "Wolves":                 "Wolverhampton",
+                    "Wolverhampton Wanderers":"Wolverhampton",
+                    "Newcastle":              "Newcastle United",
+                    "Brighton":               "Brighton & Hove Albion",
+                    "Nottm Forest":           "Nottingham Forest",
+                    "Nott'm Forest":          "Nottingham Forest",
+                    "Sheffield Utd":          "Sheffield United",
+                    "Luton":                  "Luton Town",
+                    "Bournemouth":            "AFC Bournemouth",
+                    "Paraguay":               "Paraguay",
+                    "Hoffenheim":             "TSG Hoffenheim",
+                    "TSG 1899 Hoffenheim":    "TSG Hoffenheim",
+                }
+
+                def _resolver_nombre(nombre):
+                    """Devuelve el nombre normalizado via alias, o el original si no hay alias."""
+                    return _ALIAS_EQUIPOS.get(nombre, nombre)
+
                 def _liquidar_pick_hist(pick_row):
                     fecha_d = str(pick_row['Date'])
                     try:
                         fd = datetime.strptime(fecha_d, '%Y-%m-%d')
-                        f_ini = (fd - timedelta(days=1)).strftime('%Y-%m-%d')
-                        f_fin = (fd + timedelta(days=1)).strftime('%Y-%m-%d')
+                        f_ini = (fd - timedelta(days=2)).strftime('%Y-%m-%d')
+                        f_fin = (fd + timedelta(days=2)).strftime('%Y-%m-%d')
                     except Exception:
                         f_ini = f_fin = fecha_d
 
@@ -2292,25 +2340,42 @@ elif menu == "Portafolio de Picks":
                     if res_df.empty:
                         return 'Pendiente', 0.0
 
-                    # Fuzzy-match both Home and Away to find the right row.
-                    # Also tries swapped (Away as Home) in case of storage inconsistency.
-                    pick_home = str(pick_row['Home'])
-                    pick_away = str(pick_row['Away'])
-                    row_real = None
-                    best_score = 0
-                    for _, candidate in res_df.iterrows():
-                        for ch, ca in [(candidate['HomeTeam'], candidate['AwayTeam']),
-                                       (candidate['AwayTeam'], candidate['HomeTeam'])]:
-                            h_score = process.extractOne(pick_home, [ch], scorer=fuzz.token_set_ratio)
-                            a_score = process.extractOne(pick_away, [ca], scorer=fuzz.token_set_ratio)
-                            if h_score and a_score:
-                                combined = (h_score[1] + a_score[1]) / 2
-                                if combined > best_score and h_score[1] >= 60 and a_score[1] >= 60:
+                    pick_home = _resolver_nombre(str(pick_row['Home']))
+                    pick_away = _resolver_nombre(str(pick_row['Away']))
+
+                    # 1. Intento exacto (los nombres ya vienen normalizados del scanner)
+                    exact = res_df[
+                        (res_df['HomeTeam'] == pick_home) &
+                        (res_df['AwayTeam'] == pick_away)
+                    ]
+                    if exact.empty:
+                        # También probar con los nombres originales sin alias
+                        orig_home = str(pick_row['Home'])
+                        orig_away = str(pick_row['Away'])
+                        exact = res_df[
+                            (res_df['HomeTeam'] == orig_home) &
+                            (res_df['AwayTeam'] == orig_away)
+                        ]
+
+                    if not exact.empty:
+                        row_real = exact.iloc[0]
+                    else:
+                        # 2. Fallback fuzzy sobre ambos equipos
+                        row_real = None
+                        best_score = 0
+                        for _, candidate in res_df.iterrows():
+                            for ch, ca in [
+                                (candidate['HomeTeam'], candidate['AwayTeam']),
+                                (candidate['AwayTeam'], candidate['HomeTeam']),
+                            ]:
+                                h_s = fuzz.token_set_ratio(pick_home, ch)
+                                a_s = fuzz.token_set_ratio(pick_away, ca)
+                                combined = (h_s + a_s) / 2
+                                if combined > best_score and h_s >= 60 and a_s >= 60:
                                     best_score = combined
                                     row_real = candidate
-
-                    if row_real is None:
-                        return 'Pendiente', 0.0
+                        if row_real is None:
+                            return 'Pendiente', 0.0
 
                     hg = row_real['FTHG'] if pd.notna(row_real.get('FTHG')) else None
                     ag = row_real['FTAG'] if pd.notna(row_real.get('FTAG')) else None
