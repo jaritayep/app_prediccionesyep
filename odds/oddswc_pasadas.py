@@ -1,229 +1,136 @@
 """
-Football-Data.co.uk — World Cup 2026 Scraper
-=============================================
-Downloads the official WC2026 XLSX from football-data.co.uk,
-filters to June 17–23 2026, and exports a single clean CSV.
+OddsPortal Advanced Scraper — Playwright
+======================================================
+Navega a las URLs de los partidos, extrae cuotas de cierre (1X2, AH, O/U)
+y exporta en formato ancho.
 """
 
-import io
-import sys
-import requests
+import asyncio
+from playwright.async_api import async_playwright
 import pandas as pd
-from datetime import datetime
+import re
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONFIG
+# CONFIGURACIÓN Y URLs (Mundial 2026 - 17 al 23 de Junio)
 # ─────────────────────────────────────────────────────────────────────────────
 
-XLSX_URL   = "https://www.football-data.co.uk/WorldCup2026.xlsx"
-DATE_FROM  = datetime(2026, 6, 17)
-DATE_TO    = datetime(2026, 6, 23)
-OUTPUT_CSV = "worldcup_jun17_23.csv"
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Referer": "https://www.football-data.co.uk/",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-GB,en;q=0.5",
-}
-
-# Preferred column order for output
-PREFERRED_COLS = [
-    "Date", "Time", "HomeTeam", "AwayTeam",
-    "FTHG", "FTAG", "FTR",
-    "HTHG", "HTAG", "HTR",
-    "Referee", "Attendance",
-    "HS", "AS", "HST", "AST",
-    "HC", "AC", "HF", "AF",
-    "HY", "AY", "HR", "AR",
-    "B365H", "B365D", "B365A",
-    "PSH",   "PSD",   "PSA",
-    "WHH",   "WHD",   "WHA",
-    "MaxH",  "MaxD",  "MaxA",
-    "AvgH",  "AvgD",  "AvgA",
-    "B365>2.5", "B365<2.5",
-    "P>2.5",    "P<2.5",
-    "Max>2.5",  "Max<2.5",
-    "Avg>2.5",  "Avg<2.5",
-    "AHh", "B365AHH", "B365AHA",
-    "MaxAHH", "MaxAHA", "AvgAHH", "AvgAHA",
+# Debes colocar las URLs directas de los partidos de OddsPortal que quieres raspar.
+# Encontrar las URLs en la página de resultados es el primer paso.
+MATCH_URLS = [
+    "https://www.oddsportal.com/football/world/world-cup/norway-senegal-xxxxxx/",
+    # Agrega aquí el resto de las URLs de los partidos del 17 al 23...
 ]
 
+OUTPUT_CSV = "worldcup_2026_oddsportal.csv"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DOWNLOAD
+# LÓGICA DE EXTRACCIÓN
 # ─────────────────────────────────────────────────────────────────────────────
 
-def download_xlsx(url: str) -> bytes:
-    print(f"  → Descargando: {url}")
-    resp = requests.get(url, headers=HEADERS, timeout=30)
-    if resp.status_code != 200:
-        print(f"  ✗ HTTP {resp.status_code}")
-        sys.exit(1)
-    print(f"  ✓ Descargado ({len(resp.content):,} bytes)")
-    return resp.content
+async def extract_market_data(page, match_data, tab_name, market_prefix):
+    """Hace clic en la pestaña del mercado y extrae las cuotas."""
+    try:
+        # Hacer clic en la pestaña del mercado (ej. "Asian Handicap", "Over/Under")
+        await page.get_by_text(tab_name, exact=True).click(timeout=3000)
+        # Esperar a que la tabla de cuotas se actualice
+        await page.wait_for_selector('div.table-container', timeout=3000)
+        
+        # OddsPortal agrupa las cuotas por líneas (ej. +0.5, 2.5). Iteramos sobre ellas.
+        rows = await page.locator('div.table-container > div.border-black-borders').all()
+        
+        for row in rows:
+            text_content = await row.inner_text()
+            lines = text_content.split('\n')
+            
+            if len(lines) >= 3:
+                line_val = lines[0].strip() # Ej: "+0.5" o "2.5"
+                # Limpiamos el valor de la línea para usarlo en el nombre de la columna
+                clean_line = re.sub(r'[^\d\.\+\-]', '', line_val)
+                
+                odd_1 = lines[1].strip()
+                odd_2 = lines[2].strip()
+                
+                # Asignamos al diccionario en formato ancho
+                if "hdp" in market_prefix:
+                    match_data[f"{market_prefix}_home_{clean_line}"] = odd_1
+                    match_data[f"{market_prefix}_away_{clean_line}"] = odd_2
+                elif "goles" in market_prefix:
+                    match_data[f"{market_prefix}_{clean_line}_over"] = odd_1
+                    match_data[f"{market_prefix}_{clean_line}_under"] = odd_2
+                    
+    except Exception as e:
+        print(f"  ⚠ No se encontró el mercado '{tab_name}' o hubo un error: {e}")
 
+async def scrape_match(browser, url):
+    """Navega a un partido y extrae todos sus mercados."""
+    print(f"Navegando a: {url}")
+    page = await browser.new_page()
+    
+    match_data = {}
+    
+    try:
+        # Ir a la página y esperar a que cargue el contenido principal
+        await page.goto(url, wait_until="domcontentloaded")
+        await page.wait_for_selector('h1', timeout=10000)
+        
+        # 1. Extraer Nombres de Equipos
+        header_text = await page.locator('h1').inner_text()
+        teams = header_text.split(' - ')
+        match_data['liga'] = "FIFA - World Cup"
+        match_data['home'] = teams[0].strip() if len(teams) > 0 else "Unknown"
+        match_data['away'] = teams[1].strip() if len(teams) > 1 else "Unknown"
+        
+        print(f"  ⚽ Procesando: {match_data['home']} vs {match_data['away']}")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PARSE & FILTER
-# ─────────────────────────────────────────────────────────────────────────────
-
-def load_and_filter(raw: bytes) -> pd.DataFrame:
-    xl = pd.ExcelFile(io.BytesIO(raw))
-    print(f"  → Hojas encontradas: {xl.sheet_names}")
-
-    # ── Print actual columns of each sheet so we can see what we're working with
-    print("\n  📋 Diagnóstico de columnas:")
-    for sheet in xl.sheet_names:
+        # 2. Extraer 1X2 (Mercado por defecto al cargar la página)
         try:
-            peek = xl.parse(sheet, nrows=2, dtype=str)
-            print(f"     '{sheet}': {list(peek.columns)}")
-        except Exception as e:
-            print(f"     '{sheet}': error — {e}")
-    print()
+            await page.wait_for_selector('div.table-container', timeout=5000)
+            rows = await page.locator('div.table-container > div.border-black-borders').first.inner_text()
+            odds = rows.split('\n')
+            if len(odds) >= 3:
+                match_data['1x2_home'] = odds[-3].strip()
+                match_data['1x2_draw'] = odds[-2].strip()
+                match_data['1x2_away'] = odds[-1].strip()
+        except:
+            print("  ⚠ No se pudo extraer 1X2.")
 
-    # ── Use only the main 2026 sheet (not qualifiers or past tournaments) ─────
-    target_sheet = None
-    for sheet in xl.sheet_names:
-        name_lower = sheet.lower()
-        if "2026" in name_lower and "qualifier" not in name_lower:
-            target_sheet = sheet
-            break
+        # 3. Navegar y extraer Hándicap Asiático
+        await extract_market_data(page, match_data, "Asian Handicap", "hdp")
+        
+        # 4. Navegar y extraer Over/Under (Goles)
+        await extract_market_data(page, match_data, "Over/Under", "goles")
 
-    if target_sheet is None:
-        # Fallback: just use the first sheet
-        target_sheet = xl.sheet_names[0]
-        print(f"  ⚠ No se encontró hoja 2026 sin qualifiers — usando '{target_sheet}'")
+    except Exception as e:
+        print(f"Error procesando {url}: {e}")
+    finally:
+        await page.close()
+        
+    return match_data
 
-    print(f"  → Usando hoja: '{target_sheet}'")
-    df = xl.parse(target_sheet, dtype=str)
-
-    # ── Detect date / team columns flexibly ───────────────────────────────────
-    cols_lower = {c.strip().lower(): c for c in df.columns}
-
-    def find_col(candidates):
-        for candidate in candidates:
-            if candidate.lower() in cols_lower:
-                return cols_lower[candidate.lower()]
-        # Fallback: partial match
-        for candidate in candidates:
-            for key, real in cols_lower.items():
-                if candidate.lower() in key:
-                    return real
-        return None
-
-    date_col = find_col(["Date", "date", "Fecha"])
-    home_col = find_col(["HomeTeam", "Home Team", "Home", "hometeam"])
-    away_col = find_col(["AwayTeam", "Away Team", "Away", "awayteam"])
-
-    if date_col is None:
-        print(f"  ✗ No se encontró columna de fecha. Columnas disponibles: {list(df.columns)}")
-        sys.exit(1)
-    if home_col is None:
-        print(f"  ✗ No se encontró columna HomeTeam. Columnas disponibles: {list(df.columns)}")
-        sys.exit(1)
-
-    print(f"  → Columnas detectadas: Date='{date_col}', Home='{home_col}', Away='{away_col}'")
-
-    # Normalise column names
-    rename = {}
-    if date_col != "Date":     rename[date_col] = "Date"
-    if home_col != "HomeTeam": rename[home_col] = "HomeTeam"
-    if away_col and away_col != "AwayTeam": rename[away_col] = "AwayTeam"
-    if rename:
-        df = df.rename(columns=rename)
-
-    print(f"  → Total filas: {len(df)}")
-
-    # ── Parse dates ───────────────────────────────────────────────────────────
-    def parse_date(s):
-        s = str(s).strip()
-        for fmt in ("%d/%m/%y", "%d/%m/%Y", "%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
-            try:
-                return datetime.strptime(s, fmt)
-            except ValueError:
-                pass
-        # Try pandas as last resort
-        try:
-            return pd.to_datetime(s, dayfirst=True)
-        except Exception:
-            return pd.NaT
-
-    df["_date_parsed"] = df["Date"].apply(parse_date)
-
-    # Show sample of parsed dates for debugging
-    sample = df[["Date", "_date_parsed"]].dropna().head(5)
-    print(f"\n  → Muestra de fechas parseadas:\n{sample.to_string(index=False)}\n")
-
-    df = df.dropna(subset=["_date_parsed"])
-
-    # ── Filter June 17–23 ─────────────────────────────────────────────────────
-    mask = (df["_date_parsed"] >= DATE_FROM) & (df["_date_parsed"] <= DATE_TO)
-    filtered = df[mask].copy()
-    filtered = filtered.drop(columns=["_date_parsed"])
-
-    # Sort by date + time
-    if "Time" in filtered.columns:
-        filtered["_sort_dt"] = pd.to_datetime(
-            filtered["Date"].astype(str) + " " + filtered["Time"].fillna("00:00").astype(str),
-            dayfirst=True, errors="coerce"
-        )
-        filtered = filtered.sort_values("_sort_dt").drop(columns=["_sort_dt"])
-    else:
-        filtered = filtered.sort_values("Date")
-
-    print(f"  → Partidos del 17–23 junio: {len(filtered)}")
-    return filtered
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# COLUMN ORDERING
-# ─────────────────────────────────────────────────────────────────────────────
-
-def reorder_columns(df: pd.DataFrame) -> pd.DataFrame:
-    leading  = [c for c in PREFERRED_COLS if c in df.columns]
-    trailing = [c for c in df.columns if c not in PREFERRED_COLS]
-    return df[leading + trailing]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ENTRY POINT
-# ─────────────────────────────────────────────────────────────────────────────
-
-def main():
-    print("=" * 65)
-    print("  ⚽ WC2026 SCRAPER — football-data.co.uk")
-    print(f"  📅 Rango: {DATE_FROM.strftime('%d/%m/%Y')} → {DATE_TO.strftime('%d/%m/%Y')}")
-    print("=" * 65)
-
-    raw = download_xlsx(XLSX_URL)
-    df  = load_and_filter(raw)
-
-    if df.empty:
-        print("\n⚠ No se encontraron partidos en el rango 17–23 junio.")
-        print("  Puede que el XLSX aún no incluya esas fechas o el formato de fecha es distinto.")
-        sys.exit(0)
-
-    df = reorder_columns(df)
-    df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
-
-    print(f"\n{'='*65}")
-    print(f"✅ CSV guardado: {OUTPUT_CSV}")
-    print(f"   Partidos: {len(df)}  |  Columnas: {len(df.columns)}")
-    print("=" * 65)
-
-    # Quick preview
-    preview_cols = ["Date", "HomeTeam", "AwayTeam", "FTR", "FTHG", "FTAG",
-                    "B365H", "B365D", "B365A"]
-    available = [c for c in preview_cols if c in df.columns]
-    if available:
-        print("\n📋 Vista previa:")
-        print(df[available].to_string(index=False))
-
+async def main():
+    async with async_playwright() as p:
+        # Usamos headles=False para depurar y ver si Cloudflare nos bloquea
+        browser = await p.chromium.launch(headless=False) 
+        
+        all_matches = []
+        for url in MATCH_URLS:
+            data = await scrape_match(browser, url)
+            if data:
+                all_matches.append(data)
+                
+        await browser.close()
+        
+        if all_matches:
+            df = pd.DataFrame(all_matches)
+            # Ordenar columnas base al principio
+            base_cols = ['liga', 'home', 'away']
+            market_cols = sorted([c for c in df.columns if c not in base_cols])
+            df = df[base_cols + market_cols]
+            
+            df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
+            print(f"\n✅ Scraping completado. Guardado en {OUTPUT_CSV}")
+        else:
+            print("\n⚠ No se extrajeron datos.")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
