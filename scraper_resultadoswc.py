@@ -35,11 +35,13 @@ MAPEO_EQUIPOS = {
     "Cote d'Ivoire":               "Ivory Coast",
     "Cape Verde":                  "Cape Verde Islands",
     "Cape Verde Islands":          "Cape Verde Islands",
+    "Cabo Verde":                  "Cape Verde Islands",   # ← nombre real en BDL
 
     # Europa
     "Czech Republic":              "Czechia",
     "Bosnia & Herzegovina":        "Bosnia-Herzegovina",
     "Bosnia and Herzegovina":      "Bosnia-Herzegovina",
+    "Türkiye":                     "Turkey",               # ← BDL usa el nombre oficial turco
 
     # Asia
     "Korea Republic":              "South Korea",
