@@ -1837,7 +1837,6 @@ elif menu == "Portafolio de Picks":
                     df_t = pd.read_csv(f_hist)
                     if df_t.empty:
                         continue
-                    df_t['Es_Mundial'] = 'worldcup' in f_hist.name.lower()
                     match_dash = re.search(r'(\d{4})-(\d{2})-(\d{2})', f_hist.name)
                     match_pure = re.search(r'(\d{4})(\d{2})(\d{2})', f_hist.name)
                     if match_dash:
@@ -1901,16 +1900,25 @@ elif menu == "Portafolio de Picks":
                 for _, row in df_odds_dia.iterrows():
                     h_csv = str(row['home'])
                     a_csv = str(row['away'])
-                    es_mundial = row.get('Es_Mundial', False)
                     fecha_partido = str(row['inicio_local']).split()[0] if pd.notna(row.get('inicio_local')) else fecha_str
 
-                    lista_ref = equipos_wc_hist if es_mundial else equipos_clubes_hist
-                    h_match = process.extractOne(h_csv, lista_ref) if lista_ref else None
-                    a_match = process.extractOne(a_csv, lista_ref) if lista_ref else None
-                    if not h_match or not a_match or h_match[1] < 80 or a_match[1] < 80:
+                    # Auto-detectar WC vs clubs por mejor score fuzzy (no depende del nombre del archivo)
+                    h_match_wc = process.extractOne(h_csv, equipos_wc_hist)    if equipos_wc_hist    else None
+                    a_match_wc = process.extractOne(a_csv, equipos_wc_hist)    if equipos_wc_hist    else None
+                    h_match_cl = process.extractOne(h_csv, equipos_clubes_hist) if equipos_clubes_hist else None
+                    a_match_cl = process.extractOne(a_csv, equipos_clubes_hist) if equipos_clubes_hist else None
+
+                    wc_score = min(h_match_wc[1] if h_match_wc else 0, a_match_wc[1] if a_match_wc else 0)
+                    cl_score = min(h_match_cl[1] if h_match_cl else 0, a_match_cl[1] if a_match_cl else 0)
+
+                    if wc_score >= cl_score and wc_score >= 80:
+                        es_mundial = True
+                        h_db, a_db = h_match_wc[0], a_match_wc[0]
+                    elif cl_score >= 80:
+                        es_mundial = False
+                        h_db, a_db = h_match_cl[0], a_match_cl[0]
+                    else:
                         continue
-                    h_db = h_match[0]
-                    a_db = a_match[0]
 
                     try:
                         if es_mundial:
@@ -2064,6 +2072,7 @@ elif menu == "Portafolio de Picks":
             # ── Construir el big portfolio ────────────────────
             # Dias DB: usar picks tal como estan guardados
             big_portfolio_rows = list(big_portfolio_from_db)
+            fechas_csv_vacias  = []  # dias con CSV pero sin picks con edge
 
             # Dias CSV: re-escanear solo los dias que no estan en DB
             if not df_master_hist.empty and fechas_csv_nuevas:
@@ -2076,8 +2085,10 @@ elif menu == "Portafolio de Picks":
                         try:
                             ops_dia = _escanear_dia_hist(fecha_d, df_dia_odds)
                         except Exception:
+                            fechas_csv_vacias.append(fecha_d)
                             continue
                         if not ops_dia:
+                            fechas_csv_vacias.append(fecha_d)
                             continue
                         df_dia_ops = pd.DataFrame(ops_dia).sort_values('Edge', ascending=False)
                         df_dia_ops['Partido'] = df_dia_ops['Home'] + " vs " + df_dia_ops['Away']
@@ -2348,6 +2359,29 @@ elif menu == "Portafolio de Picks":
                         _dias_big = _dias_cerr.copy()
 
                     _dias_big = _dias_big.sort_values('Date').reset_index(drop=True)
+
+                    # ── Agregar días CSV sin picks (odds disponibles pero sin edge) ──
+                    if fechas_csv_vacias:
+                        _sp_rows = []
+                        _dates_ya = set(_dias_big['Date'].astype(str))
+                        for _fv in sorted(fechas_csv_vacias):
+                            try:
+                                _fv_date = pd.Timestamp(_fv).date()
+                            except Exception:
+                                continue
+                            if str(_fv_date) in _dates_ya:
+                                continue  # ya cubierto con picks reales
+                            _sp_rows.append({
+                                'Date': _fv_date, 'Picks': 0, 'Ganadas': 0,
+                                'Perdidas': 0, 'Invertido': 0.0,
+                                'PnL_Dia': float('nan'), 'Estado_Dia': 'sin_picks'
+                            })
+                        if _sp_rows:
+                            _dias_big = pd.concat(
+                                [_dias_big, pd.DataFrame(_sp_rows)],
+                                ignore_index=True
+                            ).sort_values('Date').reset_index(drop=True)
+
                     _dias_big['Win%'] = (_dias_big['Ganadas'] / _dias_big['Picks'].replace(0, np.nan) * 100).round(1)
 
                     # Equity acumulada: sólo días cerrados contribuyen al P&L; pendientes se muestran como NaN
@@ -2392,6 +2426,16 @@ elif menu == "Portafolio de Picks":
                             mode='markers',
                             marker=dict(color='#f39c12', size=9, symbol='circle-open'),
                         ))
+                    # Días con odds pero sin picks con edge — marcadores grises con X
+                    _dias_sp_plot = _dias_big[_dias_big['Estado_Dia'] == 'sin_picks']
+                    if not _dias_sp_plot.empty:
+                        fig_big.add_trace(go.Scatter(
+                            x=_dias_sp_plot['Date'].astype(str),
+                            y=[_pnl_acum] * len(_dias_sp_plot),
+                            name='Sin picks',
+                            mode='markers',
+                            marker=dict(color='#636e72', size=8, symbol='x'),
+                        ))
                     fig_big.update_layout(
                         dragmode=False,
                         plot_bgcolor='#1e2129',
@@ -2417,7 +2461,7 @@ elif menu == "Portafolio de Picks":
                     _dias_mostrar['Invertido ($)']    = _dias_mostrar['Invertido ($)'].map('${:,.0f}'.format)
                     _dias_mostrar['P&L Día ($)']      = _dias_mostrar['P&L Día ($)'].apply(lambda v: round(v, 0) if not (isinstance(v, float) and np.isnan(v)) else '⏳')
                     _dias_mostrar['Equity Acum. ($)'] = _dias_mostrar['Equity Acum. ($)'].apply(lambda v: round(v, 0) if not (isinstance(v, float) and np.isnan(v)) else '⏳')
-                    _dias_mostrar['Estado'] = _dias_mostrar['Estado'].map({'cerrado': '✅', 'pendiente': '⏳'})
+                    _dias_mostrar['Estado'] = _dias_mostrar['Estado'].map({'cerrado': '✅', 'pendiente': '⏳', 'sin_picks': '⚪'})
 
                     st.dataframe(
                         _dias_mostrar.style.map(_color_pnl, subset=['P&L Día ($)', 'Equity Acum. ($)']),
@@ -2428,27 +2472,38 @@ elif menu == "Portafolio de Picks":
                     # ── Acordeones por día (todos) ────────────
                     st.markdown("#### 📋 Detalle por Día")
                     for _, _d in _dias_big.iterrows():
-                        _fecha_d  = str(_d['Date'])
-                        _es_pend  = (_d['Estado_Dia'] == 'pendiente')
-                        _pnl_d    = _d['PnL_Dia'] if not _es_pend else 0.0
-                        _icon_d   = "⏳" if _es_pend else ("🟢" if _pnl_d >= 0 else "🔴")
-                        _picks_d  = df_big[df_big['Date'] == _d['Date']]
-                        _enc_pnl  = f"P&L: ⏳" if _es_pend else f"P&L: ${_pnl_d:+,.0f}  |  Acum: ${_d['PnL_Acum']:+,.0f}"
+                        _fecha_d = str(_d['Date'])
+                        _es_sp   = (_d['Estado_Dia'] == 'sin_picks')
+                        _es_pend = (_d['Estado_Dia'] == 'pendiente')
+                        if _es_sp:
+                            _icon_d  = "⚪"
+                            _enc_pnl = "Sin picks con edge este día"
+                        elif _es_pend:
+                            _icon_d  = "⏳"
+                            _enc_pnl = "P&L: ⏳"
+                        else:
+                            _pnl_d   = _d['PnL_Dia']
+                            _icon_d  = "🟢" if _pnl_d >= 0 else "🔴"
+                            _enc_pnl = f"P&L: ${_pnl_d:+,.0f}  |  Acum: ${_d['PnL_Acum']:+,.0f}"
                         with st.expander(
                             f"{_icon_d} {_fecha_d}  —  {int(_d['Picks'])} picks  |  "
                             f"Won: {int(_d['Ganadas'])}  Lost: {int(_d['Perdidas'])}  |  {_enc_pnl}"
                         ):
-                            _df_exp = _picks_d[['Home','Away','Mercado','Cuota','Stake','Estado','Beneficio_Neto']].copy()
-                            _df_exp.columns = ['Local','Visita','Mercado','Cuota','Stake','Estado','Beneficio']
-                            _df_exp['Cuota']     = _df_exp['Cuota'].round(2)
-                            _df_exp['Stake']     = _df_exp['Stake'].map('${:,.0f}'.format)
-                            _df_exp['Beneficio'] = _df_exp['Beneficio'].round(0)
-                            def _ce_big(v):
-                                if v == 'Ganada':    return 'color: #2ecc71; font-weight: bold'
-                                elif v == 'Perdida': return 'color: #e74c3c'
-                                elif v == 'Pendiente': return 'color: #f39c12'
-                                return ''
-                            st.dataframe(_df_exp.style.map(_ce_big, subset=['Estado']), hide_index=True, use_container_width=True)
+                            if _es_sp:
+                                st.caption("Odds disponibles en CSV pero ningún partido superó el filtro de edge (2–15%). El modelo no encontró valor ese día.")
+                            else:
+                                _picks_d = df_big[df_big['Date'] == _d['Date']]
+                                _df_exp = _picks_d[['Home','Away','Mercado','Cuota','Stake','Estado','Beneficio_Neto']].copy()
+                                _df_exp.columns = ['Local','Visita','Mercado','Cuota','Stake','Estado','Beneficio']
+                                _df_exp['Cuota']     = _df_exp['Cuota'].round(2)
+                                _df_exp['Stake']     = _df_exp['Stake'].map('${:,.0f}'.format)
+                                _df_exp['Beneficio'] = _df_exp['Beneficio'].round(0)
+                                def _ce_big(v):
+                                    if v == 'Ganada':    return 'color: #2ecc71; font-weight: bold'
+                                    elif v == 'Perdida': return 'color: #e74c3c'
+                                    elif v == 'Pendiente': return 'color: #f39c12'
+                                    return ''
+                                st.dataframe(_df_exp.style.map(_ce_big, subset=['Estado']), hide_index=True, use_container_width=True)
 
 elif menu == "Mundial 2026":
     st.title("Simulación Mundial 2026")
