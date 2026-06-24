@@ -2292,19 +2292,22 @@ elif menu == "Portafolio de Picks":
                     if res_df.empty:
                         return 'Pendiente', 0.0
 
-                    # Fuzzy-match both Home and Away to find the right row
+                    # Fuzzy-match both Home and Away to find the right row.
+                    # Also tries swapped (Away as Home) in case of storage inconsistency.
                     pick_home = str(pick_row['Home'])
                     pick_away = str(pick_row['Away'])
                     row_real = None
                     best_score = 0
                     for _, candidate in res_df.iterrows():
-                        h_score = process.extractOne(pick_home, [candidate['HomeTeam']], scorer=fuzz.token_set_ratio)
-                        a_score = process.extractOne(pick_away, [candidate['AwayTeam']], scorer=fuzz.token_set_ratio)
-                        if h_score and a_score:
-                            combined = (h_score[1] + a_score[1]) / 2
-                            if combined > best_score and h_score[1] >= 70 and a_score[1] >= 70:
-                                best_score = combined
-                                row_real = candidate
+                        for ch, ca in [(candidate['HomeTeam'], candidate['AwayTeam']),
+                                       (candidate['AwayTeam'], candidate['HomeTeam'])]:
+                            h_score = process.extractOne(pick_home, [ch], scorer=fuzz.token_set_ratio)
+                            a_score = process.extractOne(pick_away, [ca], scorer=fuzz.token_set_ratio)
+                            if h_score and a_score:
+                                combined = (h_score[1] + a_score[1]) / 2
+                                if combined > best_score and h_score[1] >= 60 and a_score[1] >= 60:
+                                    best_score = combined
+                                    row_real = candidate
 
                     if row_real is None:
                         return 'Pendiente', 0.0
@@ -2355,18 +2358,20 @@ elif menu == "Portafolio de Picks":
                     return estado, ganada
 
                 # ── Liquidar big portfolio ──────────────────────
-                # DB picks: ya tienen Estado y Beneficio_Neto reales → no re-liquidar
-                # CSV picks: liquidar contra historial
+                # DB picks: si Estado != Pendiente usar el valor guardado;
+                #           si sigue Pendiente, intentar re-liquidar contra historial.
+                # CSV picks: liquidar siempre contra historial.
                 estados_list = []
                 ganada_list  = []
                 for _, pr in df_big.iterrows():
-                    if pr.get('_from_db', False):
-                        # Usar estado ya guardado en DB
+                    if pr.get('_from_db', False) and pr.get('Estado', 'Pendiente') != 'Pendiente':
+                        # Resultado ya resuelto en DB → usar directamente
                         est_db = pr['Estado']
                         gan_db = (est_db == 'Ganada')
                         estados_list.append(est_db)
                         ganada_list.append(gan_db)
                     else:
+                        # Pendiente (DB o CSV) → intentar liquidar contra historial
                         est, gan = _liquidar_pick_hist(pr)
                         estados_list.append(est)
                         ganada_list.append(gan)
