@@ -2483,14 +2483,39 @@ elif menu == "Portafolio de Picks":
 
                 # ── Fecha de inicio del historial ──────────────
                 _todas_fechas_hist = sorted(df_big['Date'].unique())
-                _fecha_inicio_hist = st.selectbox(
-                    "📅 Inicio del historial",
-                    options=_todas_fechas_hist,
-                    index=0,
+                _fecha_min_hist = _todas_fechas_hist[0]
+                _fecha_max_hist = _todas_fechas_hist[-1]
+
+                # Botones de acceso rápido
+                st.markdown("**📅 Inicio del historial**")
+                _qf_cols = st.columns(4)
+                _hoy_date = datetime.today().date()
+                if _qf_cols[0].button("Última semana",  key="hist_qf_1s", use_container_width=True):
+                    st.session_state["hist_fecha_inicio_val"] = max(_fecha_min_hist, _hoy_date - timedelta(days=7))
+                if _qf_cols[1].button("Último mes",     key="hist_qf_1m", use_container_width=True):
+                    st.session_state["hist_fecha_inicio_val"] = max(_fecha_min_hist, _hoy_date - timedelta(days=30))
+                if _qf_cols[2].button("Últimos 3 meses",key="hist_qf_3m", use_container_width=True):
+                    st.session_state["hist_fecha_inicio_val"] = max(_fecha_min_hist, _hoy_date - timedelta(days=90))
+                if _qf_cols[3].button("Todo",           key="hist_qf_all", use_container_width=True):
+                    st.session_state["hist_fecha_inicio_val"] = _fecha_min_hist
+
+                # Valor por defecto: primera fecha disponible (o lo que haya en session_state)
+                _default_fecha = st.session_state.get("hist_fecha_inicio_val", _fecha_min_hist)
+                # Asegurarse de que no esté fuera del rango real de datos
+                _default_fecha = max(_fecha_min_hist, min(_default_fecha, _fecha_max_hist))
+
+                _fecha_inicio_hist = st.date_input(
+                    "O elige una fecha exacta:",
+                    value=_default_fecha,
+                    min_value=_fecha_min_hist,
+                    max_value=_fecha_max_hist,
                     key="hist_fecha_inicio",
                     help="Solo se consideran días iguales o posteriores a esta fecha para el cálculo de equity y KPIs.",
-                    format_func=lambda d: str(d),
+                    label_visibility="visible",
                 )
+                # Sincronizar session_state con el date_input por si el usuario lo cambió manualmente
+                st.session_state["hist_fecha_inicio_val"] = _fecha_inicio_hist
+
                 # Filtrar df_big desde la fecha seleccionada
                 df_big = df_big[df_big['Date'] >= _fecha_inicio_hist].copy()
 
