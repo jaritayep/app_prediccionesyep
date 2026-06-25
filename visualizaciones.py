@@ -1274,6 +1274,8 @@ elif menu == "Portafolio de Picks":
                             elif ('goles' in col_str or 'total' in col_str) and 'tt_home' not in col_str and 'tt_away' not in col_str and 'shots' not in col_str:
                                 # Cap: ignorar lineas de goles por encima de 5.5 (no son realistas)
                                 if linea > 5.5: continue
+                                # Ignorar líneas asiáticas (.25 / .75) — no usamos esos mercados
+                                if (linea * 100) % 100 in (25, 75): continue
                                 if 'over' in col_str: mercados_a_evaluar.append((f"Goles Totales (+{linea})", val_num, prob_over(prom_goles_total, linea)))
                                 elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Totales (-{linea})", val_num, prob_under(prom_goles_total, linea)))
 
@@ -2178,6 +2180,8 @@ elif menu == "Portafolio de Picks":
                                 if 'over' in col_str: mercados_ev.append((f"Tiros a Puerta Totales (+{linea})", val_num, prob_over(prom_shots_total, linea)))
                                 elif 'under' in col_str: mercados_ev.append((f"Tiros a Puerta Totales (-{linea})", val_num, _prob_under_loc(prom_shots_total, linea)))
                         elif 'goles' in col_str or 'total' in col_str:
+                            # Ignorar líneas asiáticas (.25 / .75) — no usamos esos mercados
+                            if (linea * 100) % 100 in (25, 75): continue
                             if 'tt_home' in col_str:
                                 if 'over' in col_str: mercados_ev.append((f"Goles Local (+{linea})", val_num, prob_over(pred_goles_home, linea)))
                                 elif 'under' in col_str: mercados_ev.append((f"Goles Local (-{linea})", val_num, _prob_under_loc(pred_goles_home, linea)))
