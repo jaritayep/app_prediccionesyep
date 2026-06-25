@@ -87,6 +87,7 @@ ALIAS_GLOBAL = {
     # ── CLUBES — BUNDESLIGA ───────────────────────────────────────────────────
     "M'Gladbach": "Borussia Monchengladbach",  # DB stores "Borussia Monchengladbach"
     "M'gladbach": "Borussia Monchengladbach",
+    "M'gladbach": "Borussia Monchengladbach",
     "Monchengladbach": "Borussia Monchengladbach",
     "Gladbach": "Borussia Monchengladbach",
     "B. Monchengladbach": "Borussia Monchengladbach",
