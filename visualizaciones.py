@@ -1252,7 +1252,7 @@ elif menu == "Portafolio de Picks":
                                 elif 'no' in col_str: mercados_a_evaluar.append(("Ambos Anotan (No)", val_num, 1 - prob_btts_si))
                                 continue
 
-                            match = re.search(r'(-?\d+\.5)', col_str)
+                            match = re.search(r'(-?\d+(?:\.\d+)?)', col_str)
                             if not match: continue
                             linea = float(match.group(1))
 
@@ -1260,10 +1260,17 @@ elif menu == "Portafolio de Picks":
                                 if 'home' in col_str: mercados_a_evaluar.append((f"Hándicap Local ({linea:+})", val_num, prob_handicap(pred_goles_home, pred_goles_away, linea)))
                                 elif 'away' in col_str: mercados_a_evaluar.append((f"Hándicap Visita ({linea:+})", val_num, prob_handicap(pred_goles_away, pred_goles_home, linea)))
                             elif 'corners' in col_str or 'corner' in col_str:
-                                # Mercados de córners — modelados con Poisson usando prom_corners_total
+                                # Mercados de córners — modelados con Poisson
                                 if linea > 15.5: continue  # Cap para líneas irreales
-                                if 'over' in col_str: mercados_a_evaluar.append((f"Córners Totales (+{linea})", val_num, prob_over(prom_corners_total, linea)))
-                                elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Totales (-{linea})", val_num, prob_under(prom_corners_total, linea)))
+                                if 'corners_home' in col_str:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Córners Local (+{linea})", val_num, prob_over(stats_h.get('HC', prom_corners_total), linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Local (-{linea})", val_num, prob_under(stats_h.get('HC', prom_corners_total), linea)))
+                                elif 'corners_away' in col_str:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Córners Visita (+{linea})", val_num, prob_over(stats_a.get('AC', prom_corners_total), linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Visita (-{linea})", val_num, prob_under(stats_a.get('AC', prom_corners_total), linea)))
+                                else:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Córners Totales (+{linea})", val_num, prob_over(prom_corners_total, linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Totales (-{linea})", val_num, prob_under(prom_corners_total, linea)))
                             elif ('goles' in col_str or 'total' in col_str) and 'tt_home' not in col_str and 'tt_away' not in col_str and 'shots' not in col_str:
                                 # Cap: ignorar lineas de goles por encima de 5.5 (no son realistas)
                                 if linea > 5.5: continue
@@ -2140,7 +2147,7 @@ elif menu == "Portafolio de Picks":
                             if 'yes' in col_str or 'si' in col_str: mercados_ev.append(("Ambos Anotan (Sí)", val_num, prob_btts))
                             elif 'no' in col_str: mercados_ev.append(("Ambos Anotan (No)", val_num, 1 - prob_btts))
                             continue
-                        m_linea = re.search(r'(-?\d+\.5)', col_str)
+                        m_linea = re.search(r'(-?\d+(?:\.\d+)?)', col_str)
                         if not m_linea: continue
                         linea = float(m_linea.group(1))
                         if 'hdp' in col_str or 'handicap' in col_str:
