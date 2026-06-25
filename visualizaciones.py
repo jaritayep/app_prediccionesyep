@@ -12,6 +12,7 @@ import requests
 import json
 from pathlib import Path
 import re
+from diccionario_alias import ALIAS_GLOBAL, normalizar_nombre
 
 
 def poisson_prob(lamba_val, k):
@@ -53,9 +54,15 @@ st.markdown("""
 CONFIG_FIJA = {'staticPlot': False, 'scrollZoom': False, 'doubleClick': 'reset', 'displayModeBar': False, 'showAxisDragHandles': False}
 
 def corregir_nombre_equipo(nombre_api, lista_db):
-    if not lista_db: return nombre_api
-    mejor_match, score = process.extractOne(nombre_api.strip(), lista_db, scorer=fuzz.token_set_ratio)
-    return mejor_match if score >72 else nombre_api
+    """Normaliza un nombre de equipo: primero via alias exacto, luego fuzzy matching contra la DB."""
+    nombre_norm = normalizar_nombre(nombre_api)  # exact alias lookup first
+    if not lista_db: return nombre_norm
+    # If the alias-resolved name is directly in the DB, use it as-is
+    if nombre_norm in lista_db:
+        return nombre_norm
+    # Otherwise fall back to fuzzy matching
+    mejor_match, score = process.extractOne(nombre_norm.strip(), lista_db, scorer=fuzz.token_set_ratio)
+    return mejor_match if score > 72 else nombre_norm
 
 def cargar_modelo():
     return joblib.load(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
@@ -1671,64 +1678,10 @@ elif menu == "Portafolio de Picks":
             from thefuzz import fuzz as fuzz_lib
             from datetime import datetime, timedelta
 
-            # Alias map: normaliza nombres del portafolio Y de la DB al mismo canonical
-            # Clave: cualquier variante conocida  →  valor: nombre exacto en la mayoria de registros DB
-            _LIQ_ALIAS = {
-                "M'gladbach":               "Borussia Monchengladbach",
-                "Monchengladbach":          "Borussia Monchengladbach",
-                "Gladbach":                 "Borussia Monchengladbach",
-                "B. Monchengladbach":       "Borussia Monchengladbach",
-                "Borussia M'gladbach":      "Borussia Monchengladbach",
-                "Borussia Mönchengladbach": "Borussia Monchengladbach",
-                "Mönchengladbach":          "Borussia Monchengladbach",
-                "BMG":                      "Borussia Monchengladbach",
-                "Man United":               "Manchester United",
-                "Man Utd":                  "Manchester United",
-                "Man City":                 "Manchester City",
-                "Atlético Madrid":          "Atletico Madrid",
-                "Atlético de Madrid":       "Atletico Madrid",
-                "PSG":                      "Paris Saint-Germain",
-                "Paris SG":                 "Paris Saint-Germain",
-                "Inter":                    "Inter Milan",
-                "Internazionale":           "Inter Milan",
-                "FC Bayern":                "Bayern Munich",
-                "Bayern":                   "Bayern Munich",
-                "Dortmund":                 "Borussia Dortmund",
-                "BVB":                      "Borussia Dortmund",
-                "Köln":                     "FC Koln",
-                "FC Köln":                  "FC Koln",
-                "Spurs":                    "Tottenham",
-                "Tottenham Hotspur":        "Tottenham",
-                "Wolves":                   "Wolverhampton",
-                "Wolverhampton Wanderers":  "Wolverhampton",
-                "Newcastle":                "Newcastle United",
-                "Brighton":                 "Brighton & Hove Albion",
-                "Nottm Forest":             "Nottingham Forest",
-                "Nott'm Forest":            "Nottingham Forest",
-                "Sheffield Utd":            "Sheffield United",
-                "Luton":                    "Luton Town",
-                "Bournemouth":              "AFC Bournemouth",
-                "Hoffenheim":               "TSG Hoffenheim",
-                "TSG 1899 Hoffenheim":      "TSG Hoffenheim",
-                "USA":                      "United States",
-                "US":                       "United States",
-                "Leverkusen":               "Bayer Leverkusen",
-                "Ein Frankfurt":            "Eintracht Frankfurt",
-                "Borussia Monchengladbach": "Borussia Monchengladbach",
-                "South Korea":              "Korea Republic",
-                "Czechia":                  "Czech Republic",
-                "Bosnia-Herzegovina":       "Bosnia and Herzegovina",
-                "Congo DR":                 "DR Congo",
-                "Cape Verde Islands":       "Cape Verde",
-            }
-
+            # Normalización via diccionario_alias centralizado
             def _liq_norm(nombre):
-                """Normaliza un nombre de equipo via alias map (case-insensitive)."""
-                s = str(nombre)
-                for key, val in _LIQ_ALIAS.items():
-                    if key.lower() == s.lower():
-                        return val
-                return s
+                """Normaliza un nombre de equipo via ALIAS_GLOBAL (case-insensitive)."""
+                return normalizar_nombre(str(nombre))
 
             def _encontrar_fila(res_df, pick_home_raw, pick_away_raw):
                 """Busca la fila del partido en res_df normalizando AMBOS lados
@@ -2380,62 +2333,10 @@ elif menu == "Portafolio de Picks":
                 df_big = pd.DataFrame(big_portfolio_rows)
 
                 # ── Liquidar contra el historial real ───────────
-                # Alias conocidos: nombre en pick → nombre exacto en DB
-                _ALIAS_EQUIPOS = {
-                    "USA":                    "United States",
-                    "United States":          "United States",
-                    "US":                     "United States",
-                    "M'Gladbach":             "Borussia Monchengladbach",
-                    "Monchengladbach":        "Borussia Monchengladbach",
-                    "Gladbach":               "Borussia Monchengladbach",
-                    "B. Monchengladbach":     "Borussia Monchengladbach",
-                    "Borussia M'gladbach":    "Borussia Monchengladbach",
-                    "Man United":             "Manchester United",
-                    "Man City":               "Manchester City",
-                    "Man Utd":                "Manchester United",
-                    "Atletico Madrid":        "Atletico Madrid",
-                    "Atlético Madrid":        "Atletico Madrid",
-                    "Atlético de Madrid":     "Atletico Madrid",
-                    "PSG":                    "Paris Saint-Germain",
-                    "Paris SG":               "Paris Saint-Germain",
-                    "Inter":                  "Inter Milan",
-                    "Internazionale":         "Inter Milan",
-                    "FC Bayern":              "Bayern Munich",
-                    "Bayern":                 "Bayern Munich",
-                    "Bayer Leverkusen":       "Bayer Leverkusen",
-                    "RB Leipzig":             "RB Leipzig",
-                    "Köln":                   "FC Koln",
-                    "FC Köln":                "FC Koln",
-                    "Dortmund":               "Borussia Dortmund",
-                    "BVB":                    "Borussia Dortmund",
-                    "Spurs":                  "Tottenham",
-                    "Tottenham Hotspur":      "Tottenham",
-                    "Wolves":                 "Wolverhampton",
-                    "Wolverhampton Wanderers":"Wolverhampton",
-                    "Newcastle":              "Newcastle United",
-                    "Brighton":               "Brighton & Hove Albion",
-                    "Nottm Forest":           "Nottingham Forest",
-                    "Nott'm Forest":          "Nottingham Forest",
-                    "Sheffield Utd":          "Sheffield United",
-                    "Luton":                  "Luton Town",
-                    "Bournemouth":            "AFC Bournemouth",
-                    "Paraguay":               "Paraguay",
-                    "Hoffenheim":             "TSG Hoffenheim",
-                    "TSG 1899 Hoffenheim":    "TSG Hoffenheim",
-                    "South Korea":            "Korea Republic",
-                    "Czechia":                "Czech Republic",
-                    "Bosnia-Herzegovina":     "Bosnia and Herzegovina",
-                    "Congo DR":               "DR Congo",
-                    "Cape Verde Islands":     "Cape Verde",
-                }
-
+                # Normalización via diccionario_alias centralizado
                 def _resolver_nombre(nombre):
-                    """Devuelve el nombre normalizado via alias (case-insensitive), o el original si no hay alias."""
-                    s = str(nombre)
-                    for key, val in _ALIAS_EQUIPOS.items():
-                        if key.lower() == s.lower():
-                            return val
-                    return s
+                    """Devuelve el nombre normalizado via ALIAS_GLOBAL (case-insensitive)."""
+                    return normalizar_nombre(str(nombre))
 
                 def _liquidar_pick_hist(pick_row):
                     fecha_d = str(pick_row['Date'])
@@ -2895,11 +2796,8 @@ elif menu == "Mundial 2026":
         df_fixture_wc = pd.read_sql("SELECT * FROM fixture_mundial WHERE Grupo LIKE 'GROUP_%'", conn)
         df_fixture_wc['_letra'] = df_fixture_wc['Grupo'].str.replace('GROUP_', '', regex=False).str.strip()
 
-        TRADUCCION_WC = {
-            "Czechia": "Czech Republic",
-            "Bosnia-Herzegovina": "Bosnia and Herzegovina", "Cape Verde Islands": "Cape Verde",
-            "Congo DR": "DR Congo", "USA": "United States"
-        }
+        # Traducción de nombres del fixture a canónicos DB via ALIAS_GLOBAL
+        TRADUCCION_WC = {k: v for k, v in ALIAS_GLOBAL.items()}
 
         TRADUCCION_CSV = {
             "Francia": "France", "España": "Spain", "Argentina": "Argentina",
@@ -2987,8 +2885,8 @@ elif menu == "Mundial 2026":
             return hst, hc
 
         def predecir_wc(h_raw, a_raw):
-            h = TRADUCCION_WC.get(h_raw, h_raw)
-            a = TRADUCCION_WC.get(a_raw, a_raw)
+            h = normalizar_nombre(h_raw)
+            a = normalizar_nombre(a_raw)
 
             classes = list(encoder_wc.classes_)
 
