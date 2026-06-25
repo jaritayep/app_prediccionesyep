@@ -77,6 +77,20 @@ def get_recent_stats(equipo, conn):
     res = res.fillna(1.0)
     
     return pd.Series({col: np.average(res[col], weights=pesos/pesos.sum()) for col in res.columns})
+def get_recent_stats_wc(equipo, conn):
+    """Stats ponderadas (últimas 5 partidas) de una selección, desde historial_selecciones_ml."""
+    q = (f'SELECT "FTHG","FTAG","HST","AST","HC","AC" '
+         f'FROM historial_selecciones_ml '
+         f'WHERE HomeTeam="{equipo}" OR AwayTeam="{equipo}" '
+         f'ORDER BY Date DESC LIMIT 5')
+    res = pd.read_sql(q, conn)
+    if res.empty:
+        return pd.Series([0.0, 0.0, 4.0, 3.5, 4.5, 4.0],
+                         index=['FTHG', 'FTAG', 'HST', 'AST', 'HC', 'AC'])
+    pesos = np.array([5, 4, 3, 2, 1])[:len(res)]
+    res = res.fillna(0.0)
+    return pd.Series({col: np.average(res[col], weights=pesos / pesos.sum()) for col in res.columns})
+
 def obtener_puntos_temporada(equipo, conn):
     # Calcula la jerarquía del equipo
     query = f"SELECT FTR, HomeTeam, AwayTeam FROM historial_multiliga_ml WHERE (HomeTeam='{equipo}' OR AwayTeam='{equipo}') AND Date >= date('now', '-9 months')"
@@ -109,11 +123,12 @@ if menu == "Análisis del Día":
     try:
         # 1. Cargar partidos de clubes
         df_jornada = pd.read_sql("SELECT * FROM tabla_predicciones_limpia", conn)
-        hoy        = pd.Timestamp.now().normalize()
-        # ── Partidos visibles todo el día hasta las 23:59 ──
-        # Filtramos >= hoy (fecha normalizada), NO por hora, así el partido
-        # del día de hoy no desaparece hasta que cambie el día calendario.
-        manana = hoy + pd.Timedelta(days=1)
+        # ── Partidos visibles todo el día hasta las 23:59 hora Chile ──
+        # Usamos la zona horaria de Santiago para que los partidos NO desaparezcan
+        # cuando el servidor (UTC) cruza medianoche antes que el reloj local.
+        # Ejemplo: a las 21:00 Santiago (00:00 UTC) un servidor en UTC devuelve
+        # mañana con .now().normalize(), filtrando los partidos de hoy erróneamente.
+        hoy = pd.Timestamp(pd.Timestamp.now(tz='America/Santiago').date())
 
         if not df_jornada.empty:
             df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
@@ -797,21 +812,52 @@ if menu == "Análisis del Día":
 elif menu == "Auditoría (Resultados)":
     st.title("🎯 Auditoría de Precisión (Flexible)")
     st.markdown("Audita las proyecciones de la IA incluyendo márgenes de error (⚠️) para resultados cercanos.")
- 
+
     col_f1, col_f2 = st.columns([2, 1])
     with col_f1:
         fecha_audit = st.date_input("Selecciona fecha para auditar:",
                                     datetime.now() - timedelta(days=1))
- 
+
     fecha_str = fecha_audit.strftime('%Y-%m-%d')
 
-    query = "SELECT * FROM historial_multiliga_ml WHERE Date LIKE ?"
-    df_reales = pd.read_sql(query, conn, params=(f"{fecha_str}%",))
+    # 1. Partidos de clubes
+    df_clubes = pd.read_sql(
+        "SELECT * FROM historial_multiliga_ml WHERE Date LIKE ?",
+        conn, params=(f"{fecha_str}%",)
+    )
+    df_clubes['_es_mundial'] = False
+
+    # 2. Partidos del Mundial desde historial_selecciones_ml
+    try:
+        df_wc = pd.read_sql(
+            "SELECT * FROM historial_selecciones_ml WHERE Date LIKE ?",
+            conn, params=(f"{fecha_str}%",)
+        )
+        df_wc['_es_mundial'] = True
+        # historial_selecciones_ml puede no tener columnas de amarillas
+        for _col in ['HY', 'AY']:
+            if _col not in df_wc.columns:
+                df_wc[_col] = 0
+    except Exception:
+        df_wc = pd.DataFrame()
+
+    df_reales = (
+        pd.concat([df_clubes, df_wc], ignore_index=True)
+        if not df_wc.empty else df_clubes.copy()
+    )
 
     if df_reales.empty:
         st.warning(f"⚠️ No hay resultados en la base de datos para el {fecha_audit.strftime('%d/%m/%Y')}.")
     else:
         st.subheader(f"📊 Resumen de Jornada: {fecha_audit.strftime('%d/%m/%Y')}")
+
+        _n_clubes = len(df_clubes)
+        _n_wc     = len(df_wc) if not df_wc.empty else 0
+        if _n_clubes > 0 and _n_wc > 0:
+            st.caption(
+                f"🏟️ {_n_clubes} partido{'s' if _n_clubes != 1 else ''} de clubes  •  "
+                f"🌍 {_n_wc} partido{'s' if _n_wc != 1 else ''} del Mundial"
+            )
 
         # --- FUNCIÓN DE TOLERANCIA INTELIGENTE ---
         def evaluar_precision(real, proyectado, margen):
@@ -824,87 +870,100 @@ elif menu == "Auditoría (Resultados)":
                 return "❌", "#c0392b"  # Rojo (Fallado)
 
         total_predicciones = 0
-        cumplidas = 0
-        casi_cumplidas = 0
+        cumplidas          = 0
+        casi_cumplidas     = 0
         resultados_procesados = []
 
         with st.spinner('Calculando precisión contra proyecciones IA...'):
             for _, r in df_reales.iterrows():
-                sh = get_recent_stats(r['HomeTeam'], conn)
-                sa = get_recent_stats(r['AwayTeam'], conn)
- 
+                es_wc = bool(r.get('_es_mundial', False))
+
+                # Usar stats de la tabla correcta según el tipo de partido
+                if es_wc:
+                    sh = get_recent_stats_wc(r['HomeTeam'], conn)
+                    sa = get_recent_stats_wc(r['AwayTeam'], conn)
+                else:
+                    sh = get_recent_stats(r['HomeTeam'], conn)
+                    sa = get_recent_stats(r['AwayTeam'], conn)
+
                 if sh is not None and sa is not None and len(sh) > 0 and len(sa) > 0:
-                    # 1. Proyecciones (Ahora incluyendo equipos por separado)
+                    # 1. Proyecciones
                     proj_goles_total = (sh['FTHG'] + sh['FTAG'] + sa['FTHG'] + sa['FTAG']) / 2
- 
-                    # Lógica H2H: Ataque Local vs Defensa Visita / Ataque Visita vs Defensa Local
-                    proj_goles_home = (sh['FTHG'] + sa['FTAG']) / 2
-                    proj_goles_away = (sa['FTHG'] + sh['FTAG']) / 2
- 
-                    proj_corners = sh['HC'] + sa['AC']
-                    proj_tiros = sh['HST'] + sa['AST']
-                    proj_amarillas = sh['HY'] + sa['AY']
- 
+                    proj_goles_home  = (sh['FTHG'] + sa['FTAG']) / 2   # Ataque local vs defensa visita
+                    proj_goles_away  = (sa['FTHG'] + sh['FTAG']) / 2   # Ataque visita vs defensa local
+                    proj_corners     = sh['HC'] + sa['AC']
+                    proj_tiros       = sh['HST'] + sa['AST']
+
                     # 2. Resultados Reales
-                    real_goles_home = r['FTHG']
-                    real_goles_away = r['FTAG']
+                    real_goles_home  = r['FTHG']
+                    real_goles_away  = r['FTAG']
                     real_goles_total = real_goles_home + real_goles_away
-                    real_corners = r['HC'] + r['AC']
-                    real_tiros = r['HST'] + r['AST']
-                    real_amarillas = r['HY'] + r['AY']
- 
-                    # 3. Verificación Global Superior (Solo medimos goles totales y corners para el resumen)
-                    if real_goles_total >= proj_goles_total: cumplidas += 1
-                    elif (proj_goles_total - real_goles_total) <= 0.5: casi_cumplidas += 1
- 
-                    if real_corners >= proj_corners: cumplidas += 1
-                    elif (proj_corners - real_corners) <= 1.5: casi_cumplidas += 1
- 
+                    real_corners     = r['HC'] + r['AC']
+                    real_tiros       = r['HST'] + r['AST']
+
+                    # 3. Conteo de aciertos (goles totales + corners)
+                    if real_goles_total >= proj_goles_total:
+                        cumplidas += 1
+                    elif (proj_goles_total - real_goles_total) <= 0.5:
+                        casi_cumplidas += 1
+
+                    if real_corners >= proj_corners:
+                        cumplidas += 1
+                    elif (proj_corners - real_corners) <= 1.5:
+                        casi_cumplidas += 1
+
                     total_predicciones += 2
- 
-                    # Guardamos todas las métricas con su respectivo "Margen de Error"
+
+                    # 4. Construir lista de métricas
+                    stats_partido = [
+                        ("Goles Total",              proj_goles_total, real_goles_total, 0.5),
+                        (f"Goles {r['HomeTeam']}",   proj_goles_home,  real_goles_home,  0.5),
+                        (f"Goles {r['AwayTeam']}",   proj_goles_away,  real_goles_away,  0.5),
+                        ("Córners Total",             proj_corners,     real_corners,     1.5),
+                        ("Tiros al Arco",             proj_tiros,       real_tiros,       1.5),
+                    ]
+
+                    # Amarillas solo para clubes (historial_selecciones_ml puede no tenerlas)
+                    if not es_wc:
+                        proj_amarillas = sh['HY'] + sa['AY']
+                        real_amarillas = r['HY'] + r['AY']
+                        stats_partido.append(("Amarillas", proj_amarillas, real_amarillas, 1.0))
+
                     resultados_procesados.append({
-                        'fila': r,
-                        'stats': [
-                            # Formato: (Nombre, Proyectado, Real, Margen de Tolerancia)
-                            ("Goles Total", proj_goles_total, real_goles_total, 0.5),
-                            (f"Goles {r['HomeTeam']}", proj_goles_home, real_goles_home, 0.5),
-                            (f"Goles {r['AwayTeam']}", proj_goles_away, real_goles_away, 0.5),
-                            ("Córners Total", proj_corners, real_corners, 1.5),
-                            ("Tiros al Arco", proj_tiros, real_tiros, 1.5),
-                            ("Amarillas", proj_amarillas, real_amarillas, 1.0)
-                        ]
+                        'fila':       r,
+                        'es_mundial': es_wc,
+                        'stats':      stats_partido,
                     })
 
         # --- MÉTRICAS SUPERIORES ---
         if total_predicciones > 0:
-            tasa_exacta = cumplidas / total_predicciones
+            tasa_exacta   = cumplidas / total_predicciones
             tasa_flexible = (cumplidas + casi_cumplidas) / total_predicciones
- 
+
             col_m1, col_m2, col_m3 = st.columns(3)
             with col_m1:
-                st.metric("Tasa Verde (Exacta)", f"{tasa_exacta:.1%}", f"{cumplidas} de {total_predicciones}")
+                st.metric("Tasa Verde (Exacta)",  f"{tasa_exacta:.1%}", f"{cumplidas} de {total_predicciones}")
             with col_m2:
-                st.metric("Tasa Amarilla (Casi)", f"{(casi_cumplidas / total_predicciones):.1%}", f"{casi_cumplidas} en el margen", delta_color="off")
+                st.metric("Tasa Amarilla (Casi)", f"{(casi_cumplidas / total_predicciones):.1%}",
+                          f"{casi_cumplidas} en el margen", delta_color="off")
             with col_m3:
                 st.metric("Eficacia Flexible", f"{tasa_flexible:.1%}", "Verdes + Amarillos")
- 
+
             st.divider()
 
             # --- ACORDEONES POR PARTIDO ---
             for res in resultados_procesados:
-                r = res['fila']
-                titulo = f"🏟️ {r['HomeTeam']} {int(r['FTHG'])} - {int(r['FTAG'])} {r['AwayTeam']}"
- 
+                r     = res['fila']
+                icono = "🌍" if res['es_mundial'] else "🏟️"
+                titulo = f"{icono} {r['HomeTeam']} {int(r['FTHG'])} - {int(r['FTAG'])} {r['AwayTeam']}"
+
                 with st.expander(titulo):
                     cols = st.columns(2)
                     for i, (label, p, re, margen) in enumerate(res['stats']):
                         real_val = re if pd.notnull(re) else 0
- 
-                        # Llamamos a nuestra nueva función de colores
+
                         check, color = evaluar_precision(real_val, p, margen)
- 
-                        # Alternamos columnas
+
                         with cols[i % 2]:
                             st.markdown(f"""
                             <div style="border-left: 5px solid {color}; padding: 8px; margin-bottom: 10px; background-color: #1e2129; border-radius: 5px;">
