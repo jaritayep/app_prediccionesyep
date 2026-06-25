@@ -85,13 +85,12 @@ ALIAS_GLOBAL = {
     "US Salernitana": "Salernitana",       # DB stores "Salernitana"
 
     # ── CLUBES — BUNDESLIGA ───────────────────────────────────────────────────
-    "M'Gladbach": "Borussia Monchengladbach",  # DB stores "Borussia Monchengladbach"
-    "M'gladbach": "Borussia Monchengladbach",
-    "M'gladbach": "Borussia Monchengladbach",
-    "Monchengladbach": "Borussia Monchengladbach",
-    "Gladbach": "Borussia Monchengladbach",
-    "B. Monchengladbach": "Borussia Monchengladbach",
-    "Borussia M'gladbach": "Borussia Monchengladbach",
+"Borussia Monchengladbach": "M'gladbach",  # El nombre a la derecha DEBE ser el de la BD
+    "Borussia M'gladbach": "M'gladbach",
+    "Monchengladbach": "M'gladbach",
+    "Gladbach": "M'gladbach",
+    "B. Monchengladbach": "M'gladbach",
+    "BMG": "M'gladbach",
     "Mönchengladbach": "Borussia Monchengladbach",
     "Borussia Mönchengladbach": "Borussia Monchengladbach",
     "BMG": "Borussia Monchengladbach",
