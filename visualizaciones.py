@@ -2481,7 +2481,24 @@ elif menu == "Portafolio de Picks":
                         label_visibility="visible"
                     )
 
+                # ── Fecha de inicio del historial ──────────────
+                _todas_fechas_hist = sorted(df_big['Date'].unique())
+                _fecha_inicio_hist = st.selectbox(
+                    "📅 Inicio del historial",
+                    options=_todas_fechas_hist,
+                    index=0,
+                    key="hist_fecha_inicio",
+                    help="Solo se consideran días iguales o posteriores a esta fecha para el cálculo de equity y KPIs.",
+                    format_func=lambda d: str(d),
+                )
+                # Filtrar df_big desde la fecha seleccionada
+                df_big = df_big[df_big['Date'] >= _fecha_inicio_hist].copy()
+
                 # ── Asignar stakes reales día a día ──────────
+                # Días con <8 picks → flat stake fijo de $5 000 por pick (independiente del bankroll)
+                _STAKE_DIA_CORTO = 5000.0
+                _UMBRAL_PICKS_CORTO = 8
+
                 # Ordenar días cronológicamente
                 fechas_con_picks = sorted(df_big['Date'].unique())
                 bankroll_actual  = float(_bk_base_input)
@@ -2494,9 +2511,12 @@ elif menu == "Portafolio de Picks":
                     _n_picks  = len(_picks_fd)
                     if _n_picks == 0:
                         continue
-                    if _modo_dyn:
-                        _bk_hoy = bankroll_actual
-                        _stake_hoy = _bk_hoy / _n_picks
+
+                    # Días con menos de 8 picks → stake fijo de $5 000 (ignora bankroll/modo)
+                    if _n_picks < _UMBRAL_PICKS_CORTO:
+                        _stake_hoy = _STAKE_DIA_CORTO
+                    elif _modo_dyn:
+                        _stake_hoy = bankroll_actual / _n_picks
                     else:
                         _stake_hoy = float(_bk_base_input) / _n_picks
 
@@ -2515,14 +2535,19 @@ elif menu == "Portafolio de Picks":
 
                 # Aplicar stakes y calcular beneficios reales
                 def _calc_beneficio(row):
+                    _fd   = row['Date']
+                    _n_fd = len(df_big[df_big['Date'] == _fd])
                     _is_db = row.get('_from_db', False)
-                    if not _modo_dyn and _is_db:
-                        # Flat mode + DB pick: usar stake y beneficio reales ya almacenados
+                    # Días cortos siempre usan stake fijo, incluso para picks de DB
+                    if _n_fd < _UMBRAL_PICKS_CORTO:
+                        _s = _STAKE_DIA_CORTO
+                    elif not _modo_dyn and _is_db:
+                        # Flat mode + día completo + DB pick: usar stake almacenado
                         _s   = row.get('Stake', float(_bk_base_input) / 10)
                         _ben = row.get('Beneficio_Neto', 0.0)
                         return _s, _ben
-                    # Dynamic mode o picks CSV: recalcular desde stake del dia
-                    _s = stake_por_fecha.get(row['Date'], float(_bk_base_input) / 10)
+                    else:
+                        _s = stake_por_fecha.get(_fd, float(_bk_base_input) / 10)
                     if row['Estado'] == 'Ganada':
                         return _s, _s * row['Cuota'] - _s
                     elif row['Estado'] == 'Perdida':
