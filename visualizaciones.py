@@ -1346,18 +1346,64 @@ elif menu == "Portafolio de Picks":
                             return True
                     return False
 
+                def _familia_mercado(mercado_nombre):
+                    """
+                    Devuelve el 'tipo' de mercado para detectar correlaciones dentro
+                    del mismo partido.  Mercados de la misma familia sobre el mismo
+                    partido son correlacionados: p.ej. "Goles Totales (+1.5)" y
+                    "Goles Totales (+2.5)" apuntan al mismo resultado con distintas
+                    líneas y no deben coexistir en el portafolio.
+                    Retorna None para mercados que NO tienen restricción de familia
+                    (p.ej. Hándicap, BTTS) — esos pueden convivir.
+                    """
+                    m = mercado_nombre.lower()
+                    if 'goles totales' in m:      return 'goles_totales'
+                    if 'goles local' in m:        return 'goles_local'
+                    if 'goles visita' in m:       return 'goles_visita'
+                    if 'córners totales' in m:    return 'corners_totales'
+                    if 'córners local' in m:      return 'corners_local'
+                    if 'córners visita' in m:     return 'corners_visita'
+                    if 'tiros' in m:              return 'tiros'
+                    # 1x2 se gestiona por separado con _tiene_1x2
+                    return None   # sin restricción de familia
+
+                def _tiene_misma_familia(partido, mercado_nuevo):
+                    """
+                    Retorna True si ya hay en el portafolio un pick del mismo partido
+                    con el mismo 'tipo' de mercado (familia) que el pick nuevo.
+                    Cuando hay conflicto de familia, el pick con MAYOR edge ya ganó
+                    su lugar primero (df_ops está ordenado desc por edge), por lo que
+                    simplemente bloqueamos el nuevo.
+                    """
+                    familia = _familia_mercado(mercado_nuevo)
+                    if familia is None:
+                        return False   # mercado sin familia → sin restricción
+                    for r in df_top_10_list:
+                        row0 = r.iloc[0]
+                        if row0['Partido'] == partido and _familia_mercado(row0['Mercado']) == familia:
+                            return True
+                    return False
+
                 def add_pick(row_or_idx, nivel_label, from_df=True):
                     """Agrega pick. from_df=True usa índice de df_ops, False recibe dict.
-                    Bloquea múltiples picks 1x2 del mismo partido en todo el portafolio."""
+                    Bloquea:
+                      · mismo partido+mercado exacto
+                      · múltiples picks 1x2 del mismo partido
+                      · múltiples picks de la misma familia de mercado (correlacionados)
+                        → sólo entra el de mayor edge (df_ops está ordenado desc)
+                    """
                     if from_df:
                         row = df_ops.loc[row_or_idx]
                         partido = row['Partido']
                         mercado = row['Mercado']
-                        # Bloquear mismo partido+mercado (no el partido entero)
+                        # Bloquear mismo partido+mercado exacto
                         if (partido, mercado) in {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}:
                             return False
                         # Evitar dos picks 1x2 del mismo partido
                         if mercado in MERCADOS_1X2 and _tiene_1x2(partido):
+                            return False
+                        # Evitar mercados correlacionados del mismo partido (p.ej. +1.5 y +2.5 goles)
+                        if _tiene_misma_familia(partido, mercado):
                             return False
                         used_matches.add(partido)
                         selected_indices.append(row_or_idx)
@@ -1370,6 +1416,9 @@ elif menu == "Portafolio de Picks":
                             return False
                         # Evitar dos picks 1x2 del mismo partido
                         if mercado in MERCADOS_1X2 and _tiene_1x2(partido):
+                            return False
+                        # Evitar mercados correlacionados del mismo partido
+                        if _tiene_misma_familia(partido, mercado):
                             return False
                         used_matches.add(partido)
                         df_top_10_list.append(pd.DataFrame([d]))
@@ -1500,6 +1549,8 @@ elif menu == "Portafolio de Picks":
                                 return False
                             if mercado_f3 in MERCADOS_1X2 and _tiene_1x2(partido_f3):
                                 return False
+                            if _tiene_misma_familia(partido_f3, mercado_f3):
+                                return False
                             entry = {
                                 'Date': row_f3['Date'], 'Home': row_f3['Home'], 'Away': row_f3['Away'],
                                 'Mercado': mercado_f3, 'Cuota': row_f3['Cuota'],
@@ -1581,8 +1632,33 @@ elif menu == "Portafolio de Picks":
                 df_mostrar_top.insert(0, "✅ Añadir", True)
                 
                 df_reserva = df_ops[~df_ops.index.isin(selected_indices)].reset_index(drop=True)
-                df_mostrar_reserva = df_reserva[['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']].copy()
-                df_mostrar_reserva.insert(0, "✅ Añadir", False) 
+
+                # ── Picks válidos fuera del portafolio (pool completo con edge positivo) ──
+                # Incluye tanto los del rango 2-15% que no entraron como los del pool
+                # completo (edge positivo < 2% o > 15%) que quedaron fuera.
+                _portfolio_pares = {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}
+                _pool_completo = st.session_state.get('pool_mercados', [])
+                if _pool_completo:
+                    df_reserva_full = pd.DataFrame(
+                        _pool_completo,
+                        columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob_IA', 'Edge']
+                    )
+                    df_reserva_full['Partido'] = df_reserva_full['Home'] + " vs " + df_reserva_full['Away']
+                    df_reserva_full['Prob_IA_Str'] = (df_reserva_full['Prob_IA'] * 100).round(1).astype(str) + "%"
+                    df_reserva_full['Edge_Str'] = (df_reserva_full['Edge'] * 100).round(2).astype(str) + "%"
+                    # Excluir lo que ya está en el portafolio
+                    df_reserva_full = df_reserva_full[
+                        ~df_reserva_full.apply(lambda r: (r['Partido'], r['Mercado']) in _portfolio_pares, axis=1)
+                    ].drop_duplicates(subset=['Partido', 'Mercado']).sort_values('Edge', ascending=False).reset_index(drop=True)
+                else:
+                    df_reserva_full = df_reserva.copy()
+                    if 'Prob_IA_Str' not in df_reserva_full.columns:
+                        df_reserva_full['Prob_IA_Str'] = (df_reserva_full['Prob_IA'] * 100).round(1).astype(str) + "%"
+                    if 'Edge_Str' not in df_reserva_full.columns:
+                        df_reserva_full['Edge_Str'] = (df_reserva_full['Edge'] * 100).round(2).astype(str) + "%"
+
+                df_mostrar_reserva = df_reserva_full[['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']].copy()
+                df_mostrar_reserva.insert(0, "✅ Añadir", False)
 
                 modo = "completo ✅" if len(df_top_10) >= TARGET_PICKS else f"parcial ({len(df_top_10)}/{TARGET_PICKS} picks)"
                 st.success(f"Escaneo listo. Portafolio {modo} — {len(df_top_10)} picks seleccionados.")
@@ -1606,9 +1682,9 @@ elif menu == "Portafolio de Picks":
                     column_config={"✅ Añadir": st.column_config.CheckboxColumn(required=True)}
                 )
                 
-                with st.expander(f"📂 Ver el resto de picks válidos ({len(df_reserva)} en Reserva)"):
+                with st.expander(f"📂 Ver el resto de picks válidos ({len(df_reserva_full)} con edge positivo fuera del portafolio)"):
                     if not df_mostrar_reserva.empty:
-                        st.caption("Si desmarcaste algún pick de arriba, puedes seleccionar reemplazos desde aquí.")
+                        st.caption("Todos los picks con edge positivo que NO entraron al portafolio — ordenados por edge de mayor a menor. Puedes marcar cualquiera como reemplazo.")
                         edit_reserva = st.data_editor(
                             df_mostrar_reserva,
                             hide_index=True,
@@ -1624,7 +1700,7 @@ elif menu == "Portafolio de Picks":
                     indices_res = edit_reserva[edit_reserva["✅ Añadir"] == True].index if not df_mostrar_reserva.empty else []
                     
                     df_final_top = df_top_10.iloc[indices_top]
-                    df_final_res = df_reserva.iloc[indices_res] if not df_mostrar_reserva.empty else pd.DataFrame()
+                    df_final_res = df_reserva_full.iloc[indices_res] if not df_mostrar_reserva.empty else pd.DataFrame()
                     df_final_a_guardar = pd.concat([df_final_top, df_final_res])
                     
                     if df_final_a_guardar.empty:
