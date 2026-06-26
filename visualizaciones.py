@@ -1271,13 +1271,20 @@ elif menu == "Portafolio de Picks":
                                 else:
                                     if 'over' in col_str: mercados_a_evaluar.append((f"Córners Totales (+{linea})", val_num, prob_over(prom_corners_total, linea)))
                                     elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Totales (-{linea})", val_num, prob_under(prom_corners_total, linea)))
-                            elif ('goles' in col_str or 'total' in col_str) and 'tt_home' not in col_str and 'tt_away' not in col_str and 'shots' not in col_str:
+                            elif ('goles' in col_str or 'total' in col_str) and 'shots' not in col_str:
                                 # Cap: ignorar lineas de goles por encima de 5.5 (no son realistas)
                                 if linea > 5.5: continue
                                 # Ignorar líneas asiáticas (.25 / .75) — no usamos esos mercados
                                 if (linea * 100) % 100 in (25, 75): continue
-                                if 'over' in col_str: mercados_a_evaluar.append((f"Goles Totales (+{linea})", val_num, prob_over(prom_goles_total, linea)))
-                                elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Totales (-{linea})", val_num, prob_under(prom_goles_total, linea)))
+                                if 'tt_home' in col_str:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Goles Local (+{linea})", val_num, prob_over(pred_goles_home, linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Local (-{linea})", val_num, prob_under(pred_goles_home, linea)))
+                                elif 'tt_away' in col_str:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Goles Visita (+{linea})", val_num, prob_over(pred_goles_away, linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Visita (-{linea})", val_num, prob_under(pred_goles_away, linea)))
+                                else:
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Goles Totales (+{linea})", val_num, prob_over(prom_goles_total, linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Totales (-{linea})", val_num, prob_under(prom_goles_total, linea)))
 
                         def evaluar_edge(mercado_nombre, prob_ia, cuota):
                             if cuota is None: return
