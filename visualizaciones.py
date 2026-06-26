@@ -1271,20 +1271,13 @@ elif menu == "Portafolio de Picks":
                                 else:
                                     if 'over' in col_str: mercados_a_evaluar.append((f"Córners Totales (+{linea})", val_num, prob_over(prom_corners_total, linea)))
                                     elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Totales (-{linea})", val_num, prob_under(prom_corners_total, linea)))
-                            elif ('goles' in col_str or 'total' in col_str) and 'shots' not in col_str:
+                            elif ('goles' in col_str or 'total' in col_str) and 'tt_home' not in col_str and 'tt_away' not in col_str and 'shots' not in col_str:
                                 # Cap: ignorar lineas de goles por encima de 5.5 (no son realistas)
                                 if linea > 5.5: continue
                                 # Ignorar líneas asiáticas (.25 / .75) — no usamos esos mercados
                                 if (linea * 100) % 100 in (25, 75): continue
-                                if 'tt_home' in col_str:
-                                    if 'over' in col_str: mercados_a_evaluar.append((f"Goles Local (+{linea})", val_num, prob_over(pred_goles_home, linea)))
-                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Local (-{linea})", val_num, prob_under(pred_goles_home, linea)))
-                                elif 'tt_away' in col_str:
-                                    if 'over' in col_str: mercados_a_evaluar.append((f"Goles Visita (+{linea})", val_num, prob_over(pred_goles_away, linea)))
-                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Visita (-{linea})", val_num, prob_under(pred_goles_away, linea)))
-                                else:
-                                    if 'over' in col_str: mercados_a_evaluar.append((f"Goles Totales (+{linea})", val_num, prob_over(prom_goles_total, linea)))
-                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Totales (-{linea})", val_num, prob_under(prom_goles_total, linea)))
+                                if 'over' in col_str: mercados_a_evaluar.append((f"Goles Totales (+{linea})", val_num, prob_over(prom_goles_total, linea)))
+                                elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Totales (-{linea})", val_num, prob_under(prom_goles_total, linea)))
 
                         def evaluar_edge(mercado_nombre, prob_ia, cuota):
                             if cuota is None: return
@@ -1360,7 +1353,8 @@ elif menu == "Portafolio de Picks":
                         row = df_ops.loc[row_or_idx]
                         partido = row['Partido']
                         mercado = row['Mercado']
-                        if partido in used_matches:
+                        # Bloquear mismo partido+mercado (no el partido entero)
+                        if (partido, mercado) in {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}:
                             return False
                         # Evitar dos picks 1x2 del mismo partido
                         if mercado in MERCADOS_1X2 and _tiene_1x2(partido):
@@ -1382,13 +1376,14 @@ elif menu == "Portafolio de Picks":
                     return True
 
                 def get_pool(min_c, max_c, edge_min, edge_max):
-                    """Pool filtrado por cuota y edge, excluyendo partidos ya usados."""
+                    """Pool filtrado por cuota y edge, excluyendo pares partido+mercado ya usados."""
+                    ya_usados = {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}
                     mask = (
-                        ~df_ops['Partido'].isin(used_matches)
+                        ~df_ops.apply(lambda r: (r['Partido'], r['Mercado']) in ya_usados, axis=1)
                         & (df_ops['Cuota'] >= min_c) & (df_ops['Cuota'] < max_c)
                         & (df_ops['Edge'] >= edge_min) & (df_ops['Edge'] <= edge_max)
                     )
-                    return df_ops[mask].drop_duplicates(subset=['Partido'], keep='first')
+                    return df_ops[mask]
 
                 def fill_bucket(bucket_idx, target_n, nivel_label, edge_min, edge_max):
                     """Intenta llenar el bucket hasta target_n picks."""
