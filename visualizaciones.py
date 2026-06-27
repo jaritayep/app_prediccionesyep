@@ -2654,13 +2654,22 @@ elif menu == "Portafolio de Picks":
                 # Días con <8 picks → flat stake fijo de $500 por pick (igual que tab1, independiente del bankroll)
                 _STAKE_DIA_CORTO = 500.0
                 _UMBRAL_PICKS_CORTO = 8
+                _modo_riesgo_hist = st.session_state.get("hist_modo_stake_riesgo", False)
+
+                def _mult_nivel_hist(nivel_str):
+                    n = str(nivel_str).lower()
+                    if 'golden' in n: return 1.5
+                    if 'bajo'   in n: return 1.2
+                    if 'medio'  in n: return 1.0
+                    if 'alto'   in n: return 0.5
+                    return 1.0
 
                 # Ordenar días cronológicamente
                 fechas_con_picks = sorted(df_big['Date'].unique())
                 bankroll_actual  = float(_bk_base_input)
                 pnl_acum_dyn     = 0.0
 
-                # Mapa fecha → stake_por_pick (recalculado si dinámico)
+                # Mapa fecha → unidad_base_por_pick (recalculado si dinámico)
                 stake_por_fecha = {}
                 for _fd in fechas_con_picks:
                     _picks_fd = df_big[df_big['Date'] == _fd]
@@ -2671,6 +2680,11 @@ elif menu == "Portafolio de Picks":
                     # Días con menos de 8 picks → stake fijo de $500 (ignora bankroll/modo)
                     if _n_picks < _UMBRAL_PICKS_CORTO:
                         _stake_hoy = _STAKE_DIA_CORTO
+                    elif _modo_riesgo_hist:
+                        # Unidad base = bankroll / suma de multiplicadores
+                        _mults_fd = _picks_fd['Nivel'].apply(_mult_nivel_hist) if 'Nivel' in _picks_fd.columns else pd.Series([1.0]*_n_picks)
+                        _suma_mults = _mults_fd.sum()
+                        _stake_hoy = (bankroll_actual if _modo_dyn else float(_bk_base_input)) / _suma_mults if _suma_mults > 0 else (bankroll_actual if _modo_dyn else float(_bk_base_input)) / _n_picks
                     elif _modo_dyn:
                         _stake_hoy = bankroll_actual / _n_picks
                     else:
@@ -2681,10 +2695,16 @@ elif menu == "Portafolio de Picks":
                     # Calcular P&L del día para actualizar bankroll (solo cerrados)
                     _cerrados_fd = _picks_fd[_picks_fd['Estado'].isin(['Ganada', 'Perdida'])]
                     for _, _pr in _cerrados_fd.iterrows():
-                        if _pr['_Ganada']:
-                            _ben = _stake_hoy * _pr['Cuota'] - _stake_hoy
+                        if _n_picks < _UMBRAL_PICKS_CORTO:
+                            _s_pick = _STAKE_DIA_CORTO
+                        elif _modo_riesgo_hist and 'Nivel' in _pr.index:
+                            _s_pick = _stake_hoy * _mult_nivel_hist(_pr.get('Nivel', ''))
                         else:
-                            _ben = -_stake_hoy
+                            _s_pick = _stake_hoy
+                        if _pr['_Ganada']:
+                            _ben = _s_pick * _pr['Cuota'] - _s_pick
+                        else:
+                            _ben = -_s_pick
                         pnl_acum_dyn += _ben
                     if _modo_dyn:
                         bankroll_actual = float(_bk_base_input) + pnl_acum_dyn
@@ -2697,13 +2717,17 @@ elif menu == "Portafolio de Picks":
                     # Días cortos siempre usan stake fijo, incluso para picks de DB
                     if _n_fd < _UMBRAL_PICKS_CORTO:
                         _s = _STAKE_DIA_CORTO
-                    elif not _modo_dyn and _is_db:
-                        # Flat mode + día completo + DB pick: usar stake almacenado
+                    elif not _modo_dyn and not _modo_riesgo_hist and _is_db:
+                        # Flat mode sin riesgo + día completo + DB pick: usar stake almacenado
                         _s   = row.get('Stake', float(_bk_base_input) / 10)
                         _ben = row.get('Beneficio_Neto', 0.0)
                         return _s, _ben
                     else:
-                        _s = stake_por_fecha.get(_fd, float(_bk_base_input) / 10)
+                        _unidad = stake_por_fecha.get(_fd, float(_bk_base_input) / 10)
+                        if _modo_riesgo_hist and 'Nivel' in row.index:
+                            _s = _unidad * _mult_nivel_hist(row.get('Nivel', ''))
+                        else:
+                            _s = _unidad
                     if row['Estado'] == 'Ganada':
                         return _s, _s * row['Cuota'] - _s
                     elif row['Estado'] == 'Perdida':
@@ -2824,6 +2848,11 @@ elif menu == "Portafolio de Picks":
                             st.info(f"Se necesitan al menos 5 picks cerrados con Prob_IA para calcular el Z-score ({len(_df_luck)} disponibles).")
 
                     # ── KPIs globales ─────────────────────────────────────
+                    _modo_riesgo_hist = st.toggle(
+                        "Stake por Nivel de Riesgo",
+                        key="hist_modo_stake_riesgo",
+                        help="ON: Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5× de la unidad base. OFF: mismo stake para todos los picks."
+                    )
                     k1, k2, k3, k4 = st.columns(4)
                     k1.metric("Picks Cerrados", f"{total_picks:,}")
                     k2.metric("Win Rate",       f"{win_rate_big:.1f}%")
