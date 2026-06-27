@@ -1082,11 +1082,6 @@ elif menu == "Portafolio de Picks":
                     key="modo_compuesto",
                     help="ON: el stake de cada día se calcula sobre tu bankroll actual (capital inicial + P&L acumulado). OFF: flat staking sobre el valor ingresado arriba."
                 )
-                modo_stake_riesgo = st.toggle(
-                    "Stake por Nivel de Riesgo",
-                    key="modo_stake_riesgo",
-                    help="ON: Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5× de la unidad base. OFF: mismo stake para todos los picks."
-                )
                 if modo_compuesto:
                     _pnl_cerrado = pd.read_sql(
                         "SELECT COALESCE(SUM(Beneficio_Neto),0) as total FROM portafolio_historico WHERE Estado != 'Pendiente'",
@@ -1115,6 +1110,12 @@ elif menu == "Portafolio de Picks":
                     fecha_seleccionada = None
 
             boton_disabled = fecha_seleccionada is None
+
+            modo_stake_riesgo = st.toggle(
+                "Stake por Nivel de Riesgo",
+                key="modo_stake_riesgo",
+                help="ON: Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5× de la unidad base. OFF: mismo stake para todos los picks."
+            )
 
             if st.button("Escanear Mercado", type="primary", disabled=boton_disabled):
                 modelo_clubes = cargar_modelo()
@@ -2743,8 +2744,8 @@ elif menu == "Portafolio de Picks":
                     yield_big    = (pnl_total / stake_total * 100) if stake_total > 0 else 0.0
                     _modo_lbl    = "Dinámico" if _modo_dyn else "Flat"
 
-                    # ── KPI: Análisis de Sobrerendimiento (Z-score) ────
-                    st.markdown("#### 🔬 Análisis de Sobrerendimiento")
+                    # ── KPI: KPIs y rendimiento ────
+                    st.markdown("#### 📊 KPIs y rendimiento")
                     if True:
                         _df_luck = df_big_cerrado[
                             df_big_cerrado['Prob_IA'].notna() &
