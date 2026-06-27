@@ -122,7 +122,7 @@ def obtener_dias_descanso(equipo, conn):
 
 conn = sqlite3.connect(DB_NAME)
 
-st.sidebar.title("⚽ Menú Principal")
+st.sidebar.title("Menú Principal")
 menu = st.sidebar.radio("Ir a:", ["Análisis del Día", "Auditoría (Resultados)", "Portafolio de Picks", "Mundial 2026"])
 st.sidebar.markdown("---")
 
@@ -154,7 +154,7 @@ if menu == "Análisis del Día":
             )
             df_jornada = df_jornada[df_jornada['Date'] >= hoy]
             es_mundial = True
-            st.info("🌍 **Modo Internacional Automático:** No hay partidos de clubes programados. Mostrando Fixture del Mundial.")
+            st.info("Modo Internacional: No hay partidos de clubes programados. Mostrando Fixture del Mundial.")
 
         if not df_jornada.empty:
             df_jornada = df_jornada.sort_values(by='Date', ascending=True)
@@ -302,7 +302,7 @@ if menu == "Análisis del Día":
             col1, col2 = st.columns([1.1, 1])
 
             with col1:
-                st.subheader("📊 Historial H2H")
+                st.subheader("Historial H2H")
                 q_h2h = (
                     f'SELECT Date, HomeTeam as L, AwayTeam as V, FTHG as [GL], FTAG as [GV], FTR as R '
                     f'FROM {hist_table} '
@@ -317,7 +317,7 @@ if menu == "Análisis del Día":
                 else:
                     st.info("No existen enfrentamientos directos recientes en la base de datos.")
 
-                st.subheader("📈 Tendencia de Goles")
+                st.subheader("Tendencia de Goles")
                 q_trend = (
                     f'SELECT FTHG as [Local], FTAG as [Visita] FROM {hist_table} '
                     f'WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" '
@@ -505,8 +505,8 @@ if menu == "Análisis del Día":
                         _m1, _m2, _m3, _m4 = st.columns(4)
                         _m1.metric("xG Total",            f"{_xg_total:.2f}", f"{_xg_total - _BASE*2:+.2f}")
                         _m2.metric("Over 2.5",             f"{prob_over:.0%}", delta=None)
-                        _m3.metric(f"⚽ {home_team[:8]}",  f"{pred_home:.2f}", f"{pred_home - _BASE:+.2f}")
-                        _m4.metric(f"⚽ {away_team[:8]}",  f"{pred_away:.2f}", f"{pred_away - _BASE:+.2f}")
+                        _m3.metric(f"{home_team[:8]}",  f"{pred_home:.2f}", f"{pred_home - _BASE:+.2f}")
+                        _m4.metric(f"{away_team[:8]}",  f"{pred_away:.2f}", f"{pred_away - _BASE:+.2f}")
 
                         # --- SECCIÓN 4: MINI TABLA TIROS Y CÓRNERS ---
                         st.markdown(f"""
@@ -605,8 +605,8 @@ if menu == "Análisis del Día":
                         _m1, _m2, _m3, _m4 = st.columns(4)
                         _m1.metric("xG Total",            f"{_xg_total:.2f}", f"{_xg_total - _BASE*2:+.2f}")
                         _m2.metric("Over 2.5",             f"{prob_over:.0%}", delta=None)
-                        _m3.metric(f"⚽ {home_team[:8]}",  f"{pred_home:.2f}", f"{pred_home - _BASE:+.2f}")
-                        _m4.metric(f"⚽ {away_team[:8]}",  f"{pred_away:.2f}", f"{pred_away - _BASE:+.2f}")
+                        _m3.metric(f"{home_team[:8]}",  f"{pred_home:.2f}", f"{pred_home - _BASE:+.2f}")
+                        _m4.metric(f"{away_team[:8]}",  f"{pred_away:.2f}", f"{pred_away - _BASE:+.2f}")
 
                         # --- SECCIÓN 4: MINI TABLA TIROS Y CÓRNERS ---
                         st.markdown(f"""
@@ -635,10 +635,10 @@ if menu == "Análisis del Día":
 
             # --- 🎯 FIX: CONDICIONAL PARA TARJETAS ---
             st.divider()
-            st.subheader("🟨 Disciplina y Tarjetas")
+            st.subheader("Disciplina y Tarjetas")
 
             if es_mundial:
-                st.info("ℹ️ La base de datos de selecciones no incluye registro de tarjetas. Esta métrica es exclusiva del modelo de clubes.")
+                st.caption("La base de datos de selecciones no incluye registro de tarjetas. Esta métrica es exclusiva del modelo de clubes.")
             else:
                 cd1, cd2 = st.columns(2)
                 with cd1:
@@ -667,7 +667,7 @@ if menu == "Análisis del Día":
 
             # --- 🎯 NUEVA SECCIÓN: PROMEDIOS Y TENDENCIAS ---
             st.divider()
-            st.subheader("📈 Promedios y Tendencias (Últimos 10 Partidos)")
+            st.subheader("Promedios y Tendencias (Últimos 10 Partidos)")
 
             def calcular_promedios_tendencias(equipo, df_hist):
                 n = len(df_hist)
@@ -746,13 +746,13 @@ if menu == "Análisis del Día":
 
             def renderizar_columna(equipo, prom, tend):
                 st.markdown(f"#### {equipo}")
-                st.markdown("**📊 Promedios**")
+                st.markdown("**Promedios**")
                 tabla_md = "| Estadística | Promedio |\n|---|---|\n"
                 for k, v in prom.items():
                     tabla_md += f"| {k} | **{v:.1f}** |\n"
                 st.markdown(tabla_md)
 
-                st.markdown("**🔥 Tendencias Altas (>75%)**")
+                st.markdown("**Tendencias Altas (>75%)**")
                 if tend:
                     _badges_html = '<div style="display:flex;flex-direction:column;gap:6px;margin-top:4px;">'
                     for t in tend:
@@ -783,10 +783,10 @@ if menu == "Análisis del Día":
             _over_label   = "favorable" if prob_over >= 0.55 else ("ajustada" if prob_over >= 0.45 else "baja")
 
             _scout_lines = [
-                f"📌 El modelo favorece a <b>{_dom_team}</b> con una probabilidad del <b>{_dom_prob:.0%}</b>. "
+                f"El modelo favorece a <b>{_dom_team}</b> con una probabilidad del <b>{_dom_prob:.0%}</b>. "
                 f"Los xG combinados ({_xg_total_str}) sitúan el partido con expectativa de goles "
                 f"{'alta' if xg_h + xg_a >= 2.5 else 'moderada'}.",
-                f"🔢 La probabilidad Over 2.5 es <b>{_over_str}</b> ({_over_label}). "
+                f"La probabilidad Over 2.5 es <b>{_over_str}</b> ({_over_label}). "
                 f"Se proyectan <b>{pred_home:.1f}</b> goles para {home_team} "
                 f"y <b>{pred_away:.1f}</b> para {away_team}."
             ]
@@ -795,14 +795,14 @@ if menu == "Análisis del Día":
             _goal_tend   = [t for t in _all_tend if "gol" in t.lower()]
             if _corner_tend or _goal_tend:
                 _extras = (_goal_tend + _corner_tend)[:2]
-                _scout_lines.append(f"📋 Tendencias clave: {' · '.join(_extras)}.")
+                _scout_lines.append(f"Tendencias clave: {' · '.join(_extras)}.")
 
             _report_html = (
                 '<div style="background:linear-gradient(135deg,#10131e 0%,#14182b 100%);'
                 'border:1px solid #2c3050;border-left:4px solid #5dade2;'
                 'border-radius:12px;padding:16px 18px;margin-top:4px;">'
                 '<div style="color:#5dade2;font-size:0.7rem;font-weight:700;'
-                'letter-spacing:2px;margin-bottom:12px;">🕵️ SCOUT REPORT · IA</div>'
+                'letter-spacing:2px;margin-bottom:12px;">SCOUT REPORT · IA</div>'
             )
             for _line in _scout_lines:
                 _report_html += f'<p style="color:#c8d0e0;font-size:0.84rem;line-height:1.55;margin:0 0 8px;">{_line}</p>'
@@ -817,8 +817,7 @@ if menu == "Análisis del Día":
 
 
 elif menu == "Auditoría (Resultados)":
-    st.title("🎯 Auditoría de Precisión (Flexible)")
-    st.markdown("Audita las proyecciones de la IA incluyendo márgenes de error (⚠️) para resultados cercanos.")
+    st.title("Auditoría de Precisión")
 
     col_f1, col_f2 = st.columns([2, 1])
     with col_f1:
@@ -854,9 +853,9 @@ elif menu == "Auditoría (Resultados)":
     )
 
     if df_reales.empty:
-        st.warning(f"⚠️ No hay resultados en la base de datos para el {fecha_audit.strftime('%d/%m/%Y')}.")
+        st.warning(f"No hay resultados en la base de datos para el {fecha_audit.strftime('%d/%m/%Y')}.")
     else:
-        st.subheader(f"📊 Resumen de Jornada: {fecha_audit.strftime('%d/%m/%Y')}")
+        st.subheader(f"Jornada: {fecha_audit.strftime('%d/%m/%Y')}")
 
         _n_clubes = len(df_clubes)
         _n_wc     = len(df_wc) if not df_wc.empty else 0
@@ -990,7 +989,7 @@ elif menu == "Auditoría (Resultados)":
         else:
             st.info("No se pudieron calcular proyecciones (Faltan datos históricos de los equipos).")
 elif menu == "Portafolio de Picks":
-    st.title("📈 Portafolio de Inversión (Flat Staking Híbrido)")
+    st.title("Portafolio de Inversión (Flat Staking Híbrido)")
     
     API_KEY = "3ec28dbd498ab9985e9792b3f50a8902" 
     
@@ -1012,10 +1011,10 @@ elif menu == "Portafolio de Picks":
     """)
     conn.commit()
 
-    tab1, tab2 = st.tabs(["🔍 Escáner en Vivo", "🏦 Rendimiento Histórico"])
+    tab1, tab2 = st.tabs(["Escáner en Vivo", "Rendimiento Histórico"])
 
     with tab1:
-        st.markdown("### 🔍 Escáner de Ineficiencias vs Pinnacle")
+        st.markdown("### Escáner de Ineficiencias vs Pinnacle")
         st.caption("Cruzando modelos ML (Clubes y Selecciones) y Poisson contra líneas de Pinnacle. (Edge 2% - 15%)")
         
         try:
@@ -1066,7 +1065,7 @@ elif menu == "Portafolio de Picks":
 
                         lista_dfs.append(df_temp)
                     except Exception as e:
-                        st.sidebar.error(f"⚠️ Error en archivo {f.name}: {e}")
+                        st.sidebar.error(f"Error en archivo {f.name}: {e}")
                 
                 if lista_dfs:
                     df_master_odds = pd.concat(lista_dfs, ignore_index=True)
@@ -1077,9 +1076,9 @@ elif menu == "Portafolio de Picks":
 
             c1, c2 = st.columns(2)
             with c1:
-                inversion_total = st.number_input("💰 Inversión TOTAL Portafolio ($)", min_value=1000, value=5000, step=500)
+                inversion_total = st.number_input("Inversión TOTAL Portafolio ($)", min_value=1000, value=5000, step=500)
                 modo_compuesto = st.toggle(
-                    "💹 Modo Compuesto (bankroll dinámico)",
+                    "Modo Compuesto (bankroll dinámico)",
                     key="modo_compuesto",
                     help="ON: el stake de cada día se calcula sobre tu bankroll actual (capital inicial + P&L acumulado). OFF: flat staking sobre el valor ingresado arriba."
                 )
@@ -1105,14 +1104,14 @@ elif menu == "Portafolio de Picks":
                 if fechas_disponibles:
                     hoy_str = str(pd.Timestamp.now().date())
                     idx_hoy = fechas_disponibles.index(hoy_str) if hoy_str in fechas_disponibles else max(0, len(fechas_disponibles) - 1)
-                    fecha_seleccionada = st.selectbox("📅 Seleccionar Día del Portafolio:", fechas_disponibles, index=idx_hoy)
+                    fecha_seleccionada = st.selectbox("Seleccionar Día del Portafolio:", fechas_disponibles, index=idx_hoy)
                 else:
-                    st.error("⚠️ No se encontraron partidos en la carpeta 'odds_data/'. ¡Corre el scraper primero!")
+                    st.warning("No se encontraron partidos en la carpeta 'odds_data/'. Corre el scraper primero.")
                     fecha_seleccionada = None
 
             boton_disabled = fecha_seleccionada is None
 
-            if st.button("🔍 Escanear Mercado", type="primary", disabled=boton_disabled):
+            if st.button("Escanear Mercado", type="primary", disabled=boton_disabled):
                 modelo_clubes = cargar_modelo()
                 try:
                     modelo_wc = joblib.load('modelo_selecciones_rf.pkl')
@@ -1151,7 +1150,7 @@ elif menu == "Portafolio de Picks":
                         # --- MOTOR HÍBRIDO DE IA ---
                         if es_mundial:
                             if not modelo_wc:
-                                log_debug.append(f"⚠️ Omitiendo {h_db} vs {a_db}: No se encontró modelo_selecciones_rf.pkl")
+                                log_debug.append(f"Omitiendo {h_db} vs {a_db}: No se encontró modelo_selecciones_rf.pkl")
                                 continue
                                 
                             df_sh = pd.read_sql(f'SELECT * FROM historial_selecciones_ml WHERE HomeTeam="{h_db}" OR AwayTeam="{h_db}" ORDER BY Date DESC LIMIT 6', conn)
@@ -1284,13 +1283,13 @@ elif menu == "Portafolio de Picks":
                             try:
                                 cuota_flt = float(cuota)
                                 edge = prob_ia - (1 / cuota_flt)
-                                log_debug.append(f"📊 Evaluando: {h_db} - {mercado_nombre} | Cuota: {cuota_flt} | Prob IA: {prob_ia:.1%} | Edge: {edge:.2%}")
+                                log_debug.append(f"Evaluando: {h_db} - {mercado_nombre} | Cuota: {cuota_flt} | Prob IA: {prob_ia:.1%} | Edge: {edge:.2%}")
                                 # Pool completo: cualquier mercado con edge positivo y cuota razonable
                                 if edge > 0 and cuota_flt < 8.0:
                                     mercados_evaluados_completos.append((fecha_partido, h_db, a_db, mercado_nombre, cuota_flt, prob_ia, edge))
                                 if 0.02 <= edge <= 0.15:
                                     oportunidades.append((fecha_partido, h_db, a_db, mercado_nombre, cuota_flt, prob_ia, edge))
-                                    log_debug.append(f"   ✨ ¡AÑADIDO AL PORTAFOLIO! Edge válido: {edge:.2%}")
+                                    log_debug.append(f"   AÑADIDO AL PORTAFOLIO. Edge válido: {edge:.2%}")
                             except Exception: pass
 
                         for nombre_mkt, cuota_val, prob_ia in mercados_a_evaluar:
@@ -1304,7 +1303,7 @@ elif menu == "Portafolio de Picks":
                         st.session_state['portafolio_escaneado'] = df_ops.sort_values(by='Edge', ascending=False).drop_duplicates(subset=['Home', 'Away', 'Mercado']).reset_index(drop=True)
                         st.session_state['pool_mercados'] = mercados_evaluados_completos
                     else:
-                        st.warning("📊 No se encontraron ineficiencias dentro del rango rentable (2% a 15%).")
+                        st.caption("No se encontraron ineficiencias dentro del rango rentable (2% a 15%).")
 
             if 'portafolio_escaneado' in st.session_state:
                 df_ops = st.session_state['portafolio_escaneado'].copy()
@@ -1602,17 +1601,14 @@ elif menu == "Portafolio de Picks":
                                 _add_f3(row_f3, '🟢 Flexible bajo (<2.0)', 2)
 
                         if _picks_f3[0] > 0:
-                            st.warning(
-                                f"⚠️ **Modo flexible activado (≤30% edge):** Se añadieron {_picks_f3[0]} pick(s) "
-                                f"con el mejor edge disponible fuera del rango estándar (2%–15%). "
-                                f"Aparecen como 'Flexible' en la tabla — úsalos con criterio."
+                            st.caption(
+                                f"Modo flexible (≤30% edge): {_picks_f3[0]} pick(s) añadidos fuera del rango estándar (2%–15%)."
                             )
 
                 faltantes = TARGET_PICKS - len(df_top_10_list)
                 if faltantes > 0:
-                    st.info(
-                        f"ℹ️ Portafolio parcial: {len(df_top_10_list)}/10 picks. "
-                        f"No hay suficiente mercado con edge positivo hoy para los {faltantes} slots restantes."
+                    st.caption(
+                        f"Portafolio parcial: {len(df_top_10_list)}/10 picks — no hay suficiente mercado con edge positivo para los {faltantes} slots restantes."
                     )
 
                 df_top_10 = pd.concat(df_top_10_list).reset_index(drop=True) if df_top_10_list else pd.DataFrame()
@@ -1667,12 +1663,12 @@ elif menu == "Portafolio de Picks":
                 n_golden = sum(1 for d in df_top_10_list if 'Golden' in str(d.iloc[0].get('Nivel','')))
                 _bc = bucket_counts  # [alto, medio, bajo]
                 col_g, col_h, col_m, col_l = st.columns(4)
-                col_g.metric("⭐ Golden", f"{n_golden}/1")
-                col_h.metric("🔴 Alto",  f"{_bc[0]}/3")
-                col_m.metric("🟡 Medio", f"{_bc[1]}/3")
-                col_l.metric("🟢 Bajo",  f"{_bc[2]}/3")
+                col_g.metric("Golden", f"{n_golden}/1")
+                col_h.metric("Alto",   f"{_bc[0]}/3")
+                col_m.metric("Medio",  f"{_bc[1]}/3")
+                col_l.metric("Bajo",   f"{_bc[2]}/3")
 
-                st.markdown(f"### 🎯 Portafolio ({len(df_top_10)} picks)")
+                st.markdown(f"### Portafolio ({len(df_top_10)} picks)")
                 
                 edit_top10 = st.data_editor(
                     df_mostrar_top,
@@ -1695,7 +1691,7 @@ elif menu == "Portafolio de Picks":
                     else:
                         st.info("No hay más picks de reserva. Se utilizaron todos los disponibles.")
 
-                if st.button("💾 Guardar Portafolio Seleccionado", type="primary"):
+                if st.button("Guardar Portafolio Seleccionado", type="primary"):
                     indices_top = edit_top10[edit_top10["✅ Añadir"] == True].index
                     indices_res = edit_reserva[edit_reserva["✅ Añadir"] == True].index if not df_mostrar_reserva.empty else []
                     
@@ -1722,8 +1718,8 @@ elif menu == "Portafolio de Picks":
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob_IA'], row['Edge'], stake_por_pick))
                         conn.commit()
-                        _modo_badge = "💹 Compuesto" if _modo_cmp else "📐 Flat"
-                        st.success(f"✅ ¡{len(df_final_a_guardar)} picks guardados! ({_modo_badge} — Bankroll: ${_base_inversion:,.0f} | Stake/pick: ${stake_por_pick:,.0f})")
+                        _modo_badge = "Compuesto" if _modo_cmp else "Flat"
+                        st.success(f"{len(df_final_a_guardar)} picks guardados ({_modo_badge} — Bankroll: ${_base_inversion:,.0f} | Stake/pick: ${stake_por_pick:,.0f})")
                         del st.session_state['portafolio_escaneado']
 
         except Exception as e:
@@ -1731,7 +1727,7 @@ elif menu == "Portafolio de Picks":
 
         # ── PORTAFOLIO ACTIVO (siempre visible, no requiere re-escanear) ──
         st.divider()
-        st.markdown("### 📋 Portafolio Activo (Picks Pendientes)")
+        st.markdown("### Portafolio Activo (Picks Pendientes)")
         df_activos = pd.read_sql("SELECT * FROM portafolio_historico WHERE Estado = 'Pendiente' ORDER BY Date ASC", conn)
         if df_activos.empty:
             st.info("No hay picks pendientes guardados. Escanea el mercado y guarda tu portafolio para verlo aquí.")
@@ -1742,7 +1738,7 @@ elif menu == "Portafolio de Picks":
                 df_dia = df_activos[df_activos['Date'] == fecha].copy()
                 stake_dia = df_dia['Stake'].sum()
                 retorno_potencial = (df_dia['Cuota'] * df_dia['Stake']).sum()
-                with st.expander(f"📅 {fecha}  —  {len(df_dia)} picks  |  Invertido: ${stake_dia:,.0f}  |  Retorno potencial: ${retorno_potencial:,.0f}", expanded=(fecha == fechas_activas[-1])):
+                with st.expander(f"{fecha}  —  {len(df_dia)} picks  |  Invertido: ${stake_dia:,.0f}  |  Retorno potencial: ${retorno_potencial:,.0f}", expanded=(fecha == fechas_activas[-1])):
                     df_mostrar_activos = df_dia[['HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Prob_IA', 'Edge', 'Stake']].copy()
                     df_mostrar_activos['Prob_IA'] = (df_mostrar_activos['Prob_IA'] * 100).round(1).astype(str) + "%"
                     df_mostrar_activos['Edge'] = (df_mostrar_activos['Edge'] * 100).round(2).astype(str) + "%"
@@ -1752,15 +1748,15 @@ elif menu == "Portafolio de Picks":
 
     with tab2:
         c_tit, c_btn = st.columns([0.75, 0.25])
-        c_tit.subheader("🏦 Rendimiento Acumulado")
+        c_tit.subheader("Rendimiento Acumulado")
         
-        if c_btn.button("🗑️ Resetear Historial", use_container_width=True):
+        if c_btn.button("Resetear Historial", use_container_width=True):
             cursor.execute("DELETE FROM portafolio_historico")
             conn.commit()
             st.toast("¡Historial borrado con éxito! Portafolio limpio.")
             st.rerun()
             
-        if st.button("⚖️ Liquidar Apuestas Pendientes", type="primary"):
+        if st.button("Liquidar Apuestas Pendientes", type="primary"):
             df_pendientes = pd.read_sql("SELECT * FROM portafolio_historico WHERE Estado = 'Pendiente'", conn)
             liquidadas = 0
             beneficio_reciente = 0.0
@@ -1877,13 +1873,13 @@ elif menu == "Portafolio de Picks":
             conn.commit()
             if liquidadas > 0:
                 yield_tanda = (beneficio_reciente / stake_reciente * 100) if stake_reciente > 0 else 0
-                st.success(f"¡Se liquidaron {liquidadas} partidos! 📈 Beneficio de esta tanda: **${beneficio_reciente:,.0f}** (Yield: **{yield_tanda:.2f}%**)")
+                st.success(f"Se liquidaron {liquidadas} partidos. Beneficio de esta tanda: **${beneficio_reciente:,.0f}** (Yield: **{yield_tanda:.2f}%**)")
             else:
                 st.info("No hay partidos nuevos terminados para liquidar.")
         df_hist = pd.read_sql("SELECT * FROM portafolio_historico", conn)
 
         # ── Importar portafolio externo ───────────────────────────
-        st.subheader("📥 Importar Portafolio Guardado")
+        st.subheader("Importar Portafolio Guardado")
         with st.expander("Cargar archivo CSV o JSON para fusionar con el portafolio actual"):
             archivo_importar = st.file_uploader(
                 "Sube un portafolio exportado (.csv o .json)",
@@ -1899,7 +1895,7 @@ elif menu == "Portafolio de Picks":
 
                     COLS_REQUERIDAS = {'Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado'}
                     if not COLS_REQUERIDAS.issubset(set(df_import.columns)):
-                        st.error(f"❌ El archivo no tiene las columnas requeridas: {COLS_REQUERIDAS - set(df_import.columns)}")
+                        st.error(f"El archivo no tiene las columnas requeridas: {COLS_REQUERIDAS - set(df_import.columns)}")
                     else:
                         # Rellenar columnas opcionales si no vienen
                         if 'Beneficio_Neto' not in df_import.columns:
@@ -1913,7 +1909,7 @@ elif menu == "Portafolio de Picks":
                         st.dataframe(df_import[['Date','HomeTeam','AwayTeam','Mercado','Cuota','Stake','Estado']].head(10), hide_index=True, use_container_width=True)
                         st.caption(f"Total filas en archivo: {len(df_import)}")
 
-                        if st.button("⬆️ Fusionar con portafolio actual", type="primary"):
+                        if st.button("Fusionar con portafolio actual", type="primary"):
                             nuevos = 0
                             for _, row_i in df_import.iterrows():
                                 # Evitar duplicados exactos (mismo partido + mercado + fecha)
@@ -1932,7 +1928,7 @@ elif menu == "Portafolio de Picks":
                                     )
                                     nuevos += 1
                             conn.commit()
-                            st.success(f"✅ {nuevos} picks importados. {len(df_import) - nuevos} ya existían y se omitieron.")
+                            st.success(f"{nuevos} picks importados. {len(df_import) - nuevos} ya existían y se omitieron.")
                             st.rerun()
                 except Exception as e:
                     st.error(f"Error al importar: {e}")
@@ -1959,14 +1955,14 @@ elif menu == "Portafolio de Picks":
             st.divider()
             # ── Vista estándar (picks individuales) ───────────────
             # ── Descarga del portafolio ───────────────────────────
-            st.write("📋 **Historial de Picks**")
+            st.write("**Historial de Picks**")
             col_dl1, col_dl2, col_dl3 = st.columns([2, 1, 1])
             df_dl = df_hist[['Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado', 'Beneficio_Neto', 'Prob_IA', 'Edge']].copy()
 
             with col_dl2:
                 csv_bytes = df_dl.to_csv(index=False).encode('utf-8')
                 st.download_button(
-                    label="⬇️ Descargar CSV",
+                    label="Descargar CSV",
                     data=csv_bytes,
                     file_name=f"portafolio_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv"
@@ -1974,7 +1970,7 @@ elif menu == "Portafolio de Picks":
             with col_dl3:
                 json_bytes = df_dl.to_json(orient='records', force_ascii=False, indent=2).encode('utf-8')
                 st.download_button(
-                    label="⬇️ Descargar JSON",
+                    label="Descargar JSON",
                     data=json_bytes,
                     file_name=f"portafolio_{pd.Timestamp.now().strftime('%Y%m%d')}.json",
                     mime="application/json"
@@ -1996,7 +1992,7 @@ elif menu == "Portafolio de Picks":
         # PORTAFOLIO HISTÓRICO — siempre visible (sin toggle)
         # ════════════════════════════════════════════════════════
         st.divider()
-        st.subheader("📅 Vista Portafolio Histórico")
+        st.subheader("Vista Portafolio Histórico")
         import plotly.graph_objects as go
 
         # ══════════════════════════════════════════════════════
@@ -2563,13 +2559,13 @@ elif menu == "Portafolio de Picks":
                 _col_toggle, _col_info = st.columns([1, 2])
                 with _col_toggle:
                     _modo_dyn = st.toggle(
-                        "💹 Bankroll Dinámico",
+                        "Bankroll Dinámico",
                         key="hist_bankroll_dyn",
                         help="ON: el stake de cada día se calcula sobre el bankroll inicial + P&L acumulado de días anteriores. OFF: flat staking uniforme."
                     )
                 with _col_info:
                     _bk_base_input = st.number_input(
-                        "💰 Bankroll inicial ($)",
+                        "Bankroll inicial ($)",
                         min_value=100, value=5000, step=500,
                         key="hist_bankroll_base",
                         label_visibility="visible"
@@ -2581,7 +2577,7 @@ elif menu == "Portafolio de Picks":
                 _fecha_max_hist = _todas_fechas_hist[-1]
 
                 # Botones de acceso rápido
-                st.markdown("**📅 Inicio del historial**")
+                st.markdown("**Inicio del historial**")
                 _qf_cols = st.columns(4)
                 _hoy_date = datetime.today().date()
                 if _qf_cols[0].button("Última semana",  key="hist_qf_1s", use_container_width=True):
@@ -2688,10 +2684,10 @@ elif menu == "Portafolio de Picks":
 
                 # ── Aviso de cobertura ────────────────────────
                 if n_dias_pend > 0:
-                    st.info(
-                        f"📋 **{n_dias_total} días con odds** en total — "
-                        f"**{n_dias_cerrados} días liquidados** ✅ | "
-                        f"**{n_dias_pend} días pendientes** ⏳ (sin resultado en DB aún)"
+                    st.caption(
+                        f"{n_dias_total} días con odds — "
+                        f"{n_dias_cerrados} liquidados ✅ | "
+                        f"{n_dias_pend} pendientes (sin resultado en DB aún)"
                     )
 
                 if df_big_cerrado.empty:
@@ -2704,13 +2700,13 @@ elif menu == "Portafolio de Picks":
                     stake_total  = df_big_cerrado['Stake'].sum()
                     pnl_total    = df_big_cerrado['Beneficio_Neto'].sum()
                     yield_big    = (pnl_total / stake_total * 100) if stake_total > 0 else 0.0
-                    _modo_lbl    = "💹 Dinámico" if _modo_dyn else "📐 Flat"
+                    _modo_lbl    = "Dinámico" if _modo_dyn else "Flat"
 
                     k1, k2, k3, k4 = st.columns(4)
-                    k1.metric("📊 Picks Cerrados", f"{total_picks:,}")
-                    k2.metric("🎯 Win Rate",       f"{win_rate_big:.1f}%")
-                    k3.metric("📈 Yield (ROI)",    f"{yield_big:.2f}%", _modo_lbl)
-                    k4.metric("💰 Ganancia Neta",  f"${pnl_total:,.0f}")
+                    k1.metric("Picks Cerrados", f"{total_picks:,}")
+                    k2.metric("Win Rate",       f"{win_rate_big:.1f}%")
+                    k3.metric("Yield (ROI)",    f"{yield_big:.2f}%", _modo_lbl)
+                    k4.metric("Ganancia Neta",  f"${pnl_total:,.0f}")
 
                     st.divider()
 
@@ -2859,7 +2855,7 @@ elif menu == "Portafolio de Picks":
                     )
 
                     # ── Acordeones por día (todos) ────────────
-                    st.markdown("#### 📋 Detalle por Día")
+                    st.markdown("#### Detalle por Día")
                     for _, _d in _dias_big.iterrows():
                         _fecha_d = str(_d['Date'])
                         _es_sp   = (_d['Estado_Dia'] == 'sin_picks')
@@ -3207,7 +3203,7 @@ elif menu == "Mundial 2026":
                 if grp in candidatos and eq in mejores_t8: return eq
             return f"3°({grupos_str})"
 
-        tab_g, tab_f = st.tabs(["📊 Grupos", "⚔️ Ruta a la Copa"])
+        tab_g, tab_f = st.tabs(["Grupos", "Ruta a la Copa"])
 
         with tab_g:
             st.markdown(
