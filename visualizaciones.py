@@ -2702,11 +2702,98 @@ elif menu == "Portafolio de Picks":
                     yield_big    = (pnl_total / stake_total * 100) if stake_total > 0 else 0.0
                     _modo_lbl    = "Dinámico" if _modo_dyn else "Flat"
 
+                    # ── Toggle: Análisis de Sobrerendimiento (Z-score) ────
+                    _show_luck = st.toggle(
+                        "🔬 Análisis de Sobrerendimiento",
+                        key="luck_factor_toggle",
+                        help="Z-score entre P&L real y el esperado por edge. Z > 2.0 = 95% de confianza en sobrerendimiento estadístico — señal de retiro parcial."
+                    )
+
+                    if _show_luck:
+                        _df_luck = df_big_cerrado[
+                            df_big_cerrado['Prob_IA'].notna() &
+                            (df_big_cerrado['Prob_IA'] > 0) &
+                            df_big_cerrado['Cuota'].notna()
+                        ].copy()
+                        if len(_df_luck) >= 5:
+                            # P&L esperado = Σ stake × (prob_IA × cuota − 1)
+                            _exp_pnl = (
+                                _df_luck['Stake'] *
+                                (_df_luck['Prob_IA'] * _df_luck['Cuota'] - 1)
+                            ).sum()
+                            # Varianza = Σ p(1−p)(stake × cuota)²
+                            _var_total = (
+                                _df_luck['Prob_IA'] * (1 - _df_luck['Prob_IA']) *
+                                (_df_luck['Stake'] * _df_luck['Cuota']) ** 2
+                            ).sum()
+                            _std_dev = float(np.sqrt(_var_total)) if _var_total > 0 else 1.0
+                            _z_score = (pnl_total - _exp_pnl) / _std_dev
+
+                            if _z_score >= 2.5:
+                                _z_color = "#e74c3c"; _z_icon = "🚨"
+                                _z_label = "Señal fuerte de retiro parcial"
+                                _z_advice = "P&L supera 2.5σ sobre lo esperado. Alta probabilidad de componente de suerte. Considera retirar 30–50% del exceso."
+                            elif _z_score >= 2.0:
+                                _z_color = "#f39c12"; _z_icon = "⚠️"
+                                _z_label = "Sobrerendimiento significativo (95%)"
+                                _z_advice = "Estadísticamente sobreperformando. Considera retirar ~30% del exceso sobre P&L esperado como protección ante reversión a la media."
+                            elif _z_score >= 1.64:
+                                _z_color = "#f1c40f"; _z_icon = "📈"
+                                _z_label = "Sobrerendimiento notable (90%)"
+                                _z_advice = "Por encima de lo esperado, aún dentro del rango plausible. Monitorea la tendencia."
+                            elif _z_score >= 0:
+                                _z_color = "#2ecc71"; _z_icon = "✅"
+                                _z_label = "Performance normal"
+                                _z_advice = "El rendimiento está en línea con el edge esperado. Sin señal de suerte estructural."
+                            else:
+                                _z_color = "#5dade2"; _z_icon = "📉"
+                                _z_label = "Por debajo de lo esperado"
+                                _z_advice = "P&L actual por debajo del esperado por edge. Puede ser varianza negativa transitoria."
+
+                            _lc1, _lc2, _lc3 = st.columns(3)
+                            with _lc1:
+                                st.metric(
+                                    "P&L Esperado (Edge)",
+                                    f"${_exp_pnl:,.0f}",
+                                    help="Σ stake × (prob_IA × cuota − 1) para todos los picks cerrados con Prob_IA disponible."
+                                )
+                            with _lc2:
+                                st.metric(
+                                    "Z-Score",
+                                    f"{_z_score:.2f}σ",
+                                    help="Desviación estándar entre P&L real y el esperado por edge. Z > 2.0 = sobrerendimiento al 95% de confianza."
+                                )
+                            with _lc3:
+                                st.markdown(f"""
+                                <div style="background:#1a1d27;border:1px solid {_z_color}55;border-radius:10px;
+                                    padding:11px 10px;text-align:center;">
+                                    <div style="font-size:1.3rem;">{_z_icon}</div>
+                                    <div style="font-size:0.72rem;font-weight:700;color:{_z_color};
+                                        margin:4px 0;line-height:1.3;">{_z_label}</div>
+                                    <div style="font-size:0.65rem;color:#8892a4;line-height:1.4;">{_z_advice}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+
+                            if _z_score >= 2.0:
+                                _exceso  = pnl_total - _exp_pnl
+                                _retirar = _exceso * 0.30
+                                st.markdown(f"""
+                                <div style="background:#1a1a2e;border-left:3px solid {_z_color};
+                                    border-radius:6px;padding:8px 12px;margin:6px 0 4px;">
+                                    💡 <b>Acción sugerida:</b> retirar ~<b style="color:{_z_color}">${_retirar:,.0f}</b>
+                                    (30% del exceso de <b>${_exceso:,.0f}</b> sobre el P&L esperado por edge).
+                                </div>
+                                """, unsafe_allow_html=True)
+                        else:
+                            st.info(f"Se necesitan al menos 5 picks cerrados con Prob_IA para calcular el Z-score ({len(_df_luck)} disponibles).")
+
+                    # ── KPIs globales ─────────────────────────────────────
                     k1, k2, k3, k4 = st.columns(4)
                     k1.metric("Picks Cerrados", f"{total_picks:,}")
                     k2.metric("Win Rate",       f"{win_rate_big:.1f}%")
                     k3.metric("Yield (ROI)",    f"{yield_big:.2f}%", _modo_lbl)
-                    k4.metric("Ganancia Neta",  f"${pnl_total:,.0f}")
+                    _balance_total = float(_bk_base_input) + pnl_total
+                    k4.metric("Balance",        f"${_balance_total:,.0f}", f"${pnl_total:+,.0f}")
 
                     st.divider()
 
