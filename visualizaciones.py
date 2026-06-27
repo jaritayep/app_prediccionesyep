@@ -1111,12 +1111,6 @@ elif menu == "Portafolio de Picks":
 
             boton_disabled = fecha_seleccionada is None
 
-            modo_stake_riesgo = st.toggle(
-                "Stake por Nivel de Riesgo",
-                key="modo_stake_riesgo",
-                help="ON: Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5× de la unidad base. OFF: mismo stake para todos los picks."
-            )
-
             if st.button("Escanear Mercado", type="primary", disabled=boton_disabled):
                 modelo_clubes = cargar_modelo()
                 try:
@@ -1667,6 +1661,11 @@ elif menu == "Portafolio de Picks":
                 st.success(f"Escaneo listo. Portafolio {modo} — {len(df_top_10)} picks seleccionados.")
 
                 # ── Resumen de estructura 1-3-3-3 ─────────────────────────
+                modo_stake_riesgo = st.toggle(
+                    "Stake por Nivel de Riesgo",
+                    key="modo_stake_riesgo",
+                    help="ON: Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5× de la unidad base. OFF: mismo stake para todos los picks."
+                )
                 n_golden = sum(1 for d in df_top_10_list if 'Golden' in str(d.iloc[0].get('Nivel','')))
                 _bc = bucket_counts  # [alto, medio, bajo]
                 col_g, col_h, col_m, col_l = st.columns(4)
@@ -2452,8 +2451,8 @@ elif menu == "Portafolio de Picks":
                                     if len(seleccionados) >= 10: break
                                     _hist_add(r.to_dict())
 
-                        # Si el día tiene menos de 8 picks, flat stake de 5000 por pick
-                        stake_dia = 5000 if len(seleccionados) < 8 else stake_unitario
+                        # Si el día tiene menos de 8 picks, flat stake de 500 por pick (igual que tab1)
+                        stake_dia = 500 if len(seleccionados) < 8 else stake_unitario
                         for s in seleccionados:
                             s['Stake'] = stake_dia
                             s['_from_db'] = False
@@ -2652,8 +2651,8 @@ elif menu == "Portafolio de Picks":
                 df_big = df_big[df_big['Date'] >= _fecha_inicio_hist].copy()
 
                 # ── Asignar stakes reales día a día ──────────
-                # Días con <8 picks → flat stake fijo de $5 000 por pick (independiente del bankroll)
-                _STAKE_DIA_CORTO = 5000.0
+                # Días con <8 picks → flat stake fijo de $500 por pick (igual que tab1, independiente del bankroll)
+                _STAKE_DIA_CORTO = 500.0
                 _UMBRAL_PICKS_CORTO = 8
 
                 # Ordenar días cronológicamente
@@ -2669,7 +2668,7 @@ elif menu == "Portafolio de Picks":
                     if _n_picks == 0:
                         continue
 
-                    # Días con menos de 8 picks → stake fijo de $5 000 (ignora bankroll/modo)
+                    # Días con menos de 8 picks → stake fijo de $500 (ignora bankroll/modo)
                     if _n_picks < _UMBRAL_PICKS_CORTO:
                         _stake_hoy = _STAKE_DIA_CORTO
                     elif _modo_dyn:
