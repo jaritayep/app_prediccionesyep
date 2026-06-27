@@ -1082,6 +1082,11 @@ elif menu == "Portafolio de Picks":
                     key="modo_compuesto",
                     help="ON: el stake de cada día se calcula sobre tu bankroll actual (capital inicial + P&L acumulado). OFF: flat staking sobre el valor ingresado arriba."
                 )
+                modo_stake_riesgo = st.toggle(
+                    "Stake por Nivel de Riesgo",
+                    key="modo_stake_riesgo",
+                    help="ON: Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5× de la unidad base. OFF: mismo stake para todos los picks."
+                )
                 if modo_compuesto:
                     _pnl_cerrado = pd.read_sql(
                         "SELECT COALESCE(SUM(Beneficio_Neto),0) as total FROM portafolio_historico WHERE Estado != 'Pendiente'",
@@ -1255,6 +1260,9 @@ elif menu == "Portafolio de Picks":
                             if not match: continue
                             linea = float(match.group(1))
 
+                            # Ignorar líneas asiáticas (.25 / .75) en TODOS los mercados
+                            if round(abs(linea) % 1, 2) in (0.25, 0.75): continue
+
                             if 'hdp' in col_str or 'handicap' in col_str:
                                 if 'home' in col_str: mercados_a_evaluar.append((f"Hándicap Local ({linea:+})", val_num, prob_handicap(pred_goles_home, pred_goles_away, linea)))
                                 elif 'away' in col_str: mercados_a_evaluar.append((f"Hándicap Visita ({linea:+})", val_num, prob_handicap(pred_goles_away, pred_goles_home, linea)))
@@ -1273,8 +1281,6 @@ elif menu == "Portafolio de Picks":
                             elif ('goles' in col_str or 'total' in col_str) and 'tt_home' not in col_str and 'tt_away' not in col_str and 'shots' not in col_str:
                                 # Cap: ignorar lineas de goles por encima de 5.5 (no son realistas)
                                 if linea > 5.5: continue
-                                # Ignorar líneas asiáticas (.25 / .75) — no usamos esos mercados
-                                if (linea * 100) % 100 in (25, 75): continue
                                 if 'over' in col_str: mercados_a_evaluar.append((f"Goles Totales (+{linea})", val_num, prob_over(prom_goles_total, linea)))
                                 elif 'under' in col_str: mercados_a_evaluar.append((f"Goles Totales (-{linea})", val_num, prob_under(prom_goles_total, linea)))
 
@@ -1703,6 +1709,7 @@ elif menu == "Portafolio de Picks":
                         st.warning("No seleccionaste ningún pick.")
                     else:
                         _modo_cmp = st.session_state.get("modo_compuesto", False)
+                        _modo_riesgo = st.session_state.get("modo_stake_riesgo", False)
                         if _modo_cmp:
                             _pnl_hist = pd.read_sql(
                                 "SELECT COALESCE(SUM(Beneficio_Neto),0) as total FROM portafolio_historico WHERE Estado != 'Pendiente'",
@@ -1711,15 +1718,49 @@ elif menu == "Portafolio de Picks":
                             _base_inversion = inversion_total + _pnl_hist
                         else:
                             _base_inversion = inversion_total
-                        stake_por_pick = _base_inversion / len(df_final_a_guardar)
+
+                        _n_picks = len(df_final_a_guardar)
+
+                        # ── Días con menos de 8 picks → flat 500 por pick ──
+                        if _n_picks < 8:
+                            def _stake_para_pick(row, unidad):
+                                return 500.0
+                            _stake_label = f"Flat $500/pick ({_n_picks} picks < 8)"
+                        elif _modo_riesgo:
+                            # Stake por nivel de riesgo: la unidad base se distribuye
+                            # ponderada por multiplicador según nivel (Nivel column).
+                            # Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5×
+                            def _mult_nivel(nivel_str):
+                                n = str(nivel_str).lower()
+                                if 'golden' in n: return 1.5
+                                if 'bajo'   in n: return 1.2
+                                if 'medio'  in n: return 1.0
+                                if 'alto'   in n: return 0.5
+                                return 1.0  # fallback
+
+                            _mults = df_final_a_guardar['Nivel'].apply(_mult_nivel) if 'Nivel' in df_final_a_guardar.columns else pd.Series([1.0]*_n_picks)
+                            _suma_mults = _mults.sum()
+                            _unidad_base = _base_inversion / _suma_mults if _suma_mults > 0 else _base_inversion / _n_picks
+
+                            def _stake_para_pick(row, unidad=_unidad_base):
+                                return unidad * _mult_nivel(row.get('Nivel', ''))
+
+                            _stake_label = f"Por Riesgo — unidad ${_unidad_base:,.0f}"
+                        else:
+                            stake_plano = _base_inversion / _n_picks
+                            def _stake_para_pick(row, unidad=stake_plano):
+                                return unidad
+                            _stake_label = f"Flat ${stake_plano:,.0f}/pick"
+
                         for _, row in df_final_a_guardar.iterrows():
+                            _stake_pick = _stake_para_pick(row)
                             cursor.execute("""
                                 INSERT INTO portafolio_historico (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob_IA'], row['Edge'], stake_por_pick))
+                            """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob_IA'], row['Edge'], _stake_pick))
                         conn.commit()
                         _modo_badge = "Compuesto" if _modo_cmp else "Flat"
-                        st.success(f"{len(df_final_a_guardar)} picks guardados ({_modo_badge} — Bankroll: ${_base_inversion:,.0f} | Stake/pick: ${stake_por_pick:,.0f})")
+                        st.success(f"{_n_picks} picks guardados ({_modo_badge} — Bankroll: ${_base_inversion:,.0f} | {_stake_label})")
                         del st.session_state['portafolio_escaneado']
 
         except Exception as e:
@@ -2226,6 +2267,8 @@ elif menu == "Portafolio de Picks":
                         m_linea = re.search(r'(-?\d+(?:\.\d+)?)', col_str)
                         if not m_linea: continue
                         linea = float(m_linea.group(1))
+                        # Ignorar líneas asiáticas (.25 / .75) en TODOS los mercados
+                        if round(abs(linea) % 1, 2) in (0.25, 0.75): continue
                         if 'hdp' in col_str or 'handicap' in col_str:
                             if 'home' in col_str: mercados_ev.append((f"Hándicap Local ({linea:+})", val_num, _prob_hdp(pred_goles_home, pred_goles_away, linea)))
                             elif 'away' in col_str: mercados_ev.append((f"Hándicap Visita ({linea:+})", val_num, _prob_hdp(pred_goles_away, pred_goles_home, linea)))
@@ -2254,8 +2297,6 @@ elif menu == "Portafolio de Picks":
                                 if 'over' in col_str: mercados_ev.append((f"Tiros a Puerta Totales (+{linea})", val_num, prob_over(prom_shots_total, linea)))
                                 elif 'under' in col_str: mercados_ev.append((f"Tiros a Puerta Totales (-{linea})", val_num, _prob_under_loc(prom_shots_total, linea)))
                         elif 'goles' in col_str or 'total' in col_str:
-                            # Ignorar líneas asiáticas (.25 / .75) — no usamos esos mercados
-                            if (linea * 100) % 100 in (25, 75): continue
                             if 'tt_home' in col_str:
                                 if 'over' in col_str: mercados_ev.append((f"Goles Local (+{linea})", val_num, prob_over(pred_goles_home, linea)))
                                 elif 'under' in col_str: mercados_ev.append((f"Goles Local (-{linea})", val_num, _prob_under_loc(pred_goles_home, linea)))
@@ -2702,14 +2743,9 @@ elif menu == "Portafolio de Picks":
                     yield_big    = (pnl_total / stake_total * 100) if stake_total > 0 else 0.0
                     _modo_lbl    = "Dinámico" if _modo_dyn else "Flat"
 
-                    # ── Toggle: Análisis de Sobrerendimiento (Z-score) ────
-                    _show_luck = st.toggle(
-                        "🔬 Análisis de Sobrerendimiento",
-                        key="luck_factor_toggle",
-                        help="Z-score entre P&L real y el esperado por edge. Z > 2.0 = 95% de confianza en sobrerendimiento estadístico — señal de retiro parcial."
-                    )
-
-                    if _show_luck:
+                    # ── KPI: Análisis de Sobrerendimiento (Z-score) ────
+                    st.markdown("#### 🔬 Análisis de Sobrerendimiento")
+                    if True:
                         _df_luck = df_big_cerrado[
                             df_big_cerrado['Prob_IA'].notna() &
                             (df_big_cerrado['Prob_IA'] > 0) &
