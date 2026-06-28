@@ -468,13 +468,16 @@ if menu == "Análisis del Día":
                         prob_visita = p_a_aj / _suma
                         prob_empate = p_d_aj / _suma
 
-                        # xG base desde goles históricos
+                        # Total de goles esperado desde histórico (sin ajuste FIFA)
                         _xg_base_h = (gf_h + gc_a) / 2
                         _xg_base_a = (gf_a + gc_h) / 2
-                        # Aplicar el mismo multiplicador FIFA que ajusta la torta,
-                        # para que el equipo con mayor prob también tenga mayor xG mostrado
-                        pred_home = _xg_base_h * _mul_h
-                        pred_away = _xg_base_a * _mul_a
+                        _total_goles = _xg_base_h + _xg_base_a
+                        # Repartir ese total proporcionalmente a prob_local vs prob_visita
+                        # — así el equipo favorito en la torta SIEMPRE tiene mayor xG
+                        _prop_h = prob_local / (prob_local + prob_visita) if (prob_local + prob_visita) > 0 else 0.5
+                        _prop_a = 1.0 - _prop_h
+                        pred_home = _total_goles * _prop_h
+                        pred_away = _total_goles * _prop_a
                         promedio_goles = pred_home + pred_away
                         prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
                         _tiros_h, _tiros_a   = hst, ast
