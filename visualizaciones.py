@@ -501,7 +501,8 @@ if menu == "Análisis del Día":
 
                         # --- SECCIÓN 3: PANEL COMPACTO DE MÉTRICAS (4 columnas) ---
                         _BASE   = 1.2
-                        _xg_total = xg_h + xg_a
+                        # Usar pred_home + pred_away (misma fuente que prob_over y la torta)
+                        _xg_total = pred_home + pred_away
                         _m1, _m2, _m3, _m4 = st.columns(4)
                         _m1.metric("xG Total",            f"{_xg_total:.2f}", f"{_xg_total - _BASE*2:+.2f}")
                         _m2.metric("Over 2.5",             f"{prob_over:.0%}", delta=None)
@@ -567,8 +568,12 @@ if menu == "Análisis del Día":
                         prob_empate = float(prob_ia[1])
                         prob_visita = float(prob_ia[0])
 
-                        pred_home      = (stats_h['FTHG'] + stats_a['FTAG']) / 2
-                        pred_away      = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+                        # pred_home/pred_away usan xg_h/xg_a para ser coherentes con
+                        # los inputs del modelo que genera la torta. Antes usaban promedios
+                        # de goles reales, lo que causaba discrepancias (ej: Canadá con mayor
+                        # xG pero Sudáfrica ganando en la torta).
+                        pred_home      = (xg_h + stats_a.get('xG_away', xg_a)) / 2
+                        pred_away      = (xg_a + stats_h.get('xG_home', xg_h)) / 2
                         promedio_goles = pred_home + pred_away
                         prob_over      = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
                         _tiros_h       = stats_h['HST']
@@ -601,7 +606,7 @@ if menu == "Análisis del Día":
 
                         # --- SECCIÓN 3: PANEL COMPACTO DE MÉTRICAS (4 columnas) ---
                         _BASE   = 1.2
-                        _xg_total = xg_h + xg_a
+                        _xg_total = pred_home + pred_away   # coherente con prob_over y la torta
                         _m1, _m2, _m3, _m4 = st.columns(4)
                         _m1.metric("xG Total",            f"{_xg_total:.2f}", f"{_xg_total - _BASE*2:+.2f}")
                         _m2.metric("Over 2.5",             f"{prob_over:.0%}", delta=None)
