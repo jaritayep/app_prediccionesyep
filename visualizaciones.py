@@ -465,12 +465,20 @@ if menu == "Análisis del Día":
                         _score_h = _score_sel(home_team)
                         _score_a = _score_sel(away_team)
                         _diff    = _score_h - _score_a
-                        _mul_h   = max(0.1, 1.0 + _diff)
-                        _mul_a   = max(0.1, 1.0 - _diff)
 
-                        p_h_aj = p_h_raw * _mul_h
-                        p_a_aj = p_a_raw * _mul_a
-                        p_d_aj = p_d_raw * 0.9
+                        # Blend aditivo: modelo RF 70% + FIFA ranking 30%
+                        # El ranking informa pero no puede anular al modelo
+                        import math as _math
+                        _fifa_ph = 1 / (1 + _math.exp(-3 * _diff))
+                        _fifa_pa = 1 - _fifa_ph
+                        _fifa_pd = max(0.05, 0.5 - abs(_diff) * 0.3)
+                        _fifa_sum = _fifa_ph + _fifa_pa + _fifa_pd
+                        _fifa_ph /= _fifa_sum; _fifa_pa /= _fifa_sum; _fifa_pd /= _fifa_sum
+
+                        _W_MODEL = 0.70; _W_FIFA = 0.30
+                        p_h_aj = _W_MODEL * p_h_raw + _W_FIFA * _fifa_ph
+                        p_a_aj = _W_MODEL * p_a_raw + _W_FIFA * _fifa_pa
+                        p_d_aj = _W_MODEL * p_d_raw + _W_FIFA * _fifa_pd
                         _suma  = p_h_aj + p_a_aj + p_d_aj
                         prob_local  = p_h_aj / _suma
                         prob_visita = p_a_aj / _suma
