@@ -394,15 +394,15 @@ if menu == "Análisis del Día":
                         ast = concat_mean(df_sa_home['AST'], df_sa_away['HST'], 3.5)
                         ac  = concat_mean(df_sa_home['AC'],  df_sa_away['HC'],  4.0)
 
-                        # xG excluido del modelo WC (cobertura insuficiente en historial_selecciones_ml).
-                        # Se usan promedios de goles reales como proxy.
-                        xg_h = (gf_h + gc_a) / 2
-                        xg_a = (gf_a + gc_h) / 2
-
                         gf_h = concat_mean(df_sh_home['FTHG'], df_sh_away['FTAG'], 1.5)
                         gc_h = concat_mean(df_sh_home['FTAG'], df_sh_away['FTHG'], 1.0)
                         gf_a = concat_mean(df_sa_home['FTHG'], df_sa_away['FTAG'], 1.2)
                         gc_a = concat_mean(df_sa_home['FTAG'], df_sa_away['FTHG'], 1.3)
+
+                        # xG excluido del modelo WC (cobertura insuficiente en historial_selecciones_ml).
+                        # Se usan promedios de goles reales como proxy.
+                        xg_h = (gf_h + gc_a) / 2
+                        xg_a = (gf_a + gc_h) / 2
 
                         if home_team in encoder_intl.classes_ and away_team in encoder_intl.classes_:
                             h_c = encoder_intl.transform([home_team])[0]
@@ -1225,16 +1225,10 @@ elif menu == "Portafolio de Picks":
                             if h_db in encoder_wc.classes_ and a_db in encoder_wc.classes_:
                                 h_c = encoder_wc.transform([h_db])[0]
                                 a_c = encoder_wc.transform([a_db])[0]
-                                # Campo neutral: doble pasada para cancelar el sesgo de localía
-                                # probs orden: [0]=visita, [1]=empate, [2]=local
-                                X_normal    = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                                X_invertido = pd.DataFrame([[a_c, h_c, ast, hst, ac, hc]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                                probs_n = modelo_wc.predict_proba(X_normal)[0]
-                                probs_i = modelo_wc.predict_proba(X_invertido)[0]
-                                # En X_invertido 'local' es a_db real → cruzar índices
-                                prob_local  = (float(probs_n[2]) + float(probs_i[0])) / 2
-                                prob_empate = (float(probs_n[1]) + float(probs_i[1])) / 2
-                                prob_visita = (float(probs_n[0]) + float(probs_i[2])) / 2
+                                # Modelo entrenado con 6 features (xG eliminado por cobertura insuficiente)
+                                X_input = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                                probs = modelo_wc.predict_proba(X_input)[0]
+                                prob_visita, prob_empate, prob_local = probs[0], probs[1], probs[2]
                             else:
                                 prob_visita, prob_empate, prob_local = 0.33, 0.34, 0.33
                                 
@@ -2249,14 +2243,9 @@ elif menu == "Portafolio de Picks":
                             if h_db in encoder_wc_hist.classes_ and a_db in encoder_wc_hist.classes_:
                                 h_c = encoder_wc_hist.transform([h_db])[0]
                                 a_c = encoder_wc_hist.transform([a_db])[0]
-                                # Campo neutral: doble pasada para cancelar el sesgo de localía
-                                X_normal    = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                                X_invertido = pd.DataFrame([[a_c, h_c, ast, hst, ac, hc]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                                prbs_n = modelo_wc_hist.predict_proba(X_normal)[0]
-                                prbs_i = modelo_wc_hist.predict_proba(X_invertido)[0]
-                                prob_local  = (float(prbs_n[2]) + float(prbs_i[0])) / 2
-                                prob_empate = (float(prbs_n[1]) + float(prbs_i[1])) / 2
-                                prob_visita = (float(prbs_n[0]) + float(prbs_i[2])) / 2
+                                X_in = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                                prbs = modelo_wc_hist.predict_proba(X_in)[0]
+                                prob_visita, prob_empate, prob_local = prbs[0], prbs[1], prbs[2]
                             else:
                                 prob_visita, prob_empate, prob_local = 0.33, 0.34, 0.33
                             pred_goles_home = (gf_h + gc_a) / 2
