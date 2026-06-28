@@ -377,9 +377,17 @@ if menu == "Análisis del Día":
                         if home_team in encoder_intl.classes_ and away_team in encoder_intl.classes_:
                             h_c = encoder_intl.transform([home_team])[0]
                             a_c = encoder_intl.transform([away_team])[0]
-                            X_input = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                            probs = modelo_intl.predict_proba(X_input)[0]
-                            p_a_raw, p_d_raw, p_h_raw = float(probs[0]), float(probs[1]), float(probs[2])
+                            # Campo neutral: llamar al modelo en ambas direcciones y promediar
+                            # para cancelar el sesgo de localía que aprendió el modelo
+                            X_normal    = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                            X_invertido = pd.DataFrame([[a_c, h_c, ast, hst, ac, hc]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                            probs_n = modelo_intl.predict_proba(X_normal)[0]
+                            probs_i = modelo_intl.predict_proba(X_invertido)[0]
+                            # probs orden: [0]=visita, [1]=empate, [2]=local
+                            # En X_invertido 'local' es away_team real → cruzar indices
+                            p_h_raw = (float(probs_n[2]) + float(probs_i[0])) / 2
+                            p_d_raw = (float(probs_n[1]) + float(probs_i[1])) / 2
+                            p_a_raw = (float(probs_n[0]) + float(probs_i[2])) / 2
                         else:
                             p_h_raw, p_d_raw, p_a_raw = 0.33, 0.34, 0.33
 
