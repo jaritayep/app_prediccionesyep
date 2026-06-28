@@ -100,22 +100,25 @@ def get_recent_stats_wc(equipo, conn):
     res = res.fillna(0.0)
     pesos = np.array([5, 4, 3, 2, 1])[:len(res)]
     # Convertir siempre desde la perspectiva del equipo consultado
-    gf, gc, tiros, corners = [], [], [], []
+    # tiros_eq = tiros propios; tiros_riv = tiros del oponente (para AST/AC)
+    gf, gc, tiros_eq, tiros_riv, corners_eq, corners_riv = [], [], [], [], [], []
     for _, row in res.iterrows():
         if row['HomeTeam'] == equipo:
             gf.append(row['FTHG']); gc.append(row['FTAG'])
-            tiros.append(row['HST']); corners.append(row['HC'])
+            tiros_eq.append(row['HST']); tiros_riv.append(row['AST'])
+            corners_eq.append(row['HC']); corners_riv.append(row['AC'])
         else:
             gf.append(row['FTAG']); gc.append(row['FTHG'])
-            tiros.append(row['AST']); corners.append(row['AC'])
+            tiros_eq.append(row['AST']); tiros_riv.append(row['HST'])
+            corners_eq.append(row['AC']); corners_riv.append(row['HC'])
     w = pesos / pesos.sum()
     return pd.Series({
-        'FTHG': np.average(gf,      weights=w),
-        'FTAG': np.average(gc,      weights=w),
-        'HST':  np.average(tiros,   weights=w),
-        'AST':  np.average(tiros,   weights=w),   # mismo valor (tiros a portería propios)
-        'HC':   np.average(corners, weights=w),
-        'AC':   np.average(corners, weights=w),   # mismo valor (córners propios)
+        'FTHG': np.average(gf,          weights=w),
+        'FTAG': np.average(gc,          weights=w),
+        'HST':  np.average(tiros_eq,    weights=w),
+        'AST':  np.average(tiros_riv,   weights=w),   # tiros del oponente (perspectiva rival)
+        'HC':   np.average(corners_eq,  weights=w),
+        'AC':   np.average(corners_riv, weights=w),   # córners del oponente (perspectiva rival)
     })
 
 def obtener_puntos_temporada(equipo, conn):
@@ -380,9 +383,23 @@ if menu == "Análisis del Día":
                             return df[col].mean() if not df.empty and col in df.columns and pd.notna(df[col].mean()) else default
 
                         def concat_mean(s1, s2, default):
-                            combined = pd.concat([s1, s2])
-                            v = combined.mean()
-                            return v if not combined.empty and pd.notna(v) else default
+                            # Pesos de recencia [5,4,3,2,1] aplicados al orden original
+                            # (el primer elemento de cada serie es el más reciente,
+                            # pues las queries usan ORDER BY Date DESC).
+                            combined = pd.concat([s1, s2]).reset_index(drop=True)
+                            if combined.empty or combined.isna().all():
+                                return default
+                            n = len(combined)
+                            base_w = np.array([5, 4, 3, 2, 1], dtype=float)
+                            if n <= len(base_w):
+                                w = base_w[:n]
+                            else:
+                                w = np.concatenate([base_w, np.ones(n - len(base_w))])
+                            mask = combined.notna()
+                            if mask.sum() == 0:
+                                return default
+                            v = np.average(combined[mask], weights=w[mask.values])
+                            return float(v) if pd.notna(v) else default
 
                         df_sh_home = df_sh[df_sh['HomeTeam'] == home_team]
                         df_sh_away = df_sh[df_sh['AwayTeam'] == home_team]
@@ -496,16 +513,17 @@ if menu == "Análisis del Día":
                         _score_a = _score_sel(away_team)
                         _diff    = _score_h - _score_a
 
-                        # Blend aditivo: modelo RF 70% + FIFA ranking 30%
-                        # El ranking informa pero no puede anular al modelo
+                        # Blend aditivo: modelo RF 80% + FIFA ranking 20%
+                        # Sigmoide suavizada (k=1.5 en lugar de 3) para evitar
+                        # que diferencias pequeñas de ranking anulen al modelo RF.
                         import math as _math
-                        _fifa_ph = 1 / (1 + _math.exp(-3 * _diff))
+                        _fifa_ph = 1 / (1 + _math.exp(-1.5 * _diff))
                         _fifa_pa = 1 - _fifa_ph
                         _fifa_pd = max(0.05, 0.5 - abs(_diff) * 0.3)
                         _fifa_sum = _fifa_ph + _fifa_pa + _fifa_pd
                         _fifa_ph /= _fifa_sum; _fifa_pa /= _fifa_sum; _fifa_pd /= _fifa_sum
 
-                        _W_MODEL = 0.70; _W_FIFA = 0.30
+                        _W_MODEL = 0.80; _W_FIFA = 0.20
                         p_h_aj = _W_MODEL * p_h_raw + _W_FIFA * _fifa_ph
                         p_a_aj = _W_MODEL * p_a_raw + _W_FIFA * _fifa_pa
                         p_d_aj = _W_MODEL * p_d_raw + _W_FIFA * _fifa_pd
@@ -518,9 +536,10 @@ if menu == "Análisis del Día":
                         _xg_base_h = (gf_h + gc_a) / 2
                         _xg_base_a = (gf_a + gc_h) / 2
                         _total_goles = _xg_base_h + _xg_base_a
-                        # Repartir ese total proporcionalmente a prob_local vs prob_visita
-                        # — así el equipo favorito en la torta SIEMPRE tiene mayor xG
-                        _prop_h = prob_local / (prob_local + prob_visita) if (prob_local + prob_visita) > 0 else 0.5
+                        # Repartir ese total proporcionalmente a las probs CRUDAS del RF
+                        # (antes del blend FIFA) para evitar circularidad: el xG no
+                        # debe depender del sesgo de ranking que ya ajustó la torta.
+                        _prop_h = p_h_raw / (p_h_raw + p_a_raw) if (p_h_raw + p_a_raw) > 0 else 0.5
                         _prop_a = 1.0 - _prop_h
                         pred_home = _total_goles * _prop_h
                         pred_away = _total_goles * _prop_a
