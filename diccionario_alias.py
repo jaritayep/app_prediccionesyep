@@ -28,8 +28,7 @@ ALIAS_GLOBAL = {
     "Ivory Coast": "Ivory Coast",                   # DB canonical (not "Côte d'Ivoire")
     "Curaçao": "Curaçao",                           # DB canonical (accent included)
     "Curazao": "Curaçao",
-    "South Africa": "Africa del Sur",
-    "South Africa": "Sudafrica",
+
 
     # ── CLUBES — PREMIER LEAGUE ────────────────────────────────────────────────
     # Canonical = name as stored in historial_multiliga_ml

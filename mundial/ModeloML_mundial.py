@@ -62,10 +62,37 @@ def preparar_features(df):
     # xG eliminado: cobertura insuficiente (~14 % de filas con datos reales).
     # Revisitar cuando la cobertura supere el 50 %.
     features = ['HomeTeam_Code', 'AwayTeam_Code', 'HST', 'AST', 'HC', 'AC']
-    
+
     X = df[features]
     y = df['Target']
-    
+
+    # ─────────────────────────────────────────────────────────────────
+    # AUGMENTACIÓN CAMPO NEUTRAL:
+    # El Mundial se juega en cancha neutral, pero el modelo fue entrenado
+    # con datos donde un equipo siempre es 'local'. Para enseñarle que
+    # la localía no existe en el torneo, duplicamos cada partido con los
+    # equipos intercambiados e invertimos el resultado (H↔A, A↔H, D=D).
+    # Así el modelo aprende que Home=France vs Away=Brazil y
+    # Home=Brazil vs Away=France deben dar probabilidades simétricas.
+    # ─────────────────────────────────────────────────────────────────
+    df_inv = df.copy()
+    df_inv['HomeTeam_Code'] = df['AwayTeam_Code'].values
+    df_inv['AwayTeam_Code'] = df['HomeTeam_Code'].values
+    df_inv['HST'] = df['AST'].values
+    df_inv['AST'] = df['HST'].values
+    df_inv['HC']  = df['AC'].values
+    df_inv['AC']  = df['HC'].values
+    # Invertir resultado: 2(H)→0(A), 0(A)→2(H), 1(D)→1(D)
+    df_inv['Target'] = df['Target'].map({2: 0, 0: 2, 1: 1})
+
+    X_inv = df_inv[features]
+    y_inv = df_inv['Target']
+
+    X = pd.concat([X, X_inv], ignore_index=True)
+    y = pd.concat([y, y_inv], ignore_index=True)
+
+    print(f"✅ Augmentación campo neutral: {len(df)} partidos originales → {len(X)} muestras totales (2×).")
+
     return X, y, le_equipos
 
 # ==========================================
@@ -75,9 +102,13 @@ def entrenar_modelo():
     df = cargar_datos_limpios()
     X, y, le_equipos = preparar_features(df)
     
-    # Separamos en datos de entrenamiento (80%) y prueba (20%)
-    # shuffle=False es CRÍTICO en deportes: entrenamos con el pasado para predecir el futuro
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+    # Separamos en datos de entrenamiento (80%) y prueba (20%).
+    # Con augmentación campo neutral, cada partido tiene su espejo al final del dataset.
+    # shuffle=False causaría que el test set contenga SOLO partidos espejo (artificiales),
+    # distorsionando la métrica. Usamos stratify para preservar balance de clases.
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, shuffle=True, random_state=42, stratify=y
+    )
     
     print("🧠 Entrenando Random Forest Classifier con calibración isotónica...")
     # Pasamos el estimador SIN ajustar directamente a CalibratedClassifierCV.

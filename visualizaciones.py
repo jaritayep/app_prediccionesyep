@@ -85,8 +85,11 @@ def get_recent_stats(equipo, conn):
     
     return pd.Series({col: np.average(res[col], weights=pesos/pesos.sum()) for col in res.columns})
 def get_recent_stats_wc(equipo, conn):
-    """Stats ponderadas (últimas 5 partidas) de una selección, desde historial_selecciones_ml."""
-    q = (f'SELECT "FTHG","FTAG","HST","AST","HC","AC" '
+    """Stats ponderadas (últimas 5 partidas) de una selección, desde historial_selecciones_ml.
+    Corrige la perspectiva: FTHG/HST/HC son del equipo cuando juega de local,
+    FTAG/AST/AC son del equipo cuando juega de visita.
+    """
+    q = (f'SELECT HomeTeam,AwayTeam,"FTHG","FTAG","HST","AST","HC","AC" '
          f'FROM historial_selecciones_ml '
          f'WHERE HomeTeam="{equipo}" OR AwayTeam="{equipo}" '
          f'ORDER BY Date DESC LIMIT 5')
@@ -94,9 +97,26 @@ def get_recent_stats_wc(equipo, conn):
     if res.empty:
         return pd.Series([0.0, 0.0, 4.0, 3.5, 4.5, 4.0],
                          index=['FTHG', 'FTAG', 'HST', 'AST', 'HC', 'AC'])
-    pesos = np.array([5, 4, 3, 2, 1])[:len(res)]
     res = res.fillna(0.0)
-    return pd.Series({col: np.average(res[col], weights=pesos / pesos.sum()) for col in res.columns})
+    pesos = np.array([5, 4, 3, 2, 1])[:len(res)]
+    # Convertir siempre desde la perspectiva del equipo consultado
+    gf, gc, tiros, corners = [], [], [], []
+    for _, row in res.iterrows():
+        if row['HomeTeam'] == equipo:
+            gf.append(row['FTHG']); gc.append(row['FTAG'])
+            tiros.append(row['HST']); corners.append(row['HC'])
+        else:
+            gf.append(row['FTAG']); gc.append(row['FTHG'])
+            tiros.append(row['AST']); corners.append(row['AC'])
+    w = pesos / pesos.sum()
+    return pd.Series({
+        'FTHG': np.average(gf,      weights=w),
+        'FTAG': np.average(gc,      weights=w),
+        'HST':  np.average(tiros,   weights=w),
+        'AST':  np.average(tiros,   weights=w),   # mismo valor (tiros a portería propios)
+        'HC':   np.average(corners, weights=w),
+        'AC':   np.average(corners, weights=w),   # mismo valor (córners propios)
+    })
 
 def obtener_puntos_temporada(equipo, conn):
     # Calcula la jerarquía del equipo
@@ -345,8 +365,16 @@ if menu == "Análisis del Día":
                         modelo_intl  = joblib.load('modelo_selecciones_rf.pkl')
                         encoder_intl = joblib.load('encoder_equipos_selecciones.pkl')
 
-                        df_sh = pd.read_sql(f'SELECT * FROM {hist_table} WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" ORDER BY Date DESC LIMIT 6', conn)
-                        df_sa = pd.read_sql(f'SELECT * FROM {hist_table} WHERE HomeTeam="{away_team}" OR AwayTeam="{away_team}" ORDER BY Date DESC LIMIT 6', conn)
+                        df_sh = pd.read_sql(
+                            f'SELECT HomeTeam,AwayTeam,FTHG,FTAG,HST,AST,HC,AC '
+                            f'FROM {hist_table} '
+                            f'WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" '
+                            f'ORDER BY Date DESC LIMIT 6', conn)
+                        df_sa = pd.read_sql(
+                            f'SELECT HomeTeam,AwayTeam,FTHG,FTAG,HST,AST,HC,AC '
+                            f'FROM {hist_table} '
+                            f'WHERE HomeTeam="{away_team}" OR AwayTeam="{away_team}" '
+                            f'ORDER BY Date DESC LIMIT 6', conn)
 
                         def seguro_mean(df, col, default):
                             return df[col].mean() if not df.empty and col in df.columns and pd.notna(df[col].mean()) else default
@@ -366,8 +394,10 @@ if menu == "Análisis del Día":
                         ast = concat_mean(df_sa_home['AST'], df_sa_away['HST'], 3.5)
                         ac  = concat_mean(df_sa_home['AC'],  df_sa_away['HC'],  4.0)
 
-                        xg_h = concat_mean(df_sh_home['xG_home'], df_sh_away['xG_away'], 1.2)
-                        xg_a = concat_mean(df_sa_home['xG_away'], df_sa_away['xG_home'], 1.0)
+                        # xG excluido del modelo WC (cobertura insuficiente en historial_selecciones_ml).
+                        # Se usan promedios de goles reales como proxy.
+                        xg_h = (gf_h + gc_a) / 2
+                        xg_a = (gf_a + gc_h) / 2
 
                         gf_h = concat_mean(df_sh_home['FTHG'], df_sh_away['FTAG'], 1.5)
                         gc_h = concat_mean(df_sh_home['FTAG'], df_sh_away['FTHG'], 1.0)
@@ -1195,10 +1225,16 @@ elif menu == "Portafolio de Picks":
                             if h_db in encoder_wc.classes_ and a_db in encoder_wc.classes_:
                                 h_c = encoder_wc.transform([h_db])[0]
                                 a_c = encoder_wc.transform([a_db])[0]
-                                # Modelo entrenado con 6 features (xG eliminado por cobertura insuficiente)
-                                X_input = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                                probs = modelo_wc.predict_proba(X_input)[0]
-                                prob_visita, prob_empate, prob_local = probs[0], probs[1], probs[2]
+                                # Campo neutral: doble pasada para cancelar el sesgo de localía
+                                # probs orden: [0]=visita, [1]=empate, [2]=local
+                                X_normal    = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                                X_invertido = pd.DataFrame([[a_c, h_c, ast, hst, ac, hc]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                                probs_n = modelo_wc.predict_proba(X_normal)[0]
+                                probs_i = modelo_wc.predict_proba(X_invertido)[0]
+                                # En X_invertido 'local' es a_db real → cruzar índices
+                                prob_local  = (float(probs_n[2]) + float(probs_i[0])) / 2
+                                prob_empate = (float(probs_n[1]) + float(probs_i[1])) / 2
+                                prob_visita = (float(probs_n[0]) + float(probs_i[2])) / 2
                             else:
                                 prob_visita, prob_empate, prob_local = 0.33, 0.34, 0.33
                                 
@@ -2213,9 +2249,14 @@ elif menu == "Portafolio de Picks":
                             if h_db in encoder_wc_hist.classes_ and a_db in encoder_wc_hist.classes_:
                                 h_c = encoder_wc_hist.transform([h_db])[0]
                                 a_c = encoder_wc_hist.transform([a_db])[0]
-                                X_in = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                                prbs = modelo_wc_hist.predict_proba(X_in)[0]
-                                prob_visita, prob_empate, prob_local = prbs[0], prbs[1], prbs[2]
+                                # Campo neutral: doble pasada para cancelar el sesgo de localía
+                                X_normal    = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                                X_invertido = pd.DataFrame([[a_c, h_c, ast, hst, ac, hc]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                                prbs_n = modelo_wc_hist.predict_proba(X_normal)[0]
+                                prbs_i = modelo_wc_hist.predict_proba(X_invertido)[0]
+                                prob_local  = (float(prbs_n[2]) + float(prbs_i[0])) / 2
+                                prob_empate = (float(prbs_n[1]) + float(prbs_i[1])) / 2
+                                prob_visita = (float(prbs_n[0]) + float(prbs_i[2])) / 2
                             else:
                                 prob_visita, prob_empate, prob_local = 0.33, 0.34, 0.33
                             pred_goles_home = (gf_h + gc_a) / 2
@@ -3127,7 +3168,7 @@ elif menu == "Mundial 2026":
             "Colombia": "Colombia", "Senegal": "Senegal", "México": "Mexico",
             "Estados Unidos": "United States", "Uruguay": "Uruguay", "Japón": "Japan",
             "Suiza": "Switzerland", "Dinamarca": "Denmark", "Irán": "Iran",
-            "Turquía": "Turkey" "Türkiye", "Ecuador": "Ecuador", "Austria": "Austria",
+            "Turquía": "Turkey", "Türkiye": "Turkey", "Ecuador": "Ecuador", "Austria": "Austria",
             "Corea del Sur": "Korea Republic", "Nigeria": "Nigeria", "Australia": "Australia",
             "Argelia": "Algeria", "Egipto": "Egypt", "Canadá": "Canada",
             "Noruega": "Norway", "Ucrania": "Ukraine", "Panamá": "Panama",
@@ -3143,7 +3184,7 @@ elif menu == "Mundial 2026":
             "Burkina Faso": "Burkina Faso", "Jordania": "Jordan", "Albania": "Albania",
             "Bosnia": "Bosnia and Herzegovina", "Honduras": "Honduras",
             "Macedonia Norte": "North Macedonia", "EAU": "United Arab Emirates",
-            "Cabo Verde": "Cape Verde" "Cape Verde Islands" "Cabo Verde", "Irlanda Norte": "Northern Ireland",
+            "Cabo Verde": "Cape Verde", "Cabo Verde Islands": "Cape Verde", "Irlanda Norte": "Northern Ireland",
             "Jamaica": "Jamaica", "Georgia": "Georgia", "Finlandia": "Finland",
             "Ghana": "Ghana", "Islandia": "Iceland", "Bolivia": "Bolivia",
             "Israel": "Israel", "Kosovo": "Kosovo", "Omán": "Oman",
@@ -3215,16 +3256,18 @@ elif menu == "Mundial 2026":
                 ast, ac = _fuerza_seleccion(a)
                 h_c = encoder_wc.transform([h])[0]
                 a_c = encoder_wc.transform([a])[0]
-                X = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]],
-                                  columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                probs = modelo_wc.predict_proba(X)[0]
-                p_a_raw, p_d_raw, p_h_raw = float(probs[0]), float(probs[1]), float(probs[2])
-
-                NEUTRAL_FACTOR = 0.15 
-                p_h_raw = p_h_raw * (1 - NEUTRAL_FACTOR) + p_d_raw * (NEUTRAL_FACTOR / 2)
-                p_a_raw = p_a_raw * (1 - NEUTRAL_FACTOR) + p_d_raw * (NEUTRAL_FACTOR / 2)
-                total = p_h_raw + p_d_raw + p_a_raw
-                p_h_raw, p_d_raw, p_a_raw = p_h_raw/total, p_d_raw/total, p_a_raw/total
+                # Campo neutral: doble pasada para cancelar el sesgo de localía
+                # probs orden: [0]=visita, [1]=empate, [2]=local
+                X_normal    = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]],
+                                           columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                X_invertido = pd.DataFrame([[a_c, h_c, ast, hst, ac, hc]],
+                                           columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+                probs_n = modelo_wc.predict_proba(X_normal)[0]
+                probs_i = modelo_wc.predict_proba(X_invertido)[0]
+                # En X_invertido 'local' es 'a' real → cruzar índices
+                p_h_raw = (float(probs_n[2]) + float(probs_i[0])) / 2
+                p_d_raw = (float(probs_n[1]) + float(probs_i[1])) / 2
+                p_a_raw = (float(probs_n[0]) + float(probs_i[2])) / 2
             else:
                 p_h_raw, p_d_raw, p_a_raw = 0.33, 0.33, 0.33
 
