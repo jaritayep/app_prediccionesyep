@@ -25,6 +25,9 @@ def cargar_datos_limpios():
     df = pd.read_sql(query, conn)
     conn.close()
 
+    # Excluimos amistosos: el modelo debe aprender solo de partidos competitivos
+    df = df[~df['Torneo'].str.contains('Friendly|Amistoso|friendly', case=False, na=False)]
+
     # Eliminamos cualquier fila que todavía tenga valores nulos en tiros o córners
     df = df.dropna(subset=['HST', 'AST', 'HC', 'AC'])
 
