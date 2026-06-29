@@ -20,8 +20,10 @@ def poisson_prob(lamba_val, k):
     if lamba_val <= 0: return 0
     return (math.exp(-lamba_val) * (lamba_val**k)) / math.factorial(k)
 
-def prob_over(promedio, umbral):
-    """Calcula la probabilidad de que ocurra MÁS que el umbral"""
+def poisson_prob_over(promedio, umbral):
+    """Calcula la probabilidad de que ocurra MÁS que el umbral (distribución Poisson).
+    Renombrada desde prob_over para evitar colisión con la variable local prob_over = 0.5
+    que se define más abajo en el scope de Streamlit."""
     if promedio <= 0: return 0.05
     prob_acumulada = 0
     # Sumamos las probabilidades de 0 hasta el umbral
@@ -315,7 +317,7 @@ def predecir_analisis_dia(home_team, away_team, modelo_intl, encoder_intl, conn)
 
     # prob_over usa Poisson real (igual que el pipeline de clubes)
     # en lugar de la sigmoide aproximada que subestimaba el Over 2.5.
-    prob_over_val = prob_over(promedio_goles, 2.5)
+    prob_over_val = poisson_prob_over(promedio_goles, 2.5)
 
     return {
         'prob_local': prob_local,
