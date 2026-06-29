@@ -71,7 +71,7 @@ def preparar_features(df):
     # Esto eleva sus stats al rango de equipos CONCACAF+CONMEBOL
     # de nivel medio-alto sin distorsionar los resultados históricos.
     # ─────────────────────────────────────────────────────────────────
-    USA_BOOST = 1.15
+    USA_BOOST = 1.20
     USA_NAMES = {'United States', 'USA'}
 
     mask_home = df['HomeTeam'].isin(USA_NAMES)
