@@ -145,6 +145,184 @@ def obtener_dias_descanso(equipo, conn):
 
 conn = sqlite3.connect(DB_NAME)
 
+
+def predecir_analisis_dia(home_team, away_team, modelo_intl, encoder_intl, conn):
+    """Pipeline unificado para partidos de selecciones en Análisis del Día.
+    Usa el mismo blend aditivo FIFA 80/20 que el bloque es_mundial."""
+    import math as _math
+
+    hist_table = "historial_selecciones_ml"
+
+    df_sh = pd.read_sql(
+        f'SELECT HomeTeam,AwayTeam,FTHG,FTAG,HST,AST,HC,AC '
+        f'FROM {hist_table} '
+        f'WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" '
+        f'ORDER BY Date DESC LIMIT 6', conn)
+    df_sa = pd.read_sql(
+        f'SELECT HomeTeam,AwayTeam,FTHG,FTAG,HST,AST,HC,AC '
+        f'FROM {hist_table} '
+        f'WHERE HomeTeam="{away_team}" OR AwayTeam="{away_team}" '
+        f'ORDER BY Date DESC LIMIT 6', conn)
+
+    def concat_mean_fn(s1, s2, default):
+        combined = pd.concat([s1, s2]).reset_index(drop=True)
+        if combined.empty or combined.isna().all():
+            return default
+        n = len(combined)
+        base_w = np.array([5, 4, 3, 2, 1], dtype=float)
+        w = base_w[:n] if n <= len(base_w) else np.concatenate([base_w, np.ones(n - len(base_w))])
+        mask = combined.notna()
+        if mask.sum() == 0:
+            return default
+        v = np.average(combined[mask], weights=w[mask.values])
+        return float(v) if pd.notna(v) else default
+
+    df_sh_home = df_sh[df_sh['HomeTeam'] == home_team]
+    df_sh_away = df_sh[df_sh['AwayTeam'] == home_team]
+    df_sa_home = df_sa[df_sa['HomeTeam'] == away_team]
+    df_sa_away = df_sa[df_sa['AwayTeam'] == away_team]
+
+    hst = concat_mean_fn(df_sh_home['HST'], df_sh_away['AST'], 4.0)
+    hc  = concat_mean_fn(df_sh_home['HC'],  df_sh_away['AC'],  4.5)
+    ast = concat_mean_fn(df_sa_home['AST'], df_sa_away['HST'], 3.5)
+    ac  = concat_mean_fn(df_sa_home['AC'],  df_sa_away['HC'],  4.0)
+
+    gf_h = concat_mean_fn(df_sh_home['FTHG'], df_sh_away['FTAG'], 1.3)
+    gc_h = concat_mean_fn(df_sh_home['FTAG'], df_sh_away['FTHG'], 1.3)
+    gf_a = concat_mean_fn(df_sa_home['FTHG'], df_sa_away['FTAG'], 1.3)
+    gc_a = concat_mean_fn(df_sa_home['FTAG'], df_sa_away['FTHG'], 1.3)
+
+    xg_h = (gf_h + gc_a) / 2
+    xg_a = (gf_a + gc_h) / 2
+
+    if home_team in encoder_intl.classes_ and away_team in encoder_intl.classes_:
+        h_c = encoder_intl.transform([home_team])[0]
+        a_c = encoder_intl.transform([away_team])[0]
+        X_normal    = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]],
+                                   columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+        X_invertido = pd.DataFrame([[a_c, h_c, ast, hst, ac, hc]],
+                                   columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
+        probs_n = modelo_intl.predict_proba(X_normal)[0]
+        probs_i = modelo_intl.predict_proba(X_invertido)[0]
+        p_h_raw = (float(probs_n[2]) + float(probs_i[0])) / 2
+        p_d_raw = (float(probs_n[1]) + float(probs_i[1])) / 2
+        p_a_raw = (float(probs_n[0]) + float(probs_i[2])) / 2
+    else:
+        p_h_raw, p_d_raw, p_a_raw = 0.33, 0.34, 0.33
+
+    _UEFA = {
+        "France","Spain","England","Germany","Portugal","Netherlands",
+        "Italy","Belgium","Croatia","Switzerland","Denmark","Austria",
+        "Poland","Serbia","Ukraine","Czech Republic","Hungary","Slovakia",
+        "Romania","Turkey","Scotland","Wales","Greece","Slovenia",
+        "Albania","Georgia","Norway","Sweden","Finland",
+        "Bosnia and Herzegovina","North Macedonia","Kosovo","Montenegro",
+        "Bulgaria","Luxembourg","Belarus","Ireland","Northern Ireland",
+        "Iceland","Israel"
+    }
+    _CONMEBOL = {
+        "Argentina","Brazil","Uruguay","Colombia","Chile",
+        "Ecuador","Peru","Paraguay","Venezuela","Bolivia"
+    }
+    try:
+        _df_fifa = pd.read_csv('fifa_ranking_2026.csv')
+        _df_fifa.columns = [c.strip() for c in _df_fifa.columns]
+        _TRAD_CSV = {
+            "Francia":"France","España":"Spain","Argentina":"Argentina",
+            "Inglaterra":"England","Portugal":"Portugal","Brasil":"Brazil",
+            "Países Bajos":"Netherlands","Marruecos":"Morocco","Bélgica":"Belgium",
+            "Alemania":"Germany","Croacia":"Croatia","Italia":"Italy",
+            "Colombia":"Colombia","Senegal":"Senegal","México":"Mexico",
+            "Estados Unidos":"United States","Uruguay":"Uruguay","Japón":"Japan",
+            "Suiza":"Switzerland","Dinamarca":"Denmark","Irán":"Iran",
+            "Turquía":"Turkey","Ecuador":"Ecuador","Austria":"Austria",
+            "Corea del Sur":"Korea Republic","Nigeria":"Nigeria","Australia":"Australia",
+            "Argelia":"Algeria","Egipto":"Egypt","Canadá":"Canada",
+            "Noruega":"Norway","Ucrania":"Ukraine","Panamá":"Panama",
+            "Costa de Marfil":"Ivory Coast","Polonia":"Poland","Rusia":"Russia",
+            "Gales":"Wales","Suecia":"Sweden","Serbia":"Serbia",
+            "Paraguay":"Paraguay","Chequia":"Czech Republic","Hungría":"Hungary",
+            "Escocia":"Scotland","Túnez":"Tunisia","Camerún":"Cameroon",
+            "RD Congo":"DR Congo","Grecia":"Greece","Eslovaquia":"Slovakia",
+            "Venezuela":"Venezuela","Uzbekistán":"Uzbekistan","Costa Rica":"Costa Rica",
+            "Malí":"Mali","Perú":"Peru","Chile":"Chile","Catar":"Qatar",
+            "Rumanía":"Romania","Irak":"Iraq","Eslovenia":"Slovenia",
+            "Irlanda":"Ireland","Sudáfrica":"South Africa","Arabia Saudita":"Saudi Arabia",
+            "Burkina Faso":"Burkina Faso","Jordania":"Jordan","Albania":"Albania",
+            "Bosnia":"Bosnia and Herzegovina","Honduras":"Honduras",
+            "Macedonia Norte":"North Macedonia","EAU":"United Arab Emirates",
+            "Cabo Verde":"Cape Verde","Irlanda Norte":"Northern Ireland",
+            "Jamaica":"Jamaica","Georgia":"Georgia","Finlandia":"Finland",
+            "Ghana":"Ghana","Islandia":"Iceland","Bolivia":"Bolivia",
+            "Israel":"Israel","Kosovo":"Kosovo","Omán":"Oman",
+            "Guinea":"Guinea","Montenegro":"Montenegro","Curazao":"Curaçao",
+            "Haití":"Haiti","Siria":"Syria","Nueva Zelanda":"New Zealand",
+            "Bulgaria":"Bulgaria","Gabón":"Gabon","Uganda":"Uganda",
+            "Angola":"Angola","Benín":"Benin","Baréin":"Bahrain",
+            "Zambia":"Zambia","Tailandia":"Thailand","China":"China",
+            "Palestina":"Palestine","Guatemala":"Guatemala",
+            "Bielorrusia":"Belarus","Luxemburgo":"Luxembourg",
+            "Vietnam":"Vietnam","El Salvador":"El Salvador",
+        }
+        _df_fifa['country_en'] = _df_fifa['country'].str.strip().map(_TRAD_CSV)
+        _pts_min, _pts_max = _df_fifa['points'].min(), _df_fifa['points'].max()
+        _val_min, _val_max = _df_fifa['valor_total_mill_eur'].min(), _df_fifa['valor_total_mill_eur'].max()
+        _df_fifa['pts_norm'] = (_df_fifa['points'] - _pts_min) / (_pts_max - _pts_min)
+        _df_fifa['val_norm'] = (_df_fifa['valor_total_mill_eur'] - _val_min) / (_val_max - _val_min)
+        _FIFA_SCORES = dict(zip(_df_fifa['country_en'], zip(_df_fifa['pts_norm'], _df_fifa['val_norm'])))
+    except Exception:
+        _FIFA_SCORES = {}
+
+    def _score_sel(eq):
+        if eq in _FIFA_SCORES:
+            pts_n, val_n = _FIFA_SCORES[eq]
+        else:
+            pts_n, val_n = 0.3, 0.05
+        conf = 1.0 if eq in _UEFA or eq in _CONMEBOL else 0.0
+        return 0.40 * pts_n + 0.40 * val_n + 0.20 * conf
+
+    _score_h = _score_sel(home_team)
+    _score_a = _score_sel(away_team)
+    _diff    = _score_h - _score_a
+
+    # Blend aditivo: modelo RF 80% + FIFA ranking 20%
+    _fifa_ph = 1 / (1 + _math.exp(-1.5 * _diff))
+    _fifa_pa = 1 - _fifa_ph
+    _fifa_pd = max(0.05, 0.5 - abs(_diff) * 0.3)
+    _fifa_sum = _fifa_ph + _fifa_pa + _fifa_pd
+    _fifa_ph /= _fifa_sum; _fifa_pa /= _fifa_sum; _fifa_pd /= _fifa_sum
+
+    _W_MODEL = 0.80; _W_FIFA = 0.20
+    p_h_aj = _W_MODEL * p_h_raw + _W_FIFA * _fifa_ph
+    p_a_aj = _W_MODEL * p_a_raw + _W_FIFA * _fifa_pa
+    p_d_aj = _W_MODEL * p_d_raw + _W_FIFA * _fifa_pd
+    _suma  = p_h_aj + p_a_aj + p_d_aj
+    prob_local  = p_h_aj / _suma
+    prob_visita = p_a_aj / _suma
+    prob_empate = p_d_aj / _suma
+
+    _xg_base_h = (gf_h + gc_a) / 2
+    _xg_base_a = (gf_a + gc_h) / 2
+    _total_goles = _xg_base_h + _xg_base_a
+    _prop_h = p_h_raw / (p_h_raw + p_a_raw) if (p_h_raw + p_a_raw) > 0 else 0.5
+    _prop_a = 1.0 - _prop_h
+    pred_home = _total_goles * _prop_h
+    pred_away = _total_goles * _prop_a
+    promedio_goles = pred_home + pred_away
+    prob_over_val = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
+
+    return {
+        'prob_local': prob_local,
+        'prob_empate': prob_empate,
+        'prob_visita': prob_visita,
+        'pred_home': pred_home,
+        'pred_away': pred_away,
+        'promedio_goles': promedio_goles,
+        'prob_over': prob_over_val,
+        'hst': hst, 'ast': ast, 'hc': hc, 'ac': ac,
+        'xg_h': xg_h, 'xg_a': xg_a,
+    }
+
 st.sidebar.title("Menú Principal")
 menu = st.sidebar.radio("Ir a:", ["Análisis del Día", "Auditoría (Resultados)", "Portafolio de Picks", "Mundial 2026"])
 st.sidebar.markdown("---")
@@ -368,184 +546,21 @@ if menu == "Análisis del Día":
                         modelo_intl  = joblib.load('modelo_selecciones_rf.pkl')
                         encoder_intl = joblib.load('encoder_equipos_selecciones.pkl')
 
-                        df_sh = pd.read_sql(
-                            f'SELECT HomeTeam,AwayTeam,FTHG,FTAG,HST,AST,HC,AC '
-                            f'FROM {hist_table} '
-                            f'WHERE HomeTeam="{home_team}" OR AwayTeam="{home_team}" '
-                            f'ORDER BY Date DESC LIMIT 6', conn)
-                        df_sa = pd.read_sql(
-                            f'SELECT HomeTeam,AwayTeam,FTHG,FTAG,HST,AST,HC,AC '
-                            f'FROM {hist_table} '
-                            f'WHERE HomeTeam="{away_team}" OR AwayTeam="{away_team}" '
-                            f'ORDER BY Date DESC LIMIT 6', conn)
-
-                        def seguro_mean(df, col, default):
-                            return df[col].mean() if not df.empty and col in df.columns and pd.notna(df[col].mean()) else default
-
-                        def concat_mean(s1, s2, default):
-                            # Pesos de recencia [5,4,3,2,1] aplicados al orden original
-                            # (el primer elemento de cada serie es el más reciente,
-                            # pues las queries usan ORDER BY Date DESC).
-                            combined = pd.concat([s1, s2]).reset_index(drop=True)
-                            if combined.empty or combined.isna().all():
-                                return default
-                            n = len(combined)
-                            base_w = np.array([5, 4, 3, 2, 1], dtype=float)
-                            if n <= len(base_w):
-                                w = base_w[:n]
-                            else:
-                                w = np.concatenate([base_w, np.ones(n - len(base_w))])
-                            mask = combined.notna()
-                            if mask.sum() == 0:
-                                return default
-                            v = np.average(combined[mask], weights=w[mask.values])
-                            return float(v) if pd.notna(v) else default
-
-                        df_sh_home = df_sh[df_sh['HomeTeam'] == home_team]
-                        df_sh_away = df_sh[df_sh['AwayTeam'] == home_team]
-                        df_sa_home = df_sa[df_sa['HomeTeam'] == away_team]
-                        df_sa_away = df_sa[df_sa['AwayTeam'] == away_team]
-
-                        hst = concat_mean(df_sh_home['HST'], df_sh_away['AST'], 4.0)
-                        hc  = concat_mean(df_sh_home['HC'],  df_sh_away['AC'],  4.5)
-                        ast = concat_mean(df_sa_home['AST'], df_sa_away['HST'], 3.5)
-                        ac  = concat_mean(df_sa_home['AC'],  df_sa_away['HC'],  4.0)
-
-                        gf_h = concat_mean(df_sh_home['FTHG'], df_sh_away['FTAG'], 1.5)
-                        gc_h = concat_mean(df_sh_home['FTAG'], df_sh_away['FTHG'], 1.0)
-                        gf_a = concat_mean(df_sa_home['FTHG'], df_sa_away['FTAG'], 1.2)
-                        gc_a = concat_mean(df_sa_home['FTAG'], df_sa_away['FTHG'], 1.3)
-
-                        # xG excluido del modelo WC (cobertura insuficiente en historial_selecciones_ml).
-                        # Se usan promedios de goles reales como proxy.
-                        xg_h = (gf_h + gc_a) / 2
-                        xg_a = (gf_a + gc_h) / 2
-
-                        if home_team in encoder_intl.classes_ and away_team in encoder_intl.classes_:
-                            h_c = encoder_intl.transform([home_team])[0]
-                            a_c = encoder_intl.transform([away_team])[0]
-                            # Campo neutral: llamar al modelo en ambas direcciones y promediar
-                            # para cancelar el sesgo de localía que aprendió el modelo
-                            X_normal    = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                            X_invertido = pd.DataFrame([[a_c, h_c, ast, hst, ac, hc]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                            probs_n = modelo_intl.predict_proba(X_normal)[0]
-                            probs_i = modelo_intl.predict_proba(X_invertido)[0]
-                            # probs orden: [0]=visita, [1]=empate, [2]=local
-                            # En X_invertido 'local' es away_team real → cruzar indices
-                            p_h_raw = (float(probs_n[2]) + float(probs_i[0])) / 2
-                            p_d_raw = (float(probs_n[1]) + float(probs_i[1])) / 2
-                            p_a_raw = (float(probs_n[0]) + float(probs_i[2])) / 2
-                        else:
-                            p_h_raw, p_d_raw, p_a_raw = 0.33, 0.34, 0.33
-
-                        _UEFA = {
-                            "France","Spain","England","Germany","Portugal","Netherlands",
-                            "Italy","Belgium","Croatia","Switzerland","Denmark","Austria",
-                            "Poland","Serbia","Ukraine","Czech Republic","Hungary","Slovakia",
-                            "Romania","Turkey","Scotland","Wales","Greece","Slovenia",
-                            "Albania","Georgia","Norway","Sweden","Finland",
-                            "Bosnia and Herzegovina","North Macedonia","Kosovo","Montenegro",
-                            "Bulgaria","Luxembourg","Belarus","Ireland","Northern Ireland",
-                            "Iceland","Israel"
-                        }
-                        _CONMEBOL = {
-                            "Argentina","Brazil","Uruguay","Colombia","Chile",
-                            "Ecuador","Peru","Paraguay","Venezuela","Bolivia"
-                        }
-                        try:
-                            _df_fifa = pd.read_csv('fifa_ranking_2026.csv')
-                            _df_fifa.columns = [c.strip() for c in _df_fifa.columns]
-                            _TRAD_CSV = {
-                                "Francia":"France","España":"Spain","Argentina":"Argentina",
-                                "Inglaterra":"England","Portugal":"Portugal","Brasil":"Brazil",
-                                "Países Bajos":"Netherlands","Marruecos":"Morocco","Bélgica":"Belgium",
-                                "Alemania":"Germany","Croacia":"Croatia","Italia":"Italy",
-                                "Colombia":"Colombia","Senegal":"Senegal","México":"Mexico",
-                                "Estados Unidos":"United States","Uruguay":"Uruguay","Japón":"Japan",
-                                "Suiza":"Switzerland","Dinamarca":"Denmark","Irán":"Iran",
-                                "Turquía":"Turkey","Ecuador":"Ecuador","Austria":"Austria",
-                                "Corea del Sur":"Korea Republic","Nigeria":"Nigeria","Australia":"Australia",
-                                "Argelia":"Algeria","Egipto":"Egypt","Canadá":"Canada",
-                                "Noruega":"Norway","Ucrania":"Ukraine","Panamá":"Panama",
-                                "Costa de Marfil":"Ivory Coast","Polonia":"Poland","Rusia":"Russia",
-                                "Gales":"Wales","Suecia":"Sweden","Serbia":"Serbia",
-                                "Paraguay":"Paraguay","Chequia":"Czech Republic","Hungría":"Hungary",
-                                "Escocia":"Scotland","Túnez":"Tunisia","Camerún":"Cameroon",
-                                "RD Congo":"DR Congo","Grecia":"Greece","Eslovaquia":"Slovakia",
-                                "Venezuela":"Venezuela","Uzbekistán":"Uzbekistan","Costa Rica":"Costa Rica",
-                                "Malí":"Mali","Perú":"Peru","Chile":"Chile","Catar":"Qatar",
-                                "Rumanía":"Romania","Irak":"Iraq","Eslovenia":"Slovenia",
-                                "Irlanda":"Ireland","Sudáfrica":"South Africa","Arabia Saudita":"Saudi Arabia",
-                                "Burkina Faso":"Burkina Faso","Jordania":"Jordan","Albania":"Albania",
-                                "Bosnia":"Bosnia and Herzegovina","Honduras":"Honduras",
-                                "Macedonia Norte":"North Macedonia","EAU":"United Arab Emirates",
-                                "Cabo Verde":"Cape Verde","Irlanda Norte":"Northern Ireland",
-                                "Jamaica":"Jamaica","Georgia":"Georgia","Finlandia":"Finland",
-                                "Ghana":"Ghana","Islandia":"Iceland","Bolivia":"Bolivia",
-                                "Israel":"Israel","Kosovo":"Kosovo","Omán":"Oman",
-                                "Guinea":"Guinea","Montenegro":"Montenegro","Curazao":"Curaçao",
-                                "Haití":"Haiti","Siria":"Syria","Nueva Zelanda":"New Zealand",
-                                "Bulgaria":"Bulgaria","Gabón":"Gabon","Uganda":"Uganda",
-                                "Angola":"Angola","Benín":"Benin","Baréin":"Bahrain",
-                                "Zambia":"Zambia","Tailandia":"Thailand","China":"China",
-                                "Palestina":"Palestine","Guatemala":"Guatemala",
-                                "Bielorrusia":"Belarus","Luxemburgo":"Luxembourg",
-                                "Vietnam":"Vietnam","El Salvador":"El Salvador",
-                            }
-                            _df_fifa['country_en'] = _df_fifa['country'].str.strip().map(_TRAD_CSV)
-                            _pts_min, _pts_max = _df_fifa['points'].min(), _df_fifa['points'].max()
-                            _val_min, _val_max = _df_fifa['valor_total_mill_eur'].min(), _df_fifa['valor_total_mill_eur'].max()
-                            _df_fifa['pts_norm'] = (_df_fifa['points'] - _pts_min) / (_pts_max - _pts_min)
-                            _df_fifa['val_norm'] = (_df_fifa['valor_total_mill_eur'] - _val_min) / (_val_max - _val_min)
-                            _FIFA_SCORES = dict(zip(_df_fifa['country_en'], zip(_df_fifa['pts_norm'], _df_fifa['val_norm'])))
-                        except Exception:
-                            _FIFA_SCORES = {}
-
-                        def _score_sel(eq):
-                            if eq in _FIFA_SCORES:
-                                pts_n, val_n = _FIFA_SCORES[eq]
-                            else:
-                                pts_n, val_n = 0.3, 0.05
-                            conf = 1.0 if eq in _UEFA or eq in _CONMEBOL else 0.0
-                            return 0.40 * pts_n + 0.40 * val_n + 0.20 * conf
-
-                        _score_h = _score_sel(home_team)
-                        _score_a = _score_sel(away_team)
-                        _diff    = _score_h - _score_a
-
-                        # Blend aditivo: modelo RF 80% + FIFA ranking 20%
-                        # Sigmoide suavizada (k=1.5 en lugar de 3) para evitar
-                        # que diferencias pequeñas de ranking anulen al modelo RF.
-                        import math as _math
-                        _fifa_ph = 1 / (1 + _math.exp(-1.5 * _diff))
-                        _fifa_pa = 1 - _fifa_ph
-                        _fifa_pd = max(0.05, 0.5 - abs(_diff) * 0.3)
-                        _fifa_sum = _fifa_ph + _fifa_pa + _fifa_pd
-                        _fifa_ph /= _fifa_sum; _fifa_pa /= _fifa_sum; _fifa_pd /= _fifa_sum
-
-                        _W_MODEL = 0.80; _W_FIFA = 0.20
-                        p_h_aj = _W_MODEL * p_h_raw + _W_FIFA * _fifa_ph
-                        p_a_aj = _W_MODEL * p_a_raw + _W_FIFA * _fifa_pa
-                        p_d_aj = _W_MODEL * p_d_raw + _W_FIFA * _fifa_pd
-                        _suma  = p_h_aj + p_a_aj + p_d_aj
-                        prob_local  = p_h_aj / _suma
-                        prob_visita = p_a_aj / _suma
-                        prob_empate = p_d_aj / _suma
-
-                        # Total de goles esperado desde histórico (sin ajuste FIFA)
-                        _xg_base_h = (gf_h + gc_a) / 2
-                        _xg_base_a = (gf_a + gc_h) / 2
-                        _total_goles = _xg_base_h + _xg_base_a
-                        # Repartir ese total proporcionalmente a las probs CRUDAS del RF
-                        # (antes del blend FIFA) para evitar circularidad: el xG no
-                        # debe depender del sesgo de ranking que ya ajustó la torta.
-                        _prop_h = p_h_raw / (p_h_raw + p_a_raw) if (p_h_raw + p_a_raw) > 0 else 0.5
-                        _prop_a = 1.0 - _prop_h
-                        pred_home = _total_goles * _prop_h
-                        pred_away = _total_goles * _prop_a
-                        promedio_goles = pred_home + pred_away
-                        prob_over = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
-                        _tiros_h, _tiros_a   = hst, ast
+                        _res = predecir_analisis_dia(home_team, away_team, modelo_intl, encoder_intl, conn)
+                        prob_local    = _res['prob_local']
+                        prob_empate   = _res['prob_empate']
+                        prob_visita   = _res['prob_visita']
+                        pred_home     = _res['pred_home']
+                        pred_away     = _res['pred_away']
+                        promedio_goles = _res['promedio_goles']
+                        prob_over     = _res['prob_over']
+                        hst           = _res['hst']
+                        ast           = _res['ast']
+                        hc            = _res['hc']
+                        ac            = _res['ac']
+                        xg_h          = _res['xg_h']
+                        xg_a          = _res['xg_a']
+                        _tiros_h, _tiros_a     = hst, ast
                         _corners_h, _corners_a = hc, ac
 
                         # --- SECCIÓN 2: TORTA CON ANOTACIÓN CENTRAL ---
@@ -3245,12 +3260,28 @@ elif menu == "Mundial 2026":
             return None, None
 
         def _fuerza_seleccion(equipo):
-            df_h = df_hist_wc[df_hist_wc['HomeTeam'] == equipo]
-            df_a = df_hist_wc[df_hist_wc['AwayTeam'] == equipo]
-            if df_h.empty and df_a.empty:
+            df_eq = pd.read_sql(
+                f'SELECT HomeTeam, AwayTeam, HST, AST, HC, AC '
+                f'FROM historial_selecciones_ml '
+                f'WHERE HomeTeam="{equipo}" OR AwayTeam="{equipo}" '
+                f'ORDER BY Date DESC LIMIT 8',
+                conn
+            )
+            if df_eq.empty:
                 return 4.0, 5.0
-            hst = pd.concat([df_h['HST'], df_a['AST']]).mean() if not (df_h.empty and df_a.empty) else 4.0
-            hc  = pd.concat([df_h['HC'],  df_a['AC']]).mean()  if not (df_h.empty and df_a.empty) else 5.0
+            df_eq = df_eq.fillna(0.0)
+            hst_vals, hc_vals = [], []
+            for _, row in df_eq.iterrows():
+                if row['HomeTeam'] == equipo:
+                    hst_vals.append(row['HST']); hc_vals.append(row['HC'])
+                else:
+                    hst_vals.append(row['AST']); hc_vals.append(row['AC'])
+            n = len(hst_vals)
+            base_w = np.array([5, 4, 3, 2, 1], dtype=float)
+            w = base_w[:n] if n <= len(base_w) else np.concatenate([base_w, np.ones(n - len(base_w))])
+            w = w / w.sum()
+            hst = float(np.average(hst_vals, weights=w))
+            hc  = float(np.average(hc_vals,  weights=w))
             return hst, hc
 
         def predecir_wc(h_raw, a_raw):
@@ -3311,7 +3342,7 @@ elif menu == "Mundial 2026":
 
             p_h_ajustada = p_h_raw * multiplicador_h
             p_a_ajustada = p_a_raw * multiplicador_a
-            p_d_ajustada = p_d_raw * 0.9
+            p_d_ajustada = p_d_raw
 
             suma_probs = p_h_ajustada + p_a_ajustada + p_d_ajustada
             p_h = p_h_ajustada / suma_probs
