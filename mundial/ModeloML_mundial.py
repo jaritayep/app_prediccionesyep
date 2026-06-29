@@ -1,7 +1,7 @@
 import sqlite3
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import cross_val_score
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import LabelEncoder
@@ -105,13 +105,38 @@ def entrenar_modelo():
     df = cargar_datos_limpios()
     X, y, le_equipos = preparar_features(df)
     
-    # Separamos en datos de entrenamiento (80%) y prueba (20%).
-    # Con augmentación campo neutral, cada partido tiene su espejo al final del dataset.
-    # shuffle=False causaría que el test set contenga SOLO partidos espejo (artificiales),
-    # distorsionando la métrica. Usamos stratify para preservar balance de clases.
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, shuffle=True, random_state=42, stratify=y
-    )
+    # ─────────────────────────────────────────────────────────────────
+    # SPLIT CRONOLÓGICO TEMPORAL:
+    # Con shuffle=True un partido de 2024 puede quedar en train y uno de
+    # 2018 en test, dando al modelo información "del futuro" durante el
+    # entrenamiento y artificialmente inflando la accuracy.
+    #
+    # Solución: ordenamos el dataset aumentado por el índice original
+    # (ya está ordenado cronológicamente desde cargar_datos_limpios).
+    # Los primeros N×2 son los originales en orden; los siguientes N×2
+    # son los espejos en el mismo orden. Intercalamos para que cada
+    # partido y su espejo queden juntos, y luego cortamos el 80% más
+    # antiguo para train y el 20% más reciente para test.
+    # Así el test set representa siempre el "futuro" del modelo.
+    # ─────────────────────────────────────────────────────────────────
+    n_total = len(X)
+    n_originales = n_total // 2          # mitad original, mitad espejo
+    idx_orig   = np.arange(n_originales)
+    idx_espejo = np.arange(n_originales, n_total)
+
+    # Intercalamos: [orig_0, espejo_0, orig_1, espejo_1, ...]
+    idx_intercalado = np.empty(n_total, dtype=int)
+    idx_intercalado[0::2] = idx_orig
+    idx_intercalado[1::2] = idx_espejo
+
+    X_ordered = X.iloc[idx_intercalado].reset_index(drop=True)
+    y_ordered = y.iloc[idx_intercalado].reset_index(drop=True)
+
+    corte = int(n_total * 0.80)
+    X_train, X_test = X_ordered.iloc[:corte], X_ordered.iloc[corte:]
+    y_train, y_test = y_ordered.iloc[:corte], y_ordered.iloc[corte:]
+
+    print(f"✅ Split cronológico: {len(X_train)} muestras train | {len(X_test)} muestras test (20% más reciente).")
     
     print("🧠 Entrenando Random Forest Classifier con calibración isotónica...")
     # Pasamos el estimador SIN ajustar directamente a CalibratedClassifierCV.

@@ -301,15 +301,21 @@ def predecir_analisis_dia(home_team, away_team, modelo_intl, encoder_intl, conn)
     prob_visita = p_a_aj / _suma
     prob_empate = p_d_aj / _suma
 
-    _xg_base_h = (gf_h + gc_a) / 2
-    _xg_base_a = (gf_a + gc_h) / 2
-    _total_goles = _xg_base_h + _xg_base_a
-    _prop_h = p_h_raw / (p_h_raw + p_a_raw) if (p_h_raw + p_a_raw) > 0 else 0.5
-    _prop_a = 1.0 - _prop_h
-    pred_home = _total_goles * _prop_h
-    pred_away = _total_goles * _prop_a
+    # ─────────────────────────────────────────────────────────────────
+    # PROYECCIÓN DE GOLES:
+    # xg_h y xg_a ya fueron calculados arriba como promedios históricos
+    # (ataque propio vs defensa rival). Los usamos directamente como
+    # estimadores de goles esperados — sin redistribuir con prop_h/prop_a,
+    # porque las probabilidades de resultado (H/D/A) no determinan cuántos
+    # goles marca cada equipo; son variables relacionadas pero distintas.
+    # ─────────────────────────────────────────────────────────────────
+    pred_home = xg_h          # ya calculado: (gf_h + gc_a) / 2
+    pred_away = xg_a          # ya calculado: (gf_a + gc_h) / 2
     promedio_goles = pred_home + pred_away
-    prob_over_val = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
+
+    # prob_over usa Poisson real (igual que el pipeline de clubes)
+    # en lugar de la sigmoide aproximada que subestimaba el Over 2.5.
+    prob_over_val = prob_over(promedio_goles, 2.5)
 
     return {
         'prob_local': prob_local,
