@@ -3183,6 +3183,7 @@ elif menu == "Mundial 2026":
         encoder_wc = joblib.load('encoder_equipos_selecciones.pkl')
         
         df_fixture_wc = pd.read_sql("SELECT * FROM fixture_mundial WHERE Grupo LIKE 'GROUP_%'", conn)
+        df_fixture_wc = df_fixture_wc.drop_duplicates(subset=['fixture_id']).reset_index(drop=True)
         df_fixture_wc['_letra'] = df_fixture_wc['Grupo'].str.replace('GROUP_', '', regex=False).str.strip()
 
         # Traducción de nombres del fixture a canónicos DB via ALIAS_GLOBAL
