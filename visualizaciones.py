@@ -2522,6 +2522,15 @@ elif menu == "Portafolio de Picks":
 
             if not big_portfolio_rows:
                 st.info("No se encontraron oportunidades históricas con edge en los archivos de odds disponibles.")
+                # ── Diagnóstico ────────────────────────────────
+                with st.expander("🔍 Diagnóstico (por qué no hay datos)"):
+                    st.write(f"**Picks en portafolio_historico (DB):** {len(df_db_hist)}")
+                    st.write(f"**Picks en big_portfolio_from_db:** {len(big_portfolio_from_db)}")
+                    st.write(f"**Días en fechas_en_db:** {len(fechas_en_db)} → {sorted(list(fechas_en_db))[:5]}")
+                    st.write(f"**Archivos CSV en odds_data/:** {len(archivos_hist)}")
+                    st.write(f"**Fechas CSV nuevas (sin DB):** {len(fechas_csv_nuevas)}")
+                    if not df_db_hist.empty:
+                        st.dataframe(df_db_hist[['Date','HomeTeam','AwayTeam','Estado']].head(10), hide_index=True)
             else:
                 df_big = pd.DataFrame(big_portfolio_rows)
 
