@@ -61,6 +61,31 @@ def preparar_features(df):
     mapa_resultados = {'H': 2, 'D': 1, 'A': 0}
     df['Target'] = df['FTR'].map(mapa_resultados)
 
+    # ─────────────────────────────────────────────────────────────────
+    # BOOST ESTADOS UNIDOS (host advantage + squad upgrade):
+    # El historial subestima a USA porque la mayoría de sus datos son
+    # de la era pre-2022, cuando el equipo era menos competitivo.
+    # Como co-anfitrión 2026 con una generación renovada (Pulisic,
+    # Weah, McKennie, Reyna), aplicamos un factor de corrección del 15%
+    # sobre sus tiros al arco y córners en todos los partidos del dataset.
+    # Esto eleva sus stats al rango de equipos CONCACAF+CONMEBOL
+    # de nivel medio-alto sin distorsionar los resultados históricos.
+    # ─────────────────────────────────────────────────────────────────
+    USA_BOOST = 1.15
+    USA_NAMES = {'United States', 'USA'}
+
+    mask_home = df['HomeTeam'].isin(USA_NAMES)
+    mask_away = df['AwayTeam'].isin(USA_NAMES)
+
+    df.loc[mask_home, 'HST'] = (df.loc[mask_home, 'HST'] * USA_BOOST).round(2)
+    df.loc[mask_home, 'HC']  = (df.loc[mask_home, 'HC']  * USA_BOOST).round(2)
+    df.loc[mask_away, 'AST'] = (df.loc[mask_away, 'AST'] * USA_BOOST).round(2)
+    df.loc[mask_away, 'AC']  = (df.loc[mask_away, 'AC']  * USA_BOOST).round(2)
+
+    n_boost = mask_home.sum() + mask_away.sum()
+    print(f"🇺🇸 USA boost x{USA_BOOST} aplicado a {n_boost} partidos "
+          f"({mask_home.sum()} local, {mask_away.sum()} visita).")
+
     # Variables de entrada para el modelo (6 features, sin xG)
     # xG eliminado: cobertura insuficiente (~14 % de filas con datos reales).
     # Revisitar cuando la cobertura supere el 50 %.
