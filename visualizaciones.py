@@ -3571,25 +3571,20 @@ elif menu == "Mundial 2026":
             def resolver(c):
                 return mejor_3ro(c[2:]) if c.startswith("3_") else get_pos(c)
 
-            cruces_r32 = [
-                ("2A",  "2B",           "2°A vs 2°B"),
-                ("1C",  "2F",           "1°C vs 2°F"),
-                ("1E",  "3_A/B/C/D/F",  "1°E vs 3°A/B/C/D/F"),
-                ("1F",  "2C",           "1°F vs 2°C"),
-                ("2E",  "2I",           "2°E vs 2°I"),
-                ("1I",  "3_C/D/F/G/H",  "1°I vs 3°C/D/F/G/H"),
-                ("1A",  "3_C/E/F/H/I",  "1°A vs 3°C/E/F/H/I"),
-                ("1L",  "3_E/H/I/J/K",  "1°L vs 3°E/H/I/J/K"),
-                ("1G",  "3_A/E/H/I/J",  "1°G vs 3°A/E/H/I/J"),
-                ("1D",  "3_B/E/F/I/J",  "1°D vs 3°B/E/F/I/J"),
-                ("1H",  "2J",           "1°H vs 2°J"),
-                ("2K",  "2L",           "2°K vs 2°L"),
-                ("1B",  "3_E/F/G/I/J",  "1°B vs 3°E/F/G/I/J"),
-                ("2D",  "2G",           "2°D vs 2°G"),
-                ("1K",  "2H",           "1°K vs 2°H"),
-                ("1J",  "2E",           "1°J vs 2°E"),
-            ]
-            r32 = [simular_ko(resolver(ch), resolver(ca), lbl) for ch, ca, lbl in cruces_r32]
+            # Cargar R32 desde la DB (LAST_32 con equipos definidos, sin TBA)
+            df_r32_db = pd.read_sql(
+                "SELECT DISTINCT fixture_id, Date, HomeTeam, AwayTeam FROM fixture_mundial "
+                "WHERE Round='LAST_32' AND HomeTeam != 'TBA' AND AwayTeam != 'TBA' "
+                "ORDER BY Date, Time",
+                conn
+            ).drop_duplicates(subset=['fixture_id']).reset_index(drop=True)
+
+            r32 = []
+            for _, _row_r32 in df_r32_db.iterrows():
+                _h32 = normalizar_nombre(str(_row_r32['HomeTeam']))
+                _a32 = normalizar_nombre(str(_row_r32['AwayTeam']))
+                _lbl = f"{_row_r32['HomeTeam']} vs {_row_r32['AwayTeam']}"
+                r32.append(simular_ko(_h32, _a32, _lbl))
             gana_r32 = [m['Ganador'] for m in r32]
 
             r16 = [simular_ko(gana_r32[i], gana_r32[i+1], f"R16 · P{i//2+1}") for i in range(0, 16, 2)]
