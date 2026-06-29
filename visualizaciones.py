@@ -2019,61 +2019,6 @@ elif menu == "Portafolio de Picks":
                 st.info("No hay partidos nuevos terminados para liquidar.")
         df_hist = pd.read_sql("SELECT * FROM portafolio_historico", conn)
 
-        # ── Importar portafolio externo ───────────────────────────
-        st.subheader("Importar Portafolio Guardado")
-        with st.expander("Cargar archivo CSV o JSON para fusionar con el portafolio actual"):
-            archivo_importar = st.file_uploader(
-                "Sube un portafolio exportado (.csv o .json)",
-                type=["csv", "json"],
-                key="importar_portafolio"
-            )
-            if archivo_importar is not None:
-                try:
-                    if archivo_importar.name.endswith(".json"):
-                        df_import = pd.read_json(archivo_importar)
-                    else:
-                        df_import = pd.read_csv(archivo_importar)
-
-                    COLS_REQUERIDAS = {'Date', 'HomeTeam', 'AwayTeam', 'Mercado', 'Cuota', 'Stake', 'Estado'}
-                    if not COLS_REQUERIDAS.issubset(set(df_import.columns)):
-                        st.error(f"El archivo no tiene las columnas requeridas: {COLS_REQUERIDAS - set(df_import.columns)}")
-                    else:
-                        # Rellenar columnas opcionales si no vienen
-                        if 'Beneficio_Neto' not in df_import.columns:
-                            df_import['Beneficio_Neto'] = 0.0
-                        if 'Prob_IA' not in df_import.columns:
-                            df_import['Prob_IA'] = None
-                        if 'Edge' not in df_import.columns:
-                            df_import['Edge'] = None
-
-                        # Preview
-                        st.dataframe(df_import[['Date','HomeTeam','AwayTeam','Mercado','Cuota','Stake','Estado']].head(10), hide_index=True, use_container_width=True)
-                        st.caption(f"Total filas en archivo: {len(df_import)}")
-
-                        if st.button("Fusionar con portafolio actual", type="primary"):
-                            nuevos = 0
-                            for _, row_i in df_import.iterrows():
-                                # Evitar duplicados exactos (mismo partido + mercado + fecha)
-                                existe = pd.read_sql(
-                                    "SELECT COUNT(*) as n FROM portafolio_historico WHERE Date=? AND HomeTeam=? AND AwayTeam=? AND Mercado=?",
-                                    conn,
-                                    params=(str(row_i['Date']), str(row_i['HomeTeam']), str(row_i['AwayTeam']), str(row_i['Mercado']))
-                                ).iloc[0]['n']
-                                if existe == 0:
-                                    cursor.execute(
-                                        "INSERT INTO portafolio_historico (Date, HomeTeam, AwayTeam, Mercado, Cuota, Stake, Estado, Beneficio_Neto, Prob_IA, Edge) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                                        (str(row_i['Date']), str(row_i['HomeTeam']), str(row_i['AwayTeam']), str(row_i['Mercado']),
-                                         float(row_i['Cuota']), float(row_i['Stake']),
-                                         str(row_i.get('Estado', 'Pendiente')), float(row_i.get('Beneficio_Neto', 0)),
-                                         row_i.get('Prob_IA', None), row_i.get('Edge', None))
-                                    )
-                                    nuevos += 1
-                            conn.commit()
-                            st.success(f"{nuevos} picks importados. {len(df_import) - nuevos} ya existían y se omitieron.")
-                            st.rerun()
-                except Exception as e:
-                    st.error(f"Error al importar: {e}")
-
         st.divider()
         if not df_hist.empty:
             df_cerradas = df_hist[df_hist['Estado'] != 'Pendiente']
@@ -2145,7 +2090,22 @@ elif menu == "Portafolio de Picks":
         if not df_db_hist.empty:
             df_db_hist['Date'] = df_db_hist['Date'].astype(str).str.strip().str.slice(0, 10)
             fechas_en_db = set(df_db_hist['Date'].unique())
+            # Equipos de selecciones para detectar picks WC en DB
+            try:
+                _equipos_wc_tag = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_selecciones_ml", conn)['HomeTeam'].tolist()
+            except Exception:
+                _equipos_wc_tag = []
             for _, r in df_db_hist.iterrows():
+                # Determinar si el pick es de selecciones (Mundial) o clubes
+                _h_tag = str(r['HomeTeam'])
+                _a_tag = str(r['AwayTeam'])
+                if _equipos_wc_tag:
+                    _wc_h = process.extractOne(_h_tag, _equipos_wc_tag)
+                    _wc_a = process.extractOne(_a_tag, _equipos_wc_tag)
+                    _wc_score = min(_wc_h[1] if _wc_h else 0, _wc_a[1] if _wc_a else 0)
+                    _es_wc_pick = _wc_score >= 80
+                else:
+                    _es_wc_pick = False
                 big_portfolio_from_db.append({
                     'Date':    r['Date'],
                     'Home':    r['HomeTeam'],
@@ -2158,6 +2118,7 @@ elif menu == "Portafolio de Picks":
                     'Estado':  r['Estado'],
                     'Beneficio_Neto': r.get('Beneficio_Neto', 0.0),
                     '_from_db': True,
+                    '_es_mundial': _es_wc_pick,
                 })
 
         # ══════════════════════════════════════════════════════
@@ -2418,7 +2379,8 @@ elif menu == "Portafolio de Picks":
                                 oportunidades.append({
                                     'Date': fecha_partido, 'Home': h_db, 'Away': a_db,
                                     'Mercado': nombre_mk, 'Cuota': cuota_f,
-                                    'Prob_IA': prob_mk, 'Edge': edge
+                                    'Prob_IA': prob_mk, 'Edge': edge,
+                                    '_es_mundial': es_mundial,
                                 })
                         except Exception:
                             pass
@@ -2562,6 +2524,39 @@ elif menu == "Portafolio de Picks":
                 st.info("No se encontraron oportunidades históricas con edge en los archivos de odds disponibles.")
             else:
                 df_big = pd.DataFrame(big_portfolio_rows)
+
+                # Asegurar columna _es_mundial existe
+                if '_es_mundial' not in df_big.columns:
+                    df_big['_es_mundial'] = False
+
+                # ── Filtro Clubes / Mundial ──────────────────────
+                _n_clubes_big = int((~df_big['_es_mundial']).sum())
+                _n_wc_big     = int(df_big['_es_mundial'].sum())
+                _filtro_opciones = []
+                if _n_clubes_big > 0 and _n_wc_big > 0:
+                    _filtro_opciones = ["Clubes + Mundial", "Solo Clubes", "Solo Mundial"]
+                elif _n_clubes_big > 0:
+                    _filtro_opciones = ["Solo Clubes"]
+                elif _n_wc_big > 0:
+                    _filtro_opciones = ["Solo Mundial"]
+                else:
+                    _filtro_opciones = ["Clubes + Mundial"]
+
+                if len(_filtro_opciones) > 1:
+                    _filtro_sel = st.radio(
+                        "Portafolio a mostrar",
+                        options=_filtro_opciones,
+                        horizontal=True,
+                        key="hist_filtro_tipo",
+                    )
+                else:
+                    _filtro_sel = _filtro_opciones[0]
+
+                if _filtro_sel == "Solo Clubes":
+                    df_big = df_big[~df_big['_es_mundial']].copy()
+                elif _filtro_sel == "Solo Mundial":
+                    df_big = df_big[df_big['_es_mundial']].copy()
+                # "Clubes + Mundial" → sin filtro
 
                 # ── Liquidar contra el historial real ───────────
                 # Normalización via diccionario_alias centralizado
@@ -2712,6 +2707,13 @@ elif menu == "Portafolio de Picks":
                         label_visibility="visible"
                     )
 
+                # ── Sub-toggle: stake por nivel de riesgo ──────
+                _modo_riesgo_hist = st.toggle(
+                    "Stake por Nivel de Riesgo",
+                    key="hist_modo_stake_riesgo",
+                    help="ON: Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5× de la unidad base. OFF: mismo stake para todos los picks."
+                )
+
                 # ── Fecha de inicio del historial ──────────────
                 _todas_fechas_hist = sorted(df_big['Date'].unique())
                 _fecha_min_hist = _todas_fechas_hist[0]
@@ -2754,7 +2756,6 @@ elif menu == "Portafolio de Picks":
                 # Días con <8 picks → flat stake fijo de $500 por pick (igual que tab1, independiente del bankroll)
                 _STAKE_DIA_CORTO = 500.0
                 _UMBRAL_PICKS_CORTO = 8
-                _modo_riesgo_hist = st.session_state.get("hist_modo_stake_riesgo", False)
 
                 def _mult_nivel_hist(nivel_str):
                     n = str(nivel_str).lower()
@@ -2948,11 +2949,6 @@ elif menu == "Portafolio de Picks":
                             st.info(f"Se necesitan al menos 5 picks cerrados con Prob_IA para calcular el Z-score ({len(_df_luck)} disponibles).")
 
                     # ── KPIs globales ─────────────────────────────────────
-                    _modo_riesgo_hist = st.toggle(
-                        "Stake por Nivel de Riesgo",
-                        key="hist_modo_stake_riesgo",
-                        help="ON: Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5× de la unidad base. OFF: mismo stake para todos los picks."
-                    )
                     k1, k2, k3, k4 = st.columns(4)
                     k1.metric("Picks Cerrados", f"{total_picks:,}")
                     k2.metric("Win Rate",       f"{win_rate_big:.1f}%")
