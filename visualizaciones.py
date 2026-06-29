@@ -2522,15 +2522,41 @@ elif menu == "Portafolio de Picks":
 
             if not big_portfolio_rows:
                 st.info("No se encontraron oportunidades históricas con edge en los archivos de odds disponibles.")
-                # ── Diagnóstico ────────────────────────────────
-                with st.expander("🔍 Diagnóstico (por qué no hay datos)"):
-                    st.write(f"**Picks en portafolio_historico (DB):** {len(df_db_hist)}")
-                    st.write(f"**Picks en big_portfolio_from_db:** {len(big_portfolio_from_db)}")
-                    st.write(f"**Días en fechas_en_db:** {len(fechas_en_db)} → {sorted(list(fechas_en_db))[:5]}")
-                    st.write(f"**Archivos CSV en odds_data/:** {len(archivos_hist)}")
-                    st.write(f"**Fechas CSV nuevas (sin DB):** {len(fechas_csv_nuevas)}")
-                    if not df_db_hist.empty:
-                        st.dataframe(df_db_hist[['Date','HomeTeam','AwayTeam','Estado']].head(10), hide_index=True)
+                # ── Diagnóstico detallado ────────────────────────────────
+                with st.expander("🔍 Diagnóstico detallado"):
+                    st.write(f"**Picks en DB:** {len(df_db_hist)} | **big_portfolio_from_db:** {len(big_portfolio_from_db)}")
+                    st.write(f"**Archivos CSV:** {len(archivos_hist)} | **Fechas CSV nuevas:** {len(fechas_csv_nuevas)}")
+                    st.write(f"**modelo_clubes_hist disponible:** {modelo_clubes_hist is not None if archivos_hist else 'N/A (sin CSVs)'}")
+                    st.write(f"**equipos_clubes_hist:** {len(equipos_clubes_hist) if archivos_hist else 0} equipos")
+                    st.write(f"**equipos_wc_hist:** {len(equipos_wc_hist) if archivos_hist else 0} equipos")
+                    if archivos_hist and not df_master_hist.empty and fechas_csv_nuevas:
+                        fecha_prueba = fechas_csv_nuevas[0]
+                        df_dia_prueba = df_master_hist[df_master_hist['Fecha_Match'] == fecha_prueba]
+                        st.write(f"**Prueba en fecha {fecha_prueba}:** {len(df_dia_prueba)} partidos")
+                        if not df_dia_prueba.empty:
+                            st.write("Columnas del CSV:", list(df_dia_prueba.columns))
+                            st.write("Primeras filas:")
+                            st.dataframe(df_dia_prueba[['home','away'] + [c for c in ['inicio_local','1x2_home','1x2_draw','1x2_away'] if c in df_dia_prueba.columns]].head(5), hide_index=True)
+                            # Probar fuzzy match del primer partido
+                            h0 = str(df_dia_prueba.iloc[0]['home'])
+                            a0 = str(df_dia_prueba.iloc[0]['away'])
+                            st.write(f"**Primer partido:** {h0} vs {a0}")
+                            if equipos_clubes_hist:
+                                m_h = process.extractOne(h0, equipos_clubes_hist)
+                                m_a = process.extractOne(a0, equipos_clubes_hist)
+                                st.write(f"  Clubes → local: {m_h} | visita: {m_a}")
+                            if equipos_wc_hist:
+                                m_h2 = process.extractOne(h0, equipos_wc_hist)
+                                m_a2 = process.extractOne(a0, equipos_wc_hist)
+                                st.write(f"  WC → local: {m_h2} | visita: {m_a2}")
+                            # Correr _escanear_dia_hist y capturar excepción
+                            try:
+                                ops_prueba = _escanear_dia_hist(fecha_prueba, df_dia_prueba)
+                                st.write(f"  **Oportunidades encontradas:** {len(ops_prueba)}")
+                                if ops_prueba:
+                                    st.dataframe(pd.DataFrame(ops_prueba[:5]), hide_index=True)
+                            except Exception as e_diag:
+                                st.error(f"  **Excepción en _escanear_dia_hist:** {e_diag}")
             else:
                 df_big = pd.DataFrame(big_portfolio_rows)
 
