@@ -1322,6 +1322,7 @@ elif menu == "Portafolio de Picks":
                             ("Ganador (Visita)", buscar_cuota_segura(row, ['1x2_away']), prob_visita)
                         ]
 
+                        prob_over = poisson_prob_over  # alias local — evita NameError, ver línea ~23
                         def prob_under(promedio, umbral): return 1 - prob_over(promedio, umbral)
                         def prob_handicap(prom_favor, prom_contra, linea_hdp):
                             prob_acum = 0.0
