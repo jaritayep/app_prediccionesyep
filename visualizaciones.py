@@ -30,7 +30,9 @@ def poisson_prob_over(promedio, umbral):
     for k in range(int(umbral) + 1):
         prob_acumulada += poisson_prob(promedio, k)
     return 1 - prob_acumulada
- 
+
+prob_over = poisson_prob_over  # alias global: varias secciones llaman a prob_over(...) como función
+
 # --- CONFIGURACIÓN ---
 st.set_page_config(layout="wide", page_title="AI Betting Lab Pro", page_icon="⚽")
 DB_NAME = 'database_partidos.db'
