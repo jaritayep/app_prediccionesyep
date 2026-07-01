@@ -9,7 +9,7 @@ warnings.filterwarnings('ignore')
 # ─────────────────────────────────────────────
 #  CONFIG
 # ─────────────────────────────────────────────
-API_KEY  = "860b746c-ee87-4076-9f12-59e6572e3d62"
+API_KEY  = "435faa1f-a7cd-4248-861d-9e5f1e28b7ac"
 BASE_URL = "https://api.balldontlie.io/fifa/worldcup/v1"
 HEADERS  = {"Authorization": API_KEY}
 DB_PATH  = "database_partidos.db"
