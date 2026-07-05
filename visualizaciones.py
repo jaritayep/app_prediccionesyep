@@ -2602,10 +2602,16 @@ elif menu == "Portafolio de Picks":
                     pick_home = _resolver_nombre(str(pick_row['Home']))
                     pick_away = _resolver_nombre(str(pick_row['Away']))
 
-                    # 1. Intento exacto (los nombres ya vienen normalizados del scanner)
+                    # Normalizamos también el lado de la BD: el mismo equipo puede
+                    # estar guardado con distinta grafía según temporada
+                    # (ej. "Nott'm Forest" vs "Nottingham Forest").
+                    res_df['_HomeNorm'] = res_df['HomeTeam'].apply(_resolver_nombre)
+                    res_df['_AwayNorm'] = res_df['AwayTeam'].apply(_resolver_nombre)
+
+                    # 1. Intento exacto (ambos lados normalizados via alias)
                     exact = res_df[
-                        (res_df['HomeTeam'] == pick_home) &
-                        (res_df['AwayTeam'] == pick_away)
+                        (res_df['_HomeNorm'] == pick_home) &
+                        (res_df['_AwayNorm'] == pick_away)
                     ]
                     if exact.empty:
                         # También probar con los nombres originales sin alias
