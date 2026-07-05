@@ -19,11 +19,41 @@ def cargar_datos_limpios():
     # Incluirlo crea un desfase entrenamiento/inferencia porque en inferencia se usan
     # promedios reales (0.3–1.5). Se revisará cuando la cobertura de xG supere el 50 %.
     query = """
-        SELECT Date, Torneo, HomeTeam, AwayTeam, FTHG, FTAG, FTR, HST, AST, HC, AC
+        SELECT Date, Torneo, HomeTeam, AwayTeam, FTHG, FTAG, FTR, HST, AST, HC, AC,
+               FTHG_r, FTAG_r, HST_r, AST_r
         FROM historial_selecciones_ml
     """
     df = pd.read_sql(query, conn)
     conn.close()
+
+    # ─────────────────────────────────────────────────────────────────
+    # SOLO TIEMPO REGLAMENTARIO:
+    # Las columnas _r (FTHG_r, FTAG_r, HST_r, AST_r) solo existen para
+    # partidos eliminatorios (Round of 16 en adelante) y contienen los
+    # valores de SOLO los 90'. En fase de grupos nunca hay tiempo extra,
+    # así que las columnas base ya son de tiempo reglamentario ahí.
+    # Con COALESCE preferimos _r cuando existe (eliminatorias) y si no,
+    # usamos la base (grupos). Esto evita que partidos con prórroga
+    # contaminen goles/tiros con los 30' extra.
+    # Nota: HC/AC (córners) no tienen versión _r en la BD, así que quedan
+    # sin ajustar; afecta solo partidos eliminatorios con prórroga
+    # (~18 de +1600 filas), impacto marginal.
+    # ─────────────────────────────────────────────────────────────────
+    df['FTHG'] = df['FTHG_r'].fillna(df['FTHG'])
+    df['FTAG'] = df['FTAG_r'].fillna(df['FTAG'])
+    df['HST']  = df['HST_r'].fillna(df['HST'])
+    df['AST']  = df['AST_r'].fillna(df['AST'])
+
+    # Recalculamos FTR en base al resultado reglamentario ya coalescido:
+    # antes, un empate en los 90' definido por penales quedaba con el FTR
+    # del ganador de la tanda (ej. 'A') en vez de 'D'.
+    df['FTR'] = np.select(
+        [df['FTHG'] > df['FTAG'], df['FTHG'] < df['FTAG']],
+        ['H', 'A'],
+        default='D'
+    )
+
+    df = df.drop(columns=['FTHG_r', 'FTAG_r', 'HST_r', 'AST_r'])
 
     # Excluimos amistosos: el modelo debe aprender solo de partidos competitivos
     df = df[~df['Torneo'].str.contains('Friendly|Amistoso|friendly', case=False, na=False)]

@@ -1948,9 +1948,9 @@ elif menu == "Portafolio de Picks":
                     fecha_inicio = fecha_fin = pick['Date']
 
                 q_res = f"""
-                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST FROM historial_multiliga_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
+                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, NULL AS FueProrroga, NULL AS FTHG_r, NULL AS FTAG_r FROM historial_multiliga_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
                 UNION ALL
-                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST FROM historial_selecciones_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
+                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, FueProrroga, FTHG_r, FTAG_r FROM historial_selecciones_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
                 """
                 try:
                     res_real = pd.read_sql(q_res, conn)
@@ -1969,6 +1969,15 @@ elif menu == "Portafolio de Picks":
                 if hg is None or ag is None:
                     continue
                 hg, ag = int(hg), int(ag)
+
+                # Prórroga: si el partido fue a tiempo extra, se considera empate
+                # y se usa el resultado de tiempo reglamentario (FTHG_r/FTAG_r)
+                # para 1X2, Ambos Anotan, Hándicap y Over/Under de goles.
+                if pd.notna(row.get('FueProrroga')) and int(row['FueProrroga']) == 1:
+                    hg_r, ag_r = row.get('FTHG_r'), row.get('FTAG_r')
+                    if pd.notna(hg_r) and pd.notna(ag_r):
+                        hg, ag = int(hg_r), int(ag_r)
+
                 hc  = int(row['HC'])  if pd.notna(row.get('HC'))  else 0
                 ac  = int(row['AC'])  if pd.notna(row.get('AC'))  else 0
                 hst = int(row['HST']) if pd.notna(row.get('HST')) else 0
@@ -2578,9 +2587,9 @@ elif menu == "Portafolio de Picks":
                         f_ini = f_fin = fecha_d
 
                     q_res = f"""
-                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST FROM historial_multiliga_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
+                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, NULL AS FueProrroga, NULL AS FTHG_r, NULL AS FTAG_r FROM historial_multiliga_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
                     UNION ALL
-                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST FROM historial_selecciones_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
+                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, FueProrroga, FTHG_r, FTAG_r FROM historial_selecciones_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
                     """
                     try:
                         res_df = pd.read_sql(q_res, conn)
@@ -2633,6 +2642,15 @@ elif menu == "Portafolio de Picks":
                         return 'Pendiente', 0.0
 
                     hg, ag = int(hg), int(ag)
+
+                    # Prórroga: si el partido fue a tiempo extra, se considera empate
+                    # y se usa el resultado de tiempo reglamentario (FTHG_r/FTAG_r)
+                    # para 1X2, Ambos Anotan, Hándicap y Over/Under de goles.
+                    if pd.notna(row_real.get('FueProrroga')) and int(row_real['FueProrroga']) == 1:
+                        hg_r, ag_r = row_real.get('FTHG_r'), row_real.get('FTAG_r')
+                        if pd.notna(hg_r) and pd.notna(ag_r):
+                            hg, ag = int(hg_r), int(ag_r)
+
                     hc  = int(row_real['HC'])  if pd.notna(row_real.get('HC'))  else 0
                     ac  = int(row_real['AC'])  if pd.notna(row_real.get('AC'))  else 0
                     hst = int(row_real['HST']) if pd.notna(row_real.get('HST')) else 0
