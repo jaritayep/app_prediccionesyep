@@ -42,12 +42,25 @@ PAUSA_REQUEST = 0.15
 #  xG_home_et/xG_away_et   -> xG en tiempo extra
 #
 #  IMPORTANTE - qué NO se pudo separar y por qué:
-#  Corners, faltas, tarjetas, posesión, pases, duelos, etc. sólo existen en la
+#  Faltas, tarjetas, posesión, pases, duelos, etc. sólo existen en la
 #  API como UN número agregado de todo el partido (endpoint team_match_stats),
-#  sin desglose por período. No hay un endpoint de "eventos de corner/falta"
-#  con minuto para poder cortarlos en regular/extra. Por eso HC/AC/etc. se
+#  sin desglose por período. No hay un endpoint de "eventos de falta/tarjeta"
+#  con minuto para poder cortarlos en regular/extra. Por eso esos campos se
 #  dejan exactamente como estaban (total del partido) — inventar un split ahí
 #  sería peor que no tenerlo, sobre todo alimentando un pipeline de ML.
+#
+#  🖊️ CORNERS (carga MANUAL): HC_t / AC_t / HC_r / AC_r / HC_et / AC_et
+#  Se probó Sofascore para conseguir corners con minuto y bloqueó con 403
+#  persistente (ni siquiera cloudscraper lo esquivó), así que esto se carga
+#  a mano en vez de scrapearse:
+#    HC_t / AC_t   -> corners TOTALES del partido (local/visita)
+#    HC_r / AC_r   -> corners en TIEMPO REGULAR
+#    HC_et / AC_et -> corners en TIEMPO EXTRA
+#  Lo único que hace este script con estas columnas es autocompletar
+#  HC_r/AC_r (y HC_et/AC_et=0) cuando el partido NO fue a prórroga, porque
+#  ahí "regular" y "total" son lo mismo por definición — ver
+#  autocompletar_corners_sin_prorroga() más abajo. Si el partido SÍ fue a
+#  prórroga, las seis columnas se cargan a mano.
 #
 #  El split de tiros/goles/xG sí es real porque:
 #   - Los goles por período vienen directo del endpoint /matches
@@ -86,6 +99,13 @@ COLUMNAS_NUEVAS = [
     ("xG_away_r",     "REAL"),
     ("xG_home_et",    "REAL"),
     ("xG_away_et",    "REAL"),
+    # Corners — carga MANUAL (ver nota arriba)
+    ("HC_t",          "INTEGER"),
+    ("AC_t",          "INTEGER"),
+    ("HC_r",          "INTEGER"),
+    ("AC_r",          "INTEGER"),
+    ("HC_et",         "INTEGER"),
+    ("AC_et",         "INTEGER"),
 ]
 
 # Tipos de remate considerados "al arco".
@@ -109,6 +129,35 @@ def asegurar_columnas_extra(cur):
             cur.execute(f"ALTER TABLE historial_selecciones_ml ADD COLUMN {nombre} {tipo}")
         except sqlite3.OperationalError:
             pass
+
+
+def autocompletar_corners_sin_prorroga(cur):
+    """
+    Los corners son de carga MANUAL (vos cargás HC_t/AC_t directo en la
+    base). Esta función sólo hace la parte mecánica: si el partido NO fue
+    a tiempo extra, "corners en tiempo regular" es por definición lo mismo
+    que el total del partido — no hace falta cargarlo dos veces. También
+    deja HC_et/AC_et en 0, porque si no hubo prórroga, no pudo haber
+    corners en un período que no existió.
+
+    Corre sobre TODA la tabla (no sólo los partidos de esta corrida), así
+    agarra cualquier HC_t/AC_t que hayas cargado a mano desde la última vez
+    que corriste el script.
+
+    Si el partido SÍ fue a prórroga (FueProrroga=1), esto no toca nada:
+    ahí HC_r/AC_r/HC_et/AC_et los cargás vos a mano, porque "regular" ya
+    no es lo mismo que "total" y no hay forma de derivarlo automáticamente.
+    """
+    cur.execute("""
+        UPDATE historial_selecciones_ml
+        SET HC_r = HC_t, AC_r = AC_t, HC_et = 0, AC_et = 0
+        WHERE (FueProrroga = 0 OR FueProrroga IS NULL)
+          AND HC_t IS NOT NULL AND AC_t IS NOT NULL
+          AND (HC_r IS NULL OR AC_r IS NULL OR HC_et IS NULL OR AC_et IS NULL)
+    """)
+    if cur.rowcount:
+        print(f"🔁 Autocompleté corners (HC_r/AC_r/HC_et/AC_et) en {cur.rowcount} "
+              f"partido(s) sin prórroga, a partir de HC_t/AC_t ya cargados.")
 
 
 # ─────────────────────────────────────────────
@@ -398,6 +447,9 @@ def actualizar_mundial():
 
     try:
         asegurar_columnas_extra(cur)
+        conn.commit()
+
+        autocompletar_corners_sin_prorroga(cur)
         conn.commit()
 
         # ── 1. Partidos completados ──────────────────────────────

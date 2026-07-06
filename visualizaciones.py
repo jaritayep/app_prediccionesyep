@@ -1948,9 +1948,9 @@ elif menu == "Portafolio de Picks":
                     fecha_inicio = fecha_fin = pick['Date']
 
                 q_res = f"""
-                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, NULL AS FueProrroga, NULL AS FTHG_r, NULL AS FTAG_r FROM historial_multiliga_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
+                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, NULL AS FueProrroga, NULL AS FTHG_r, NULL AS FTAG_r, NULL AS HC_r, NULL AS AC_r FROM historial_multiliga_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
                 UNION ALL
-                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, FueProrroga, FTHG_r, FTAG_r FROM historial_selecciones_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
+                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, FueProrroga, FTHG_r, FTAG_r, HC_r, AC_r FROM historial_selecciones_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
                 """
                 try:
                     res_real = pd.read_sql(q_res, conn)
@@ -1983,7 +1983,20 @@ elif menu == "Portafolio de Picks":
                 hst = int(row['HST']) if pd.notna(row.get('HST')) else 0
                 ast = int(row['AST']) if pd.notna(row.get('AST')) else 0
 
+                # Córners se liquidan con TIEMPO REGULAR (HC_r/AC_r), no con el
+                # total del partido (HC/AC), porque HC/AC puede incluir la
+                # prórroga. Si todavía no cargaste HC_r/AC_r a mano para este
+                # partido, el pick de córners se queda 'Pendiente' en vez de
+                # liquidarse con un dato que puede estar contaminado por la prórroga.
+                hc_r_raw, ac_r_raw = row.get('HC_r'), row.get('AC_r')
+                corners_r_disponible = pd.notna(hc_r_raw) and pd.notna(ac_r_raw)
+                if corners_r_disponible:
+                    hc_r, ac_r = int(hc_r_raw), int(ac_r_raw)
+
                 mkt = pick['Mercado']
+                if "Córners" in mkt and not corners_r_disponible:
+                    continue
+
                 ganada = False
                 if mkt == "Ganador (Local)":    ganada = (hg > ag)
                 elif mkt == "Empate":            ganada = (hg == ag)
@@ -2004,9 +2017,9 @@ elif menu == "Portafolio de Picks":
                             if "Goles Local"       in mkt: score = hg
                             elif "Goles Visita"    in mkt: score = ag
                             elif "Goles"           in mkt: score = hg + ag
-                            elif "Córners Local"   in mkt: score = hc
-                            elif "Córners Visita"  in mkt: score = ac
-                            elif "Córners"         in mkt: score = hc + ac
+                            elif "Córners Local"   in mkt: score = hc_r
+                            elif "Córners Visita"  in mkt: score = ac_r
+                            elif "Córners"         in mkt: score = hc_r + ac_r
                             elif "Tiros Local"     in mkt: score = hst
                             elif "Tiros Visita"    in mkt: score = ast
                             elif "Tiros"           in mkt: score = hst + ast
@@ -2587,9 +2600,9 @@ elif menu == "Portafolio de Picks":
                         f_ini = f_fin = fecha_d
 
                     q_res = f"""
-                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, NULL AS FueProrroga, NULL AS FTHG_r, NULL AS FTAG_r FROM historial_multiliga_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
+                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, NULL AS FueProrroga, NULL AS FTHG_r, NULL AS FTAG_r, NULL AS HC_r, NULL AS AC_r FROM historial_multiliga_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
                     UNION ALL
-                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, FueProrroga, FTHG_r, FTAG_r FROM historial_selecciones_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
+                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, FueProrroga, FTHG_r, FTAG_r, HC_r, AC_r FROM historial_selecciones_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
                     """
                     try:
                         res_df = pd.read_sql(q_res, conn)
@@ -2662,7 +2675,19 @@ elif menu == "Portafolio de Picks":
                     hst = int(row_real['HST']) if pd.notna(row_real.get('HST')) else 0
                     ast = int(row_real['AST']) if pd.notna(row_real.get('AST')) else 0
 
+                    # Córners se liquidan con TIEMPO REGULAR (HC_r/AC_r), no con
+                    # el total del partido (HC/AC), porque HC/AC puede incluir
+                    # la prórroga. Si todavía no cargaste HC_r/AC_r a mano para
+                    # este partido, el pick de córners se queda 'Pendiente'.
+                    hc_r_raw, ac_r_raw = row_real.get('HC_r'), row_real.get('AC_r')
+                    corners_r_disponible = pd.notna(hc_r_raw) and pd.notna(ac_r_raw)
+                    if corners_r_disponible:
+                        hc_r, ac_r = int(hc_r_raw), int(ac_r_raw)
+
                     mkt = pick_row['Mercado']
+                    if "Córners" in mkt and not corners_r_disponible:
+                        return 'Pendiente', 0.0
+
                     ganada = False
                     if mkt == "Ganador (Local)":      ganada = (hg > ag)
                     elif mkt == "Empate":              ganada = (hg == ag)
@@ -2683,9 +2708,9 @@ elif menu == "Portafolio de Picks":
                                 if "Goles Local"    in mkt: score_liq = hg
                                 elif "Goles Visita" in mkt: score_liq = ag
                                 elif "Goles"        in mkt: score_liq = hg + ag
-                                elif "Córners Local"    in mkt: score_liq = hc
-                                elif "Córners Visita"   in mkt: score_liq = ac
-                                elif "Córners"          in mkt: score_liq = hc + ac
+                                elif "Córners Local"    in mkt: score_liq = hc_r
+                                elif "Córners Visita"   in mkt: score_liq = ac_r
+                                elif "Córners"          in mkt: score_liq = hc_r + ac_r
                                 elif "Tiros Local"      in mkt: score_liq = hst
                                 elif "Tiros Visita"     in mkt: score_liq = ast
                                 elif "Tiros"            in mkt: score_liq = hst + ast
@@ -3600,10 +3625,14 @@ elif menu == "Mundial 2026":
                 return mejor_3ro(c[2:]) if c.startswith("3_") else get_pos(c)
 
             # Cargar R32 desde la DB (LAST_32 con equipos definidos, sin TBA)
+            # IMPORTANTE: se ordena por fixture_id (NO por Date/Time). El fixture_id
+            # respeta el orden real del bracket FIFA (Match 73-88); el orden cronológico
+            # de kickoff mezcla partidos de llaves distintas y arma cruces incorrectos
+            # en Octavos/Cuartos/Semis.
             df_r32_db = pd.read_sql(
                 "SELECT DISTINCT fixture_id, Date, HomeTeam, AwayTeam FROM fixture_mundial "
                 "WHERE Round='LAST_32' AND HomeTeam != 'TBA' AND AwayTeam != 'TBA' "
-                "ORDER BY Date, Time",
+                "ORDER BY fixture_id",
                 conn
             ).drop_duplicates(subset=['fixture_id']).reset_index(drop=True)
 
