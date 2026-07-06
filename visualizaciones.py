@@ -1948,9 +1948,9 @@ elif menu == "Portafolio de Picks":
                     fecha_inicio = fecha_fin = pick['Date']
 
                 q_res = f"""
-                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, NULL AS FueProrroga, NULL AS FTHG_r, NULL AS FTAG_r, NULL AS HC_r, NULL AS AC_r FROM historial_multiliga_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
+                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, NULL AS FueProrroga, NULL AS FTHG_r, NULL AS FTAG_r, NULL AS HC_r, NULL AS AC_r, 0 AS EsMundial FROM historial_multiliga_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
                 UNION ALL
-                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, FueProrroga, FTHG_r, FTAG_r, HC_r, AC_r FROM historial_selecciones_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
+                SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, FueProrroga, FTHG_r, FTAG_r, HC_r, AC_r, 1 AS EsMundial FROM historial_selecciones_ml WHERE Date BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
                 """
                 try:
                     res_real = pd.read_sql(q_res, conn)
@@ -1983,18 +1983,28 @@ elif menu == "Portafolio de Picks":
                 hst = int(row['HST']) if pd.notna(row.get('HST')) else 0
                 ast = int(row['AST']) if pd.notna(row.get('AST')) else 0
 
-                # Córners se liquidan con TIEMPO REGULAR (HC_r/AC_r), no con el
-                # total del partido (HC/AC), porque HC/AC puede incluir la
-                # prórroga. Si todavía no cargaste HC_r/AC_r a mano para este
-                # partido, el pick de córners se queda 'Pendiente' en vez de
-                # liquidarse con un dato que puede estar contaminado por la prórroga.
-                hc_r_raw, ac_r_raw = row.get('HC_r'), row.get('AC_r')
-                corners_r_disponible = pd.notna(hc_r_raw) and pd.notna(ac_r_raw)
-                if corners_r_disponible:
-                    hc_r, ac_r = int(hc_r_raw), int(ac_r_raw)
+                # Córners:
+                # - Clubes: siempre HC/AC.
+                # - Mundial CON prórroga (FueProrroga = 1): se liquida con TIEMPO
+                #   REGLAMENTARIO (HC_r/AC_r), porque HC/AC incluye los córners de
+                #   la prórroga. Si todavía no cargaste HC_r/AC_r a mano para este
+                #   partido, el pick de córners se queda 'Pendiente'.
+                # - Mundial SIN prórroga (FueProrroga = 0): HC/AC ya es el dato
+                #   completo de tiempo reglamentario, igual que en clubes.
+                es_wc = bool(row.get('EsMundial'))
+                fue_prorroga = es_wc and pd.notna(row.get('FueProrroga')) and int(row['FueProrroga']) == 1
+
+                if fue_prorroga:
+                    hc_r_raw, ac_r_raw = row.get('HC_r'), row.get('AC_r')
+                    corners_disponible = pd.notna(hc_r_raw) and pd.notna(ac_r_raw)
+                    if corners_disponible:
+                        hc_corner, ac_corner = int(hc_r_raw), int(ac_r_raw)
+                else:
+                    corners_disponible = True
+                    hc_corner, ac_corner = hc, ac
 
                 mkt = pick['Mercado']
-                if "Córners" in mkt and not corners_r_disponible:
+                if "Córners" in mkt and not corners_disponible:
                     continue
 
                 ganada = False
@@ -2017,9 +2027,9 @@ elif menu == "Portafolio de Picks":
                             if "Goles Local"       in mkt: score = hg
                             elif "Goles Visita"    in mkt: score = ag
                             elif "Goles"           in mkt: score = hg + ag
-                            elif "Córners Local"   in mkt: score = hc_r
-                            elif "Córners Visita"  in mkt: score = ac_r
-                            elif "Córners"         in mkt: score = hc_r + ac_r
+                            elif "Córners Local"   in mkt: score = hc_corner
+                            elif "Córners Visita"  in mkt: score = ac_corner
+                            elif "Córners"         in mkt: score = hc_corner + ac_corner
                             elif "Tiros Local"     in mkt: score = hst
                             elif "Tiros Visita"    in mkt: score = ast
                             elif "Tiros"           in mkt: score = hst + ast
@@ -2600,9 +2610,9 @@ elif menu == "Portafolio de Picks":
                         f_ini = f_fin = fecha_d
 
                     q_res = f"""
-                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, NULL AS FueProrroga, NULL AS FTHG_r, NULL AS FTAG_r, NULL AS HC_r, NULL AS AC_r FROM historial_multiliga_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
+                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, NULL AS FueProrroga, NULL AS FTHG_r, NULL AS FTAG_r, NULL AS HC_r, NULL AS AC_r, 0 AS EsMundial FROM historial_multiliga_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
                     UNION ALL
-                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, FueProrroga, FTHG_r, FTAG_r, HC_r, AC_r FROM historial_selecciones_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
+                    SELECT HomeTeam, AwayTeam, FTHG, FTAG, HC, AC, HST, AST, FueProrroga, FTHG_r, FTAG_r, HC_r, AC_r, 1 AS EsMundial FROM historial_selecciones_ml WHERE Date BETWEEN '{f_ini}' AND '{f_fin}'
                     """
                     try:
                         res_df = pd.read_sql(q_res, conn)
@@ -2675,17 +2685,28 @@ elif menu == "Portafolio de Picks":
                     hst = int(row_real['HST']) if pd.notna(row_real.get('HST')) else 0
                     ast = int(row_real['AST']) if pd.notna(row_real.get('AST')) else 0
 
-                    # Córners se liquidan con TIEMPO REGULAR (HC_r/AC_r), no con
-                    # el total del partido (HC/AC), porque HC/AC puede incluir
-                    # la prórroga. Si todavía no cargaste HC_r/AC_r a mano para
-                    # este partido, el pick de córners se queda 'Pendiente'.
-                    hc_r_raw, ac_r_raw = row_real.get('HC_r'), row_real.get('AC_r')
-                    corners_r_disponible = pd.notna(hc_r_raw) and pd.notna(ac_r_raw)
-                    if corners_r_disponible:
-                        hc_r, ac_r = int(hc_r_raw), int(ac_r_raw)
+                    # Córners:
+                    # - Clubes: siempre HC/AC.
+                    # - Mundial CON prórroga (FueProrroga = 1): se liquida con TIEMPO
+                    #   REGLAMENTARIO (HC_r/AC_r), porque HC/AC incluye los córners de
+                    #   la prórroga. Si todavía no cargaste HC_r/AC_r a mano para este
+                    #   partido, el pick de córners se queda 'Pendiente'.
+                    # - Mundial SIN prórroga (FueProrroga = 0): HC/AC ya es el dato
+                    #   completo de tiempo reglamentario, igual que en clubes.
+                    es_wc = bool(row_real.get('EsMundial'))
+                    fue_prorroga = es_wc and pd.notna(row_real.get('FueProrroga')) and int(row_real['FueProrroga']) == 1
+
+                    if fue_prorroga:
+                        hc_r_raw, ac_r_raw = row_real.get('HC_r'), row_real.get('AC_r')
+                        corners_disponible = pd.notna(hc_r_raw) and pd.notna(ac_r_raw)
+                        if corners_disponible:
+                            hc_corner, ac_corner = int(hc_r_raw), int(ac_r_raw)
+                    else:
+                        corners_disponible = True
+                        hc_corner, ac_corner = hc, ac
 
                     mkt = pick_row['Mercado']
-                    if "Córners" in mkt and not corners_r_disponible:
+                    if "Córners" in mkt and not corners_disponible:
                         return 'Pendiente', 0.0
 
                     ganada = False
@@ -2708,9 +2729,9 @@ elif menu == "Portafolio de Picks":
                                 if "Goles Local"    in mkt: score_liq = hg
                                 elif "Goles Visita" in mkt: score_liq = ag
                                 elif "Goles"        in mkt: score_liq = hg + ag
-                                elif "Córners Local"    in mkt: score_liq = hc_r
-                                elif "Córners Visita"   in mkt: score_liq = ac_r
-                                elif "Córners"          in mkt: score_liq = hc_r + ac_r
+                                elif "Córners Local"    in mkt: score_liq = hc_corner
+                                elif "Córners Visita"   in mkt: score_liq = ac_corner
+                                elif "Córners"          in mkt: score_liq = hc_corner + ac_corner
                                 elif "Tiros Local"      in mkt: score_liq = hst
                                 elif "Tiros Visita"     in mkt: score_liq = ast
                                 elif "Tiros"            in mkt: score_liq = hst + ast
