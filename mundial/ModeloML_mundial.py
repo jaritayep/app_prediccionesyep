@@ -20,7 +20,7 @@ def cargar_datos_limpios():
     # promedios reales (0.3–1.5). Se revisará cuando la cobertura de xG supere el 50 %.
     query = """
         SELECT Date, Torneo, HomeTeam, AwayTeam, FTHG, FTAG, FTR, HST, AST, HC, AC,
-               FTHG_r, FTAG_r, HST_r, AST_r
+               FTHG_r, FTAG_r, HST_r, AST_r, HC_r, AC_r, FueProrroga
         FROM historial_selecciones_ml
     """
     df = pd.read_sql(query, conn)
@@ -35,14 +35,24 @@ def cargar_datos_limpios():
     # Con COALESCE preferimos _r cuando existe (eliminatorias) y si no,
     # usamos la base (grupos). Esto evita que partidos con prórroga
     # contaminen goles/tiros con los 30' extra.
-    # Nota: HC/AC (córners) no tienen versión _r en la BD, así que quedan
-    # sin ajustar; afecta solo partidos eliminatorios con prórroga
-    # (~18 de +1600 filas), impacto marginal.
     # ─────────────────────────────────────────────────────────────────
     df['FTHG'] = df['FTHG_r'].fillna(df['FTHG'])
     df['FTAG'] = df['FTAG_r'].fillna(df['FTAG'])
     df['HST']  = df['HST_r'].fillna(df['HST'])
     df['AST']  = df['AST_r'].fillna(df['AST'])
+
+    # ─────────────────────────────────────────────────────────────────
+    # CÓRNERS EN PARTIDOS CON PRÓRROGA:
+    # HC_r/AC_r y el flag FueProrroga ya están disponibles en la BD.
+    # FueProrroga = 1 -> el partido se definió en tiempo extra: usamos
+    #                    HC_r/AC_r (córners de SOLO los 90' reglamentarios).
+    # FueProrroga = 0 -> no hubo prórroga: HC/AC ya son el total
+    #                    reglamentario, se dejan igual.
+    # Reemplaza el ajuste anterior (HC/AC quedaban sin corregir en
+    # partidos con prórroga por no existir aún HC_r/AC_r en la BD).
+    # ─────────────────────────────────────────────────────────────────
+    df['HC'] = np.where(df['FueProrroga'] == 1, df['HC_r'], df['HC'])
+    df['AC'] = np.where(df['FueProrroga'] == 1, df['AC_r'], df['AC'])
 
     # Recalculamos FTR en base al resultado reglamentario ya coalescido:
     # antes, un empate en los 90' definido por penales quedaba con el FTR
@@ -53,7 +63,7 @@ def cargar_datos_limpios():
         default='D'
     )
 
-    df = df.drop(columns=['FTHG_r', 'FTAG_r', 'HST_r', 'AST_r'])
+    df = df.drop(columns=['FTHG_r', 'FTAG_r', 'HST_r', 'AST_r', 'HC_r', 'AC_r', 'FueProrroga'])
 
     # Excluimos amistosos: el modelo debe aprender solo de partidos competitivos
     df = df[~df['Torneo'].str.contains('Friendly|Amistoso|friendly', case=False, na=False)]
