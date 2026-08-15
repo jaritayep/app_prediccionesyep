@@ -334,7 +334,7 @@ def predecir_analisis_dia(home_team, away_team, modelo_intl, encoder_intl, conn)
     }
 
 st.sidebar.title("Menú Principal")
-menu = st.sidebar.radio("Ir a:", ["Análisis del Día", "Auditoría (Resultados)", "Portafolio de Picks", "Mundial 2026"])
+menu = st.sidebar.radio("Ir a:", ["Análisis del Día", "Auditoría (Resultados)", "Portafolio de Picks"])
 st.sidebar.markdown("---")
 
 if menu == "Análisis del Día":
@@ -351,21 +351,6 @@ if menu == "Análisis del Día":
         if not df_jornada.empty:
             df_jornada['Date'] = pd.to_datetime(df_jornada['Date']).dt.tz_localize(None).dt.normalize()
             df_jornada = df_jornada[df_jornada['Date'] >= hoy]
-
-        es_mundial = False
-
-        # 2. Fallback al Mundial si no hay clubes
-        if df_jornada.empty:
-            df_jornada = pd.read_sql(
-                "SELECT * FROM fixture_mundial WHERE HomeTeam != 'TBA' AND AwayTeam != 'TBA'", conn
-            )
-            df_jornada['Date'] = (
-                pd.to_datetime(df_jornada['Date'], errors='coerce')
-                .dt.tz_localize(None).dt.normalize()
-            )
-            df_jornada = df_jornada[df_jornada['Date'] >= hoy]
-            es_mundial = True
-            st.info("Modo Internacional: No hay partidos de clubes programados. Mostrando Fixture del Mundial.")
 
         if not df_jornada.empty:
             df_jornada = df_jornada.sort_values(by='Date', ascending=True)
@@ -388,12 +373,9 @@ if menu == "Análisis del Día":
             # Inicializar selección global la primera vez
             if 'analisis_partido_sel' not in st.session_state:
                 _primera_lista = (
-                    (df_jornada[df_jornada['Fecha_Display'] == opciones_fecha[0]]['HomeTeam'] + " vs " +
-                     df_jornada[df_jornada['Fecha_Display'] == opciones_fecha[0]]['AwayTeam']).tolist()
-                    if es_mundial else
-                    (df_jornada[df_jornada['Fecha_Display'] == opciones_fecha[0]]['Local'] + " vs " +
-                     df_jornada[df_jornada['Fecha_Display'] == opciones_fecha[0]]['Visita']).tolist()
-                )
+                    df_jornada[df_jornada['Fecha_Display'] == opciones_fecha[0]]['Local'] + " vs " +
+                    df_jornada[df_jornada['Fecha_Display'] == opciones_fecha[0]]['Visita']
+                ).tolist()
                 st.session_state['analisis_partido_sel'] = (
                     opciones_fecha[0],
                     _primera_lista[0] if _primera_lista else None
@@ -409,10 +391,7 @@ if menu == "Análisis del Día":
                 fecha_label  = opciones_fecha[i]
                 partidos_dia = df_jornada[df_jornada['Fecha_Display'] == fecha_label]
 
-                if es_mundial:
-                    lista_partidos = (partidos_dia['HomeTeam'] + " vs " + partidos_dia['AwayTeam']).tolist()
-                else:
-                    lista_partidos = (partidos_dia['Local'] + " vs " + partidos_dia['Visita']).tolist()
+                lista_partidos = (partidos_dia['Local'] + " vs " + partidos_dia['Visita']).tolist()
 
                 with tab:
                     for partido in lista_partidos:
@@ -469,7 +448,7 @@ if menu == "Análisis del Día":
             # ─────────────────────────────────────────────
             home_raw, away_raw = partido_texto.split(" vs ")
 
-            hist_table = "historial_selecciones_ml" if es_mundial else "historial_multiliga_ml"
+            hist_table = "historial_multiliga_ml"
             equipos_db = pd.read_sql(
                 f"SELECT DISTINCT HomeTeam FROM {hist_table}", conn
             )['HomeTeam'].tolist()
@@ -479,9 +458,6 @@ if menu == "Análisis del Día":
 
             # --- SECCIÓN 1: ENCABEZADO CARD HTML ---
             _modo_badge = (
-                '<span style="background:#1a3a5c;color:#5dade2;font-size:0.65rem;'
-                'padding:2px 8px;border-radius:10px;letter-spacing:1px;font-weight:700;">🌍 MUNDIAL</span>'
-                if es_mundial else
                 '<span style="background:#1a3a1a;color:#27ae60;font-size:0.65rem;'
                 'padding:2px 8px;border-radius:10px;letter-spacing:1px;font-weight:700;">⚽ CLUBES</span>'
             )
@@ -551,221 +527,134 @@ if menu == "Análisis del Día":
                 tend_h = tend_a = []
                 _tiros_h = _tiros_a = _corners_h = _corners_a = 0.0
 
-                if es_mundial:
-                    try:
-                        modelo_intl  = joblib.load('modelo_selecciones_rf.pkl')
-                        encoder_intl = joblib.load('encoder_equipos_selecciones.pkl')
+                model = cargar_modelo()
+                if model:
+                    stats_h, stats_a   = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
+                    stats_h_dict, stats_a_dict = stats_h, stats_a
 
-                        _res = predecir_analisis_dia(home_team, away_team, modelo_intl, encoder_intl, conn)
-                        prob_local    = _res['prob_local']
-                        prob_empate   = _res['prob_empate']
-                        prob_visita   = _res['prob_visita']
-                        pred_home     = _res['pred_home']
-                        pred_away     = _res['pred_away']
-                        promedio_goles = _res['promedio_goles']
-                        prob_over     = _res['prob_over']
-                        hst           = _res['hst']
-                        ast           = _res['ast']
-                        hc            = _res['hc']
-                        ac            = _res['ac']
-                        xg_h          = _res['xg_h']
-                        xg_a          = _res['xg_a']
-                        _tiros_h, _tiros_a     = hst, ast
-                        _corners_h, _corners_a = hc, ac
+                    xg_h = stats_h.get('xG_home', 1.0)
+                    xg_a = stats_a.get('xG_away', 1.0)
+                    xg_diff       = xg_h - xg_a
+                    pts_h         = obtener_puntos_temporada(home_team, conn)
+                    pts_a         = obtener_puntos_temporada(away_team, conn)
+                    dif_tabla     = pts_h - pts_a
+                    descanso_h    = obtener_dias_descanso(home_team, conn)
+                    descanso_a    = obtener_dias_descanso(away_team, conn)
+                    ventaja_fisica = descanso_h - descanso_a
 
-                        # --- SECCIÓN 2: TORTA CON ANOTACIÓN CENTRAL ---
-                        _outcomes  = {'LOCAL': prob_local, 'EMPATE': prob_empate, 'VISITA': prob_visita}
-                        _dom_label = max(_outcomes, key=_outcomes.get)
-                        _dom_pct   = f"{_outcomes[_dom_label]:.0%}"
+                    eff_h = stats_h['FTHG'] / (xg_h + 0.01)
+                    eff_a = stats_a['FTAG'] / (xg_a + 0.01)
 
-                        fig_pie = px.pie(
-                            values=[prob_local, prob_empate, prob_visita],
-                            names=['Local', 'Empate', 'Visita'],
-                            color=['Local', 'Empate', 'Visita'],
-                            color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'},
-                            hole=0.45
-                        )
-                        fig_pie.update_layout(
-                            dragmode=False, margin=dict(t=0, b=0, l=0, r=0),
-                            annotations=[dict(
-                                text=f"<b>{_dom_label}</b><br>{_dom_pct}",
-                                x=0.5, y=0.5,
-                                font=dict(size=13, color='#e8ecf5'),
-                                showarrow=False, xanchor='center', yanchor='middle'
-                            )]
-                        )
-                        st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
+                    input_data = [[
+                        stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'],
+                        stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'],
+                        stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff,
+                        dif_tabla, ventaja_fisica
+                    ]]
 
-                        # --- SECCIÓN 3: PANEL COMPACTO DE MÉTRICAS (4 columnas) ---
-                        _BASE   = 1.2
-                        # Usar pred_home + pred_away (misma fuente que prob_over y la torta)
-                        _xg_total = pred_home + pred_away
-                        _m1, _m2, _m3, _m4 = st.columns(4)
-                        _m1.metric("xG Total",            f"{_xg_total:.2f}", f"{_xg_total - _BASE*2:+.2f}")
-                        _m2.metric("Over 2.5",             f"{prob_over:.0%}", delta=None)
-                        _m3.metric(f"{home_team[:8]}",  f"{pred_home:.2f}", f"{pred_home - _BASE:+.2f}")
-                        _m4.metric(f"{away_team[:8]}",  f"{pred_away:.2f}", f"{pred_away - _BASE:+.2f}")
+                    prob_ia     = model.predict_proba(input_data)[0]
+                    prob_local  = float(prob_ia[2])
+                    prob_empate = float(prob_ia[1])
+                    prob_visita = float(prob_ia[0])
 
-                        # --- SECCIÓN 4: MINI TABLA TIROS Y CÓRNERS ---
-                        st.markdown(f"""
-                        <table style="width:100%;border-collapse:collapse;margin:10px 0 6px;font-size:0.82rem;">
-                          <thead>
-                            <tr style="background:#1a1d27;">
-                              <th style="padding:6px 8px;color:#6c7a9c;text-align:left;border-bottom:1px solid #2c3050;">Stat</th>
-                              <th style="padding:6px 4px;color:#27ae60;text-align:center;border-bottom:1px solid #2c3050;">{home_team[:12]}</th>
-                              <th style="padding:6px 4px;color:#c0392b;text-align:center;border-bottom:1px solid #2c3050;">{away_team[:12]}</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr style="background:#1e2129;">
-                              <td style="padding:6px 8px;color:#aab0c0;">🎯 Tiros</td>
-                              <td style="padding:6px 4px;text-align:center;font-weight:700;color:#e8ecf5;">{hst:.1f}</td>
-                              <td style="padding:6px 4px;text-align:center;font-weight:700;color:#e8ecf5;">{ast:.1f}</td>
-                            </tr>
-                            <tr style="background:#22263a;">
-                              <td style="padding:6px 8px;color:#aab0c0;">🚩 Córners</td>
-                              <td style="padding:6px 4px;text-align:center;font-weight:700;color:#e8ecf5;">{hc:.1f}</td>
-                              <td style="padding:6px 4px;text-align:center;font-weight:700;color:#e8ecf5;">{ac:.1f}</td>
-                            </tr>
-                          </tbody>
-                        </table>
-                        """, unsafe_allow_html=True)
+                    # pred_home/pred_away usan xg_h/xg_a para ser coherentes con
+                    # los inputs del modelo que genera la torta. Antes usaban promedios
+                    # de goles reales, lo que causaba discrepancias (ej: Canadá con mayor
+                    # xG pero Sudáfrica ganando en la torta).
+                    pred_home      = (xg_h + stats_a.get('xG_away', xg_a)) / 2
+                    pred_away      = (xg_a + stats_h.get('xG_home', xg_h)) / 2
+                    promedio_goles = pred_home + pred_away
+                    prob_over      = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
+                    _tiros_h       = stats_h['HST']
+                    _tiros_a       = stats_a['AST']
+                    _corners_h     = stats_h['HC']
+                    _corners_a     = stats_a['AC']
 
-                    except Exception as e:
-                        st.error(f"Error cargando IA de selecciones: {e}")
+                    # --- SECCIÓN 2: TORTA CON ANOTACIÓN CENTRAL ---
+                    _outcomes  = {'LOCAL': prob_local, 'EMPATE': prob_empate, 'VISITA': prob_visita}
+                    _dom_label = max(_outcomes, key=_outcomes.get)
+                    _dom_pct   = f"{_outcomes[_dom_label]:.0%}"
 
-                else:
-                    model = cargar_modelo()
-                    if model:
-                        stats_h, stats_a   = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
-                        stats_h_dict, stats_a_dict = stats_h, stats_a
+                    fig_pie = px.pie(
+                        values=[prob_local, prob_empate, prob_visita],
+                        names=['Local', 'Empate', 'Visita'],
+                        color=['Local', 'Empate', 'Visita'],
+                        color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'},
+                        hole=0.45
+                    )
+                    fig_pie.update_layout(
+                        dragmode=False, margin=dict(t=0, b=0, l=0, r=0),
+                        annotations=[dict(
+                            text=f"<b>{_dom_label}</b><br>{_dom_pct}",
+                            x=0.5, y=0.5,
+                            font=dict(size=13, color='#e8ecf5'),
+                            showarrow=False, xanchor='center', yanchor='middle'
+                        )]
+                    )
+                    st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
 
-                        xg_h = stats_h.get('xG_home', 1.0)
-                        xg_a = stats_a.get('xG_away', 1.0)
-                        xg_diff       = xg_h - xg_a
-                        pts_h         = obtener_puntos_temporada(home_team, conn)
-                        pts_a         = obtener_puntos_temporada(away_team, conn)
-                        dif_tabla     = pts_h - pts_a
-                        descanso_h    = obtener_dias_descanso(home_team, conn)
-                        descanso_a    = obtener_dias_descanso(away_team, conn)
-                        ventaja_fisica = descanso_h - descanso_a
+                    # --- SECCIÓN 3: PANEL COMPACTO DE MÉTRICAS (4 columnas) ---
+                    _BASE   = 1.2
+                    _xg_total = pred_home + pred_away   # coherente con prob_over y la torta
+                    _m1, _m2, _m3, _m4 = st.columns(4)
+                    _m1.metric("xG Total",            f"{_xg_total:.2f}", f"{_xg_total - _BASE*2:+.2f}")
+                    _m2.metric("Over 2.5",             f"{prob_over:.0%}", delta=None)
+                    _m3.metric(f"{home_team[:8]}",  f"{pred_home:.2f}", f"{pred_home - _BASE:+.2f}")
+                    _m4.metric(f"{away_team[:8]}",  f"{pred_away:.2f}", f"{pred_away - _BASE:+.2f}")
 
-                        eff_h = stats_h['FTHG'] / (xg_h + 0.01)
-                        eff_a = stats_a['FTAG'] / (xg_a + 0.01)
-
-                        input_data = [[
-                            stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'],
-                            stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'],
-                            stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff,
-                            dif_tabla, ventaja_fisica
-                        ]]
-
-                        prob_ia     = model.predict_proba(input_data)[0]
-                        prob_local  = float(prob_ia[2])
-                        prob_empate = float(prob_ia[1])
-                        prob_visita = float(prob_ia[0])
-
-                        # pred_home/pred_away usan xg_h/xg_a para ser coherentes con
-                        # los inputs del modelo que genera la torta. Antes usaban promedios
-                        # de goles reales, lo que causaba discrepancias (ej: Canadá con mayor
-                        # xG pero Sudáfrica ganando en la torta).
-                        pred_home      = (xg_h + stats_a.get('xG_away', xg_a)) / 2
-                        pred_away      = (xg_a + stats_h.get('xG_home', xg_h)) / 2
-                        promedio_goles = pred_home + pred_away
-                        prob_over      = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
-                        _tiros_h       = stats_h['HST']
-                        _tiros_a       = stats_a['AST']
-                        _corners_h     = stats_h['HC']
-                        _corners_a     = stats_a['AC']
-
-                        # --- SECCIÓN 2: TORTA CON ANOTACIÓN CENTRAL ---
-                        _outcomes  = {'LOCAL': prob_local, 'EMPATE': prob_empate, 'VISITA': prob_visita}
-                        _dom_label = max(_outcomes, key=_outcomes.get)
-                        _dom_pct   = f"{_outcomes[_dom_label]:.0%}"
-
-                        fig_pie = px.pie(
-                            values=[prob_local, prob_empate, prob_visita],
-                            names=['Local', 'Empate', 'Visita'],
-                            color=['Local', 'Empate', 'Visita'],
-                            color_discrete_map={'Local': '#27ae60', 'Empate': '#7f8c8d', 'Visita': '#c0392b'},
-                            hole=0.45
-                        )
-                        fig_pie.update_layout(
-                            dragmode=False, margin=dict(t=0, b=0, l=0, r=0),
-                            annotations=[dict(
-                                text=f"<b>{_dom_label}</b><br>{_dom_pct}",
-                                x=0.5, y=0.5,
-                                font=dict(size=13, color='#e8ecf5'),
-                                showarrow=False, xanchor='center', yanchor='middle'
-                            )]
-                        )
-                        st.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_FIJA)
-
-                        # --- SECCIÓN 3: PANEL COMPACTO DE MÉTRICAS (4 columnas) ---
-                        _BASE   = 1.2
-                        _xg_total = pred_home + pred_away   # coherente con prob_over y la torta
-                        _m1, _m2, _m3, _m4 = st.columns(4)
-                        _m1.metric("xG Total",            f"{_xg_total:.2f}", f"{_xg_total - _BASE*2:+.2f}")
-                        _m2.metric("Over 2.5",             f"{prob_over:.0%}", delta=None)
-                        _m3.metric(f"{home_team[:8]}",  f"{pred_home:.2f}", f"{pred_home - _BASE:+.2f}")
-                        _m4.metric(f"{away_team[:8]}",  f"{pred_away:.2f}", f"{pred_away - _BASE:+.2f}")
-
-                        # --- SECCIÓN 4: MINI TABLA TIROS Y CÓRNERS ---
-                        st.markdown(f"""
-                        <table style="width:100%;border-collapse:collapse;margin:10px 0 6px;font-size:0.82rem;">
-                          <thead>
-                            <tr style="background:#1a1d27;">
-                              <th style="padding:6px 8px;color:#6c7a9c;text-align:left;border-bottom:1px solid #2c3050;">Stat</th>
-                              <th style="padding:6px 4px;color:#27ae60;text-align:center;border-bottom:1px solid #2c3050;">{home_team[:12]}</th>
-                              <th style="padding:6px 4px;color:#c0392b;text-align:center;border-bottom:1px solid #2c3050;">{away_team[:12]}</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr style="background:#1e2129;">
-                              <td style="padding:6px 8px;color:#aab0c0;">🎯 Tiros</td>
-                              <td style="padding:6px 4px;text-align:center;font-weight:700;color:#e8ecf5;">{_tiros_h:.1f}</td>
-                              <td style="padding:6px 4px;text-align:center;font-weight:700;color:#e8ecf5;">{_tiros_a:.1f}</td>
-                            </tr>
-                            <tr style="background:#22263a;">
-                              <td style="padding:6px 8px;color:#aab0c0;">🚩 Córners</td>
-                              <td style="padding:6px 4px;text-align:center;font-weight:700;color:#e8ecf5;">{_corners_h:.1f}</td>
-                              <td style="padding:6px 4px;text-align:center;font-weight:700;color:#e8ecf5;">{_corners_a:.1f}</td>
-                            </tr>
-                          </tbody>
-                        </table>
-                        """, unsafe_allow_html=True)
+                    # --- SECCIÓN 4: MINI TABLA TIROS Y CÓRNERS ---
+                    st.markdown(f"""
+                    <table style="width:100%;border-collapse:collapse;margin:10px 0 6px;font-size:0.82rem;">
+                      <thead>
+                        <tr style="background:#1a1d27;">
+                          <th style="padding:6px 8px;color:#6c7a9c;text-align:left;border-bottom:1px solid #2c3050;">Stat</th>
+                          <th style="padding:6px 4px;color:#27ae60;text-align:center;border-bottom:1px solid #2c3050;">{home_team[:12]}</th>
+                          <th style="padding:6px 4px;color:#c0392b;text-align:center;border-bottom:1px solid #2c3050;">{away_team[:12]}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr style="background:#1e2129;">
+                          <td style="padding:6px 8px;color:#aab0c0;">🎯 Tiros</td>
+                          <td style="padding:6px 4px;text-align:center;font-weight:700;color:#e8ecf5;">{_tiros_h:.1f}</td>
+                          <td style="padding:6px 4px;text-align:center;font-weight:700;color:#e8ecf5;">{_tiros_a:.1f}</td>
+                        </tr>
+                        <tr style="background:#22263a;">
+                          <td style="padding:6px 8px;color:#aab0c0;">🚩 Córners</td>
+                          <td style="padding:6px 4px;text-align:center;font-weight:700;color:#e8ecf5;">{_corners_h:.1f}</td>
+                          <td style="padding:6px 4px;text-align:center;font-weight:700;color:#e8ecf5;">{_corners_a:.1f}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    """, unsafe_allow_html=True)
 
             # --- 🎯 FIX: CONDICIONAL PARA TARJETAS ---
             st.divider()
             st.subheader("Disciplina y Tarjetas")
 
-            if es_mundial:
-                st.caption("La base de datos de selecciones no incluye registro de tarjetas. Esta métrica es exclusiva del modelo de clubes.")
-            else:
-                cd1, cd2 = st.columns(2)
-                with cd1:
-                    st.markdown("#### **Media Amarillas**")
-                    m1, m2 = st.columns(2)
-                    m1.metric(f"{home_team[:12]}", f"{stats_h_dict.get('HY', 0):.1f}")
-                    m2.metric(f"{away_team[:12]}", f"{stats_a_dict.get('AY', 0):.1f}")
+            cd1, cd2 = st.columns(2)
+            with cd1:
+                st.markdown("#### **Media Amarillas**")
+                m1, m2 = st.columns(2)
+                m1.metric(f"{home_team[:12]}", f"{stats_h_dict.get('HY', 0):.1f}")
+                m2.metric(f"{away_team[:12]}", f"{stats_a_dict.get('AY', 0):.1f}")
 
-                with cd2:
-                    q_cards = (
-                        f'SELECT Date, (HY + AY) as Total FROM {hist_table} '
-                        f'WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") '
-                        f'OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") '
-                        f'ORDER BY Date DESC LIMIT 5'
-                    )
-                    try:
-                        df_cards = pd.read_sql(q_cards, conn)
-                        if not df_cards.empty:
-                            fig_cards = px.bar(df_cards, x='Date', y='Total', color_discrete_sequence=['#f1c40f'])
-                            fig_cards.update_layout(dragmode=False, xaxis={'fixedrange': True}, yaxis={'fixedrange': True})
-                            st.plotly_chart(fig_cards, use_container_width=True, config=CONFIG_FIJA)
-                        else:
-                            st.info("Sin datos suficientes de tarjetas para graficar H2H.")
-                    except Exception:
-                        st.info("No se pudieron graficar las tarjetas.")
+            with cd2:
+                q_cards = (
+                    f'SELECT Date, (HY + AY) as Total FROM {hist_table} '
+                    f'WHERE (HomeTeam="{home_team}" AND AwayTeam="{away_team}") '
+                    f'OR (HomeTeam="{away_team}" AND AwayTeam="{home_team}") '
+                    f'ORDER BY Date DESC LIMIT 5'
+                )
+                try:
+                    df_cards = pd.read_sql(q_cards, conn)
+                    if not df_cards.empty:
+                        fig_cards = px.bar(df_cards, x='Date', y='Total', color_discrete_sequence=['#f1c40f'])
+                        fig_cards.update_layout(dragmode=False, xaxis={'fixedrange': True}, yaxis={'fixedrange': True})
+                        st.plotly_chart(fig_cards, use_container_width=True, config=CONFIG_FIJA)
+                    else:
+                        st.info("Sin datos suficientes de tarjetas para graficar H2H.")
+                except Exception:
+                    st.info("No se pudieron graficar las tarjetas.")
 
             # --- 🎯 NUEVA SECCIÓN: PROMEDIOS Y TENDENCIAS ---
             st.divider()
@@ -1117,11 +1006,10 @@ elif menu == "Portafolio de Picks":
 
     with tab1:
         st.markdown("### Escáner de Ineficiencias vs Pinnacle")
-        st.caption("Cruzando modelos ML (Clubes y Selecciones) y Poisson contra líneas de Pinnacle. (Edge 2% - 15%)")
+        st.caption("Cruzando modelo ML de Clubes y Poisson contra líneas de Pinnacle. (Edge 2% - 15%)")
         
         try:
             equipos_clubes = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
-            equipos_wc = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_selecciones_ml", conn)['HomeTeam'].tolist()
             
             directorio_odds = Path("odds_data")
             archivos_csv = list(directorio_odds.glob("*.csv")) if directorio_odds.exists() else []
@@ -1133,12 +1021,13 @@ elif menu == "Portafolio de Picks":
                 lista_dfs = []
                 for f in archivos_csv:
                     try:
+                        # Los archivos de odds del Mundial no se consideran en el portafolio
+                        if 'worldcup' in f.name.lower():
+                            continue
+
                         df_temp = pd.read_csv(f)
                         if df_temp.empty:
                             continue
-                        
-                        # 🎯 DETECCIÓN HÍBRIDA: Saber si el archivo es del Mundial
-                        df_temp['Es_Mundial'] = 'worldcup' in f.name.lower()
                         
                         import re
                         match_dash = re.search(r'(\d{4})-(\d{2})-(\d{2})', f.name)
@@ -1155,7 +1044,6 @@ elif menu == "Portafolio de Picks":
                             fecha_fallback = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d')
 
                         df_temp.columns = [c.lower() for c in df_temp.columns]
-                        if 'es_mundial' in df_temp.columns: df_temp = df_temp.rename(columns={'es_mundial': 'Es_Mundial'})
 
                         if 'hometeam' in df_temp.columns and 'home' not in df_temp.columns: df_temp = df_temp.rename(columns={'hometeam': 'home'})
                         if 'awayteam' in df_temp.columns and 'away' not in df_temp.columns: df_temp = df_temp.rename(columns={'awayteam': 'away'})
@@ -1215,14 +1103,14 @@ elif menu == "Portafolio de Picks":
 
             if st.button("Escanear Mercado", type="primary", disabled=boton_disabled):
                 modelo_clubes = cargar_modelo()
-                try:
-                    modelo_wc = joblib.load('modelo_selecciones_rf.pkl')
-                    encoder_wc = joblib.load('encoder_equipos_selecciones.pkl')
-                except:
-                    modelo_wc = None
 
                 with st.spinner(f"Analizando los partidos del {fecha_seleccionada} con IA..."):
                     df_pinnacle = df_master_odds[df_master_odds['Fecha_Match'] == fecha_seleccionada]
+
+                    # Nº de partidos distintos detectados ese día — usado más abajo
+                    # para decidir si se arma portafolio o sólo se sugieren los picks.
+                    n_partidos_dia = df_pinnacle[['home', 'away']].drop_duplicates().shape[0]
+
                     oportunidades = []
                     mercados_evaluados_completos = []
                     log_debug = []
@@ -1236,12 +1124,10 @@ elif menu == "Portafolio de Picks":
                     for index, row in df_pinnacle.iterrows():
                         h_csv = str(row['home'])
                         a_csv = str(row['away'])
-                        es_mundial = row.get('Es_Mundial', False)
                         fecha_partido = str(row['inicio_local']).split()[0] if pd.notna(row['inicio_local']) else str(pd.Timestamp.now().date())
                         
-                        lista_referencia = equipos_wc if es_mundial else equipos_clubes
-                        h_db_match = process.extractOne(h_csv, lista_referencia)
-                        a_db_match = process.extractOne(a_csv, lista_referencia)
+                        h_db_match = process.extractOne(h_csv, equipos_clubes)
+                        a_db_match = process.extractOne(a_csv, equipos_clubes)
                         
                         if not h_db_match or not a_db_match or h_db_match[1] < 80 or a_db_match[1] < 80:
                             continue
@@ -1249,74 +1135,38 @@ elif menu == "Portafolio de Picks":
                         h_db = h_db_match[0]
                         a_db = a_db_match[0]
 
-                        # --- MOTOR HÍBRIDO DE IA ---
-                        if es_mundial:
-                            if not modelo_wc:
-                                log_debug.append(f"Omitiendo {h_db} vs {a_db}: No se encontró modelo_selecciones_rf.pkl")
-                                continue
-                                
-                            df_sh = pd.read_sql(f'SELECT * FROM historial_selecciones_ml WHERE HomeTeam="{h_db}" OR AwayTeam="{h_db}" ORDER BY Date DESC LIMIT 6', conn)
-                            df_sa = pd.read_sql(f'SELECT * FROM historial_selecciones_ml WHERE HomeTeam="{a_db}" OR AwayTeam="{a_db}" ORDER BY Date DESC LIMIT 6', conn)
-                            
-                            def seguro_mean(df, col, default):
-                                return df[col].mean() if not df.empty and col in df.columns and pd.notna(df[col].mean()) else default
+                        # --- MOTOR DE IA (Clubes) ---
+                        if not modelo_clubes: continue
+                        stats_h = get_recent_stats(h_db, conn)
+                        stats_a = get_recent_stats(a_db, conn)
+                        
+                        xg_h = stats_h.get('xG_home', 1.0) 
+                        xg_a = stats_a.get('xG_away', 1.0)
+                        xg_diff = xg_h - xg_a
+                        pts_h = obtener_puntos_temporada(h_db, conn)
+                        pts_a = obtener_puntos_temporada(a_db, conn)
+                        dif_tabla = pts_h - pts_a
+                        descanso_h = obtener_dias_descanso(h_db, conn)
+                        descanso_a = obtener_dias_descanso(a_db, conn)
+                        ventaja_fisica = descanso_h - descanso_a
+                        eff_h = stats_h['FTHG'] / (xg_h + 0.01)
+                        eff_a = stats_a['FTAG'] / (xg_a + 0.01)
 
-                            hst, hc = seguro_mean(df_sh, 'HST', 4.0), seguro_mean(df_sh, 'HC', 4.5)
-                            ast, ac = seguro_mean(df_sa, 'AST', 3.5), seguro_mean(df_sa, 'AC', 4.0)
-                            gf_h, gc_h = seguro_mean(df_sh, 'FTHG', 1.5), seguro_mean(df_sh, 'FTAG', 1.0)
-                            gf_a, gc_a = seguro_mean(df_sa, 'FTHG', 1.2), seguro_mean(df_sa, 'FTAG', 1.3)
-                            
-                            if h_db in encoder_wc.classes_ and a_db in encoder_wc.classes_:
-                                h_c = encoder_wc.transform([h_db])[0]
-                                a_c = encoder_wc.transform([a_db])[0]
-                                # Modelo entrenado con 6 features (xG eliminado por cobertura insuficiente)
-                                X_input = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                                probs = modelo_wc.predict_proba(X_input)[0]
-                                prob_visita, prob_empate, prob_local = probs[0], probs[1], probs[2]
-                            else:
-                                prob_visita, prob_empate, prob_local = 0.33, 0.34, 0.33
-                                
-                            pred_goles_home = (gf_h + gc_a) / 2
-                            pred_goles_away = (gf_a + gc_h) / 2
-                            prom_goles_total = pred_goles_home + pred_goles_away
-                            prom_corners_total = (hc + ac) / 2
-                            prom_shots_total = (hst + ast) / 2
-                            
-                            stats_h = {'HC': hc, 'HST': hst}
-                            stats_a = {'AC': ac, 'AST': ast}
-                            
-                        else:
-                            if not modelo_clubes: continue
-                            stats_h = get_recent_stats(h_db, conn)
-                            stats_a = get_recent_stats(a_db, conn)
-                            
-                            xg_h = stats_h.get('xG_home', 1.0) 
-                            xg_a = stats_a.get('xG_away', 1.0)
-                            xg_diff = xg_h - xg_a
-                            pts_h = obtener_puntos_temporada(h_db, conn)
-                            pts_a = obtener_puntos_temporada(a_db, conn)
-                            dif_tabla = pts_h - pts_a
-                            descanso_h = obtener_dias_descanso(h_db, conn)
-                            descanso_a = obtener_dias_descanso(a_db, conn)
-                            ventaja_fisica = descanso_h - descanso_a
-                            eff_h = stats_h['FTHG'] / (xg_h + 0.01)
-                            eff_a = stats_a['FTAG'] / (xg_a + 0.01)
+                        input_data = [[
+                            stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], 
+                            stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], 
+                            stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff, 
+                            dif_tabla, ventaja_fisica
+                        ]]
+                        
+                        pred_probs = modelo_clubes.predict_proba(input_data)[0]
+                        prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
 
-                            input_data = [[
-                                stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], 
-                                stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], 
-                                stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff, 
-                                dif_tabla, ventaja_fisica
-                            ]]
-                            
-                            pred_probs = modelo_clubes.predict_proba(input_data)[0]
-                            prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
-
-                            pred_goles_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
-                            pred_goles_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
-                            prom_goles_total = pred_goles_home + pred_goles_away
-                            prom_corners_total = (stats_h['HC'] + stats_a['AC']) / 2
-                            prom_shots_total = (stats_h['HST'] + stats_a['AST']) / 2
+                        pred_goles_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
+                        pred_goles_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+                        prom_goles_total = pred_goles_home + pred_goles_away
+                        prom_corners_total = (stats_h['HC'] + stats_a['AC']) / 2
+                        prom_shots_total = (stats_h['HST'] + stats_a['AST']) / 2
 
                         mercados_a_evaluar = [
                             ("Ganador (Local)", buscar_cuota_segura(row, ['1x2_home']), prob_local),
@@ -1402,6 +1252,8 @@ elif menu == "Portafolio de Picks":
                     with st.expander("🛠️ Ver Diagnóstico Completo del Robot Evaluador"):
                         for log_msg in log_debug: st.text(log_msg)
 
+                    st.session_state['n_partidos_dia'] = n_partidos_dia
+
                     if oportunidades:
                         df_ops = pd.DataFrame(oportunidades, columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob_IA', 'Edge'])
                         st.session_state['portafolio_escaneado'] = df_ops.sort_values(by='Edge', ascending=False).drop_duplicates(subset=['Home', 'Away', 'Mercado']).reset_index(drop=True)
@@ -1418,453 +1270,476 @@ elif menu == "Portafolio de Picks":
                 columnas_base = ['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str', 'Date', 'Home', 'Away', 'Prob_IA', 'Edge']
                 df_ops = df_ops[columnas_base]
 
-                TARGET_PICKS = 10
+                n_partidos_dia = st.session_state.get('n_partidos_dia', 0)
 
-                selected_indices = []
-                used_matches = set()
-                df_top_10_list = []
-
-                # ── Definición de niveles de riesgo por cuota ─────────────
-                BUCKETS = [
-                    # (label, min_cuota, max_cuota)
-                    ('🔴 Alto (>2.50)',        2.50, 9999.0),
-                    ('🟡 Medio (1.90–2.49)',   1.90,  2.50),
-                    ('🟢 Bajo (<1.90)',         0.0,   1.90),
-                ]
-                # Contadores por bucket (índice = posición en BUCKETS)
-                bucket_counts = [0, 0, 0]
-
-                # ── helpers ───────────────────────────────────────────────
-                def _mercados_elegidos(partido):
-                    return {r.iloc[0]['Mercado'] for r in df_top_10_list if r.iloc[0]['Partido'] == partido}
-
-                # Mercados 1x2 — para evitar picks duplicados del mismo partido
-                MERCADOS_1X2 = {"Ganador (Local)", "Empate", "Ganador (Visita)"}
-
-                def _tiene_1x2(partido):
-                    """Retorna True si ya hay un pick 1x2 (Local/Empate/Visita) de este partido."""
-                    for r in df_top_10_list:
-                        row0 = r.iloc[0]
-                        if row0['Partido'] == partido and row0['Mercado'] in MERCADOS_1X2:
-                            return True
-                    return False
-
-                def _familia_mercado(mercado_nombre):
-                    """
-                    Devuelve el 'tipo' de mercado para detectar correlaciones dentro
-                    del mismo partido.  Mercados de la misma familia sobre el mismo
-                    partido son correlacionados: p.ej. "Goles Totales (+1.5)" y
-                    "Goles Totales (+2.5)" apuntan al mismo resultado con distintas
-                    líneas y no deben coexistir en el portafolio.
-                    Retorna None para mercados que NO tienen restricción de familia
-                    (p.ej. Hándicap, BTTS) — esos pueden convivir.
-                    """
-                    m = mercado_nombre.lower()
-                    if 'goles totales' in m:      return 'goles_totales'
-                    if 'goles local' in m:        return 'goles_local'
-                    if 'goles visita' in m:       return 'goles_visita'
-                    if 'córners totales' in m:    return 'corners_totales'
-                    if 'córners local' in m:      return 'corners_local'
-                    if 'córners visita' in m:     return 'corners_visita'
-                    if 'tiros' in m:              return 'tiros'
-                    # 1x2 se gestiona por separado con _tiene_1x2
-                    return None   # sin restricción de familia
-
-                def _tiene_misma_familia(partido, mercado_nuevo):
-                    """
-                    Retorna True si ya hay en el portafolio un pick del mismo partido
-                    con el mismo 'tipo' de mercado (familia) que el pick nuevo.
-                    Cuando hay conflicto de familia, el pick con MAYOR edge ya ganó
-                    su lugar primero (df_ops está ordenado desc por edge), por lo que
-                    simplemente bloqueamos el nuevo.
-                    """
-                    familia = _familia_mercado(mercado_nuevo)
-                    if familia is None:
-                        return False   # mercado sin familia → sin restricción
-                    for r in df_top_10_list:
-                        row0 = r.iloc[0]
-                        if row0['Partido'] == partido and _familia_mercado(row0['Mercado']) == familia:
-                            return True
-                    return False
-
-                def add_pick(row_or_idx, nivel_label, from_df=True):
-                    """Agrega pick. from_df=True usa índice de df_ops, False recibe dict.
-                    Bloquea:
-                      · mismo partido+mercado exacto
-                      · múltiples picks 1x2 del mismo partido
-                      · múltiples picks de la misma familia de mercado (correlacionados)
-                        → sólo entra el de mayor edge (df_ops está ordenado desc)
-                    """
-                    if from_df:
-                        row = df_ops.loc[row_or_idx]
-                        partido = row['Partido']
-                        mercado = row['Mercado']
-                        # Bloquear mismo partido+mercado exacto
-                        if (partido, mercado) in {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}:
-                            return False
-                        # Evitar dos picks 1x2 del mismo partido
-                        if mercado in MERCADOS_1X2 and _tiene_1x2(partido):
-                            return False
-                        # Evitar mercados correlacionados del mismo partido (p.ej. +1.5 y +2.5 goles)
-                        if _tiene_misma_familia(partido, mercado):
-                            return False
-                        used_matches.add(partido)
-                        selected_indices.append(row_or_idx)
-                        df_top_10_list.append(df_ops.loc[[row_or_idx]].assign(Nivel=nivel_label))
-                    else:
-                        d = row_or_idx
-                        partido = d['Partido']
-                        mercado = d['Mercado']
-                        if (partido, mercado) in {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}:
-                            return False
-                        # Evitar dos picks 1x2 del mismo partido
-                        if mercado in MERCADOS_1X2 and _tiene_1x2(partido):
-                            return False
-                        # Evitar mercados correlacionados del mismo partido
-                        if _tiene_misma_familia(partido, mercado):
-                            return False
-                        used_matches.add(partido)
-                        df_top_10_list.append(pd.DataFrame([d]))
-                    return True
-
-                def get_pool(min_c, max_c, edge_min, edge_max):
-                    """Pool filtrado por cuota y edge, excluyendo pares partido+mercado ya usados."""
-                    ya_usados = {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}
-                    mask = (
-                        ~df_ops.apply(lambda r: (r['Partido'], r['Mercado']) in ya_usados, axis=1)
-                        & (df_ops['Cuota'] >= min_c) & (df_ops['Cuota'] < max_c)
-                        & (df_ops['Edge'] >= edge_min) & (df_ops['Edge'] <= edge_max)
+                # ══════════════════════════════════════════════════════════
+                # Regla mínima de portafolio: si el día escaneado tiene menos
+                # de 3 partidos, no se arma un portafolio con esa estructura de
+                # riesgo (1-3-3-3) — sólo se muestran los picks encontrados como
+                # sugerencias informativas, sin la opción de guardarlos.
+                # ══════════════════════════════════════════════════════════
+                if n_partidos_dia < 3:
+                    st.warning(
+                        f"Sólo se detectaron **{n_partidos_dia} partido(s)** este día — por debajo "
+                        "del mínimo de 3 requerido para construir un portafolio. Los picks se muestran "
+                        "abajo como **sugerencias** y no se agregan al portafolio."
                     )
-                    return df_ops[mask]
+                    df_sugeridos = df_ops.sort_values(by='Edge', ascending=False).reset_index(drop=True)
+                    st.markdown(f"### 💡 Picks Sugeridos ({len(df_sugeridos)})")
+                    st.caption("Picks con edge positivo encontrados en el escaneo — sólo informativos, no forman parte del portafolio.")
+                    st.dataframe(
+                        df_sugeridos[['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']],
+                        hide_index=True,
+                        use_container_width=True
+                    )
+                else:
+                    TARGET_PICKS = 10
 
-                def fill_bucket(bucket_idx, target_n, nivel_label, edge_min, edge_max):
-                    """Intenta llenar el bucket hasta target_n picks."""
-                    _, min_c, max_c = BUCKETS[bucket_idx]
-                    added = 0
-                    pool = get_pool(min_c, max_c, edge_min, edge_max)
-                    for idx in pool.index:
-                        if added >= target_n:
+                    selected_indices = []
+                    used_matches = set()
+                    df_top_10_list = []
+
+                    # ── Definición de niveles de riesgo por cuota ─────────────
+                    BUCKETS = [
+                        # (label, min_cuota, max_cuota)
+                        ('🔴 Alto (>2.50)',        2.50, 9999.0),
+                        ('🟡 Medio (1.90–2.49)',   1.90,  2.50),
+                        ('🟢 Bajo (<1.90)',         0.0,   1.90),
+                    ]
+                    # Contadores por bucket (índice = posición en BUCKETS)
+                    bucket_counts = [0, 0, 0]
+
+                    # ── helpers ───────────────────────────────────────────────
+                    def _mercados_elegidos(partido):
+                        return {r.iloc[0]['Mercado'] for r in df_top_10_list if r.iloc[0]['Partido'] == partido}
+
+                    # Mercados 1x2 — para evitar picks duplicados del mismo partido
+                    MERCADOS_1X2 = {"Ganador (Local)", "Empate", "Ganador (Visita)"}
+
+                    def _tiene_1x2(partido):
+                        """Retorna True si ya hay un pick 1x2 (Local/Empate/Visita) de este partido."""
+                        for r in df_top_10_list:
+                            row0 = r.iloc[0]
+                            if row0['Partido'] == partido and row0['Mercado'] in MERCADOS_1X2:
+                                return True
+                        return False
+
+                    def _familia_mercado(mercado_nombre):
+                        """
+                        Devuelve el 'tipo' de mercado para detectar correlaciones dentro
+                        del mismo partido.  Mercados de la misma familia sobre el mismo
+                        partido son correlacionados: p.ej. "Goles Totales (+1.5)" y
+                        "Goles Totales (+2.5)" apuntan al mismo resultado con distintas
+                        líneas y no deben coexistir en el portafolio.
+                        Retorna None para mercados que NO tienen restricción de familia
+                        (p.ej. Hándicap, BTTS) — esos pueden convivir.
+                        """
+                        m = mercado_nombre.lower()
+                        if 'goles totales' in m:      return 'goles_totales'
+                        if 'goles local' in m:        return 'goles_local'
+                        if 'goles visita' in m:       return 'goles_visita'
+                        if 'córners totales' in m:    return 'corners_totales'
+                        if 'córners local' in m:      return 'corners_local'
+                        if 'córners visita' in m:     return 'corners_visita'
+                        if 'tiros' in m:              return 'tiros'
+                        # 1x2 se gestiona por separado con _tiene_1x2
+                        return None   # sin restricción de familia
+
+                    def _tiene_misma_familia(partido, mercado_nuevo):
+                        """
+                        Retorna True si ya hay en el portafolio un pick del mismo partido
+                        con el mismo 'tipo' de mercado (familia) que el pick nuevo.
+                        Cuando hay conflicto de familia, el pick con MAYOR edge ya ganó
+                        su lugar primero (df_ops está ordenado desc por edge), por lo que
+                        simplemente bloqueamos el nuevo.
+                        """
+                        familia = _familia_mercado(mercado_nuevo)
+                        if familia is None:
+                            return False   # mercado sin familia → sin restricción
+                        for r in df_top_10_list:
+                            row0 = r.iloc[0]
+                            if row0['Partido'] == partido and _familia_mercado(row0['Mercado']) == familia:
+                                return True
+                        return False
+
+                    def add_pick(row_or_idx, nivel_label, from_df=True):
+                        """Agrega pick. from_df=True usa índice de df_ops, False recibe dict.
+                        Bloquea:
+                          · mismo partido+mercado exacto
+                          · múltiples picks 1x2 del mismo partido
+                          · múltiples picks de la misma familia de mercado (correlacionados)
+                            → sólo entra el de mayor edge (df_ops está ordenado desc)
+                        """
+                        if from_df:
+                            row = df_ops.loc[row_or_idx]
+                            partido = row['Partido']
+                            mercado = row['Mercado']
+                            # Bloquear mismo partido+mercado exacto
+                            if (partido, mercado) in {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}:
+                                return False
+                            # Evitar dos picks 1x2 del mismo partido
+                            if mercado in MERCADOS_1X2 and _tiene_1x2(partido):
+                                return False
+                            # Evitar mercados correlacionados del mismo partido (p.ej. +1.5 y +2.5 goles)
+                            if _tiene_misma_familia(partido, mercado):
+                                return False
+                            used_matches.add(partido)
+                            selected_indices.append(row_or_idx)
+                            df_top_10_list.append(df_ops.loc[[row_or_idx]].assign(Nivel=nivel_label))
+                        else:
+                            d = row_or_idx
+                            partido = d['Partido']
+                            mercado = d['Mercado']
+                            if (partido, mercado) in {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}:
+                                return False
+                            # Evitar dos picks 1x2 del mismo partido
+                            if mercado in MERCADOS_1X2 and _tiene_1x2(partido):
+                                return False
+                            # Evitar mercados correlacionados del mismo partido
+                            if _tiene_misma_familia(partido, mercado):
+                                return False
+                            used_matches.add(partido)
+                            df_top_10_list.append(pd.DataFrame([d]))
+                        return True
+
+                    def get_pool(min_c, max_c, edge_min, edge_max):
+                        """Pool filtrado por cuota y edge, excluyendo pares partido+mercado ya usados."""
+                        ya_usados = {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}
+                        mask = (
+                            ~df_ops.apply(lambda r: (r['Partido'], r['Mercado']) in ya_usados, axis=1)
+                            & (df_ops['Cuota'] >= min_c) & (df_ops['Cuota'] < max_c)
+                            & (df_ops['Edge'] >= edge_min) & (df_ops['Edge'] <= edge_max)
+                        )
+                        return df_ops[mask]
+
+                    def fill_bucket(bucket_idx, target_n, nivel_label, edge_min, edge_max):
+                        """Intenta llenar el bucket hasta target_n picks."""
+                        _, min_c, max_c = BUCKETS[bucket_idx]
+                        added = 0
+                        pool = get_pool(min_c, max_c, edge_min, edge_max)
+                        for idx in pool.index:
+                            if added >= target_n:
+                                break
+                            if add_pick(idx, nivel_label):
+                                added += 1
+                        return added
+
+                    def faltantes_bucket(conteo_actual, target=3):
+                        return max(0, target - conteo_actual)
+
+                    # ══════════════════════════════════════════════════════════
+                    # FASE 1 — estructura 1-3-3-3 con edge ESTÁNDAR (2%–15%)
+                    # ══════════════════════════════════════════════════════════
+                    EDGE_STD_MIN, EDGE_STD_MAX = 0.02, 0.15
+
+                    # Golden Pick: mejor edge global (cualquier cuota)
+                    for idx in df_ops[
+                        (df_ops['Edge'] >= EDGE_STD_MIN)
+                        & (df_ops['Edge'] <= EDGE_STD_MAX)
+                    ].index:
+                        if add_pick(idx, '⭐ Golden Pick'):
                             break
-                        if add_pick(idx, nivel_label):
-                            added += 1
-                    return added
 
-                def faltantes_bucket(conteo_actual, target=3):
-                    return max(0, target - conteo_actual)
+                    # Si no hay golden con estándar, usar el mejor edge disponible (≤30%)
+                    if len(df_top_10_list) == 0:
+                        for idx in df_ops[df_ops['Edge'] <= 0.30].index:
+                            if add_pick(idx, '⭐ Golden Pick (ext.)'):
+                                break
 
-                # ══════════════════════════════════════════════════════════
-                # FASE 1 — estructura 1-3-3-3 con edge ESTÁNDAR (2%–15%)
-                # ══════════════════════════════════════════════════════════
-                EDGE_STD_MIN, EDGE_STD_MAX = 0.02, 0.15
-
-                # Golden Pick: mejor edge global (cualquier cuota)
-                for idx in df_ops[
-                    (df_ops['Edge'] >= EDGE_STD_MIN)
-                    & (df_ops['Edge'] <= EDGE_STD_MAX)
-                ].index:
-                    if add_pick(idx, '⭐ Golden Pick'):
-                        break
-
-                # Si no hay golden con estándar, usar el mejor edge disponible (≤30%)
-                if len(df_top_10_list) == 0:
-                    for idx in df_ops[df_ops['Edge'] <= 0.30].index:
-                        if add_pick(idx, '⭐ Golden Pick (ext.)'):
-                            break
-
-                # Buckets estándar: 3 altos, 3 medios, 3 bajos
-                for bi in range(3):
-                    lbl = BUCKETS[bi][0]
-                    bucket_counts[bi] = fill_bucket(bi, 3, lbl, EDGE_STD_MIN, EDGE_STD_MAX)
-
-                # ══════════════════════════════════════════════════════════
-                # FASE 2 — ampliar edge HASTA 30% (en pasos), manteniendo
-                #          la estructura 1-3-3-3 bucket por bucket.
-                #          NUNCA superar 30% de edge máximo.
-                # ══════════════════════════════════════════════════════════
-                EDGE_PASOS = [
-                    (0.01,  0.20),   # paso 1: relajar un poco
-                    (0.005, 0.25),   # paso 2: abrir más
-                    (0.001, 0.30),   # paso 3: hasta el máximo permitido (30%)
-                ]
-
-                for edge_min_exp, edge_max_exp in EDGE_PASOS:
-                    if all(bucket_counts[bi] >= 3 for bi in range(3)):
-                        break
-                    lbl_suf = f'edge {edge_min_exp:.1%}–{edge_max_exp:.0%}'
+                    # Buckets estándar: 3 altos, 3 medios, 3 bajos
                     for bi in range(3):
-                        falt = faltantes_bucket(bucket_counts[bi])
-                        if falt:
-                            lbl = f'{BUCKETS[bi][0]} — {lbl_suf}'
-                            added = fill_bucket(bi, falt, lbl, edge_min_exp, edge_max_exp)
-                            bucket_counts[bi] += added
-                # La estructura 1-3-3-3 se preserva porque fill_bucket sólo toma
-                # picks del rango de cuota del bucket correspondiente.
+                        lbl = BUCKETS[bi][0]
+                        bucket_counts[bi] = fill_bucket(bi, 3, lbl, EDGE_STD_MIN, EDGE_STD_MAX)
 
-                # ══════════════════════════════════════════════════════════
-                # FASE 3 — estructura flexible con dos pasos:
-                #   Paso A: intentar completar la 1-3-3-3 con el pool completo
-                #           (≤30% edge, cada pick en su bucket por cuota).
-                #   Paso B: slots aún vacíos → rellenar SÓLO con cuota < 2.0.
-                # Permite repetir partido si el mercado es distinto,
-                # pero nunca dos picks 1x2 del mismo partido.
-                # ══════════════════════════════════════════════════════════
-                if len(df_top_10_list) < TARGET_PICKS:
-                    faltantes_f3 = TARGET_PICKS - len(df_top_10_list)
+                    # ══════════════════════════════════════════════════════════
+                    # FASE 2 — ampliar edge HASTA 30% (en pasos), manteniendo
+                    #          la estructura 1-3-3-3 bucket por bucket.
+                    #          NUNCA superar 30% de edge máximo.
+                    # ══════════════════════════════════════════════════════════
+                    EDGE_PASOS = [
+                        (0.01,  0.20),   # paso 1: relajar un poco
+                        (0.005, 0.25),   # paso 2: abrir más
+                        (0.001, 0.30),   # paso 3: hasta el máximo permitido (30%)
+                    ]
 
-                    pool_completo = st.session_state.get('pool_mercados', [])
+                    for edge_min_exp, edge_max_exp in EDGE_PASOS:
+                        if all(bucket_counts[bi] >= 3 for bi in range(3)):
+                            break
+                        lbl_suf = f'edge {edge_min_exp:.1%}–{edge_max_exp:.0%}'
+                        for bi in range(3):
+                            falt = faltantes_bucket(bucket_counts[bi])
+                            if falt:
+                                lbl = f'{BUCKETS[bi][0]} — {lbl_suf}'
+                                added = fill_bucket(bi, falt, lbl, edge_min_exp, edge_max_exp)
+                                bucket_counts[bi] += added
+                    # La estructura 1-3-3-3 se preserva porque fill_bucket sólo toma
+                    # picks del rango de cuota del bucket correspondiente.
 
-                    if pool_completo:
-                        df_f3 = pd.DataFrame(
-                            pool_completo,
+                    # ══════════════════════════════════════════════════════════
+                    # FASE 3 — estructura flexible con dos pasos:
+                    #   Paso A: intentar completar la 1-3-3-3 con el pool completo
+                    #           (≤30% edge, cada pick en su bucket por cuota).
+                    #   Paso B: slots aún vacíos → rellenar SÓLO con cuota < 2.0.
+                    # Permite repetir partido si el mercado es distinto,
+                    # pero nunca dos picks 1x2 del mismo partido.
+                    # ══════════════════════════════════════════════════════════
+                    if len(df_top_10_list) < TARGET_PICKS:
+                        faltantes_f3 = TARGET_PICKS - len(df_top_10_list)
+
+                        pool_completo = st.session_state.get('pool_mercados', [])
+
+                        if pool_completo:
+                            df_f3 = pd.DataFrame(
+                                pool_completo,
+                                columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob_IA', 'Edge']
+                            )
+                            df_f3['Partido'] = df_f3['Home'] + " vs " + df_f3['Away']
+                            df_f3['Prob_IA_Str'] = (df_f3['Prob_IA'] * 100).round(1).astype(str) + "%"
+                            df_f3['Edge_Str']    = (df_f3['Edge']    * 100).round(2).astype(str) + "%"
+
+                            # Respetar el tope de edge del 30%
+                            df_f3 = df_f3[df_f3['Edge'] <= 0.30]
+
+                            # Construir set de mercados exactos ya elegidos (partido+mercado)
+                            mercados_ya_en_portfolio = set()
+                            for item in df_top_10_list:
+                                r = item.iloc[0]
+                                mercados_ya_en_portfolio.add((r['Partido'], r['Mercado']))
+
+                            df_f3 = df_f3[
+                                ~df_f3.apply(
+                                    lambda r: (r['Partido'], r['Mercado']) in mercados_ya_en_portfolio,
+                                    axis=1
+                                )
+                            ]
+
+                            # Ordenar: preferir partidos nuevos, luego mayor edge
+                            df_f3['es_partido_nuevo'] = (~df_f3['Partido'].isin(used_matches)).astype(int)
+                            df_f3 = df_f3.sort_values(['es_partido_nuevo', 'Edge'], ascending=[False, False])
+
+                            _picks_f3 = [0]  # contador mutable para uso dentro de _add_f3
+
+                            def _add_f3(row_f3, nivel_f3, bi_f3):
+                                """Intenta agregar un pick de Fase 3; retorna True si lo logró."""
+                                partido_f3 = row_f3['Partido']
+                                mercado_f3 = row_f3['Mercado']
+                                if (partido_f3, mercado_f3) in mercados_ya_en_portfolio:
+                                    return False
+                                if mercado_f3 in MERCADOS_1X2 and _tiene_1x2(partido_f3):
+                                    return False
+                                if _tiene_misma_familia(partido_f3, mercado_f3):
+                                    return False
+                                entry = {
+                                    'Date': row_f3['Date'], 'Home': row_f3['Home'], 'Away': row_f3['Away'],
+                                    'Mercado': mercado_f3, 'Cuota': row_f3['Cuota'],
+                                    'Prob_IA': row_f3['Prob_IA'], 'Edge': row_f3['Edge'],
+                                    'Prob_IA_Str': row_f3['Prob_IA_Str'], 'Edge_Str': row_f3['Edge_Str'],
+                                    'Partido': partido_f3, 'Nivel': nivel_f3
+                                }
+                                if partido_f3 not in used_matches:
+                                    used_matches.add(partido_f3)
+                                mercados_ya_en_portfolio.add((partido_f3, mercado_f3))
+                                df_top_10_list.append(pd.DataFrame([entry]))
+                                bucket_counts[bi_f3] += 1
+                                _picks_f3[0] += 1
+                                return True
+
+                            # ── Paso A: completar slots 1-3-3-3 faltantes ──────────
+                            # Golden si sigue vacío
+                            n_golden_f3 = sum(
+                                1 for d in df_top_10_list
+                                if 'Golden' in str(d.iloc[0].get('Nivel', ''))
+                            )
+                            if n_golden_f3 == 0 and _picks_f3[0] < faltantes_f3:
+                                for _, row_f3 in df_f3.iterrows():
+                                    if _add_f3(row_f3, '⭐ Golden Pick (Flexible)', 0):
+                                        break  # sólo 1 golden
+
+                            # Buckets faltantes en orden alto → medio → bajo
+                            for bi in range(3):
+                                falt_bi = faltantes_bucket(bucket_counts[bi])
+                                if falt_bi == 0 or _picks_f3[0] >= faltantes_f3:
+                                    continue
+                                _, min_c, max_c = BUCKETS[bi]
+                                lbl_bi = f'{BUCKETS[bi][0]} — flexible'
+                                cnt_bi = 0
+                                for _, row_f3 in df_f3.iterrows():
+                                    if cnt_bi >= falt_bi or _picks_f3[0] >= faltantes_f3:
+                                        break
+                                    if not (min_c <= row_f3['Cuota'] < max_c):
+                                        continue
+                                    if _add_f3(row_f3, lbl_bi, bi):
+                                        cnt_bi += 1
+
+                            # ── Paso B: slots aún vacíos → sólo cuota < 2.0 ───────
+                            if _picks_f3[0] < faltantes_f3:
+                                df_f3_bajo = df_f3[df_f3['Cuota'] < 2.0].copy()
+                                for _, row_f3 in df_f3_bajo.iterrows():
+                                    if _picks_f3[0] >= faltantes_f3:
+                                        break
+                                    _add_f3(row_f3, '🟢 Flexible bajo (<2.0)', 2)
+
+                            if _picks_f3[0] > 0:
+                                st.caption(
+                                    f"Modo flexible (≤30% edge): {_picks_f3[0]} pick(s) añadidos fuera del rango estándar (2%–15%)."
+                                )
+
+                    faltantes = TARGET_PICKS - len(df_top_10_list)
+                    if faltantes > 0:
+                        st.caption(
+                            f"Portafolio parcial: {len(df_top_10_list)}/10 picks — no hay suficiente mercado con edge positivo para los {faltantes} slots restantes."
+                        )
+
+                    df_top_10 = pd.concat(df_top_10_list).reset_index(drop=True) if df_top_10_list else pd.DataFrame()
+
+                    # Asegurar columnas string para display
+                    if not df_top_10.empty:
+                        if 'Prob_IA_Str' not in df_top_10.columns:
+                            df_top_10['Prob_IA_Str'] = (df_top_10['Prob_IA'] * 100).round(1).astype(str) + "%"
+                        if 'Edge_Str' not in df_top_10.columns:
+                            df_top_10['Edge_Str'] = (df_top_10['Edge'] * 100).round(2).astype(str) + "%"
+                        if 'Partido' not in df_top_10.columns:
+                            df_top_10['Partido'] = df_top_10['Home'] + " vs " + df_top_10['Away']
+
+                    cols_mostrar = ['Nivel', 'Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']
+
+                    df_mostrar_top = df_top_10[cols_mostrar].copy()
+                    df_mostrar_top.insert(0, "✅ Añadir", True)
+                
+                    df_reserva = df_ops[~df_ops.index.isin(selected_indices)].reset_index(drop=True)
+
+                    # ── Picks válidos fuera del portafolio (pool completo con edge positivo) ──
+                    # Incluye tanto los del rango 2-15% que no entraron como los del pool
+                    # completo (edge positivo < 2% o > 15%) que quedaron fuera.
+                    _portfolio_pares = {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}
+                    _pool_completo = st.session_state.get('pool_mercados', [])
+                    if _pool_completo:
+                        df_reserva_full = pd.DataFrame(
+                            _pool_completo,
                             columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob_IA', 'Edge']
                         )
-                        df_f3['Partido'] = df_f3['Home'] + " vs " + df_f3['Away']
-                        df_f3['Prob_IA_Str'] = (df_f3['Prob_IA'] * 100).round(1).astype(str) + "%"
-                        df_f3['Edge_Str']    = (df_f3['Edge']    * 100).round(2).astype(str) + "%"
-
-                        # Respetar el tope de edge del 30%
-                        df_f3 = df_f3[df_f3['Edge'] <= 0.30]
-
-                        # Construir set de mercados exactos ya elegidos (partido+mercado)
-                        mercados_ya_en_portfolio = set()
-                        for item in df_top_10_list:
-                            r = item.iloc[0]
-                            mercados_ya_en_portfolio.add((r['Partido'], r['Mercado']))
-
-                        df_f3 = df_f3[
-                            ~df_f3.apply(
-                                lambda r: (r['Partido'], r['Mercado']) in mercados_ya_en_portfolio,
-                                axis=1
-                            )
-                        ]
-
-                        # Ordenar: preferir partidos nuevos, luego mayor edge
-                        df_f3['es_partido_nuevo'] = (~df_f3['Partido'].isin(used_matches)).astype(int)
-                        df_f3 = df_f3.sort_values(['es_partido_nuevo', 'Edge'], ascending=[False, False])
-
-                        _picks_f3 = [0]  # contador mutable para uso dentro de _add_f3
-
-                        def _add_f3(row_f3, nivel_f3, bi_f3):
-                            """Intenta agregar un pick de Fase 3; retorna True si lo logró."""
-                            partido_f3 = row_f3['Partido']
-                            mercado_f3 = row_f3['Mercado']
-                            if (partido_f3, mercado_f3) in mercados_ya_en_portfolio:
-                                return False
-                            if mercado_f3 in MERCADOS_1X2 and _tiene_1x2(partido_f3):
-                                return False
-                            if _tiene_misma_familia(partido_f3, mercado_f3):
-                                return False
-                            entry = {
-                                'Date': row_f3['Date'], 'Home': row_f3['Home'], 'Away': row_f3['Away'],
-                                'Mercado': mercado_f3, 'Cuota': row_f3['Cuota'],
-                                'Prob_IA': row_f3['Prob_IA'], 'Edge': row_f3['Edge'],
-                                'Prob_IA_Str': row_f3['Prob_IA_Str'], 'Edge_Str': row_f3['Edge_Str'],
-                                'Partido': partido_f3, 'Nivel': nivel_f3
-                            }
-                            if partido_f3 not in used_matches:
-                                used_matches.add(partido_f3)
-                            mercados_ya_en_portfolio.add((partido_f3, mercado_f3))
-                            df_top_10_list.append(pd.DataFrame([entry]))
-                            bucket_counts[bi_f3] += 1
-                            _picks_f3[0] += 1
-                            return True
-
-                        # ── Paso A: completar slots 1-3-3-3 faltantes ──────────
-                        # Golden si sigue vacío
-                        n_golden_f3 = sum(
-                            1 for d in df_top_10_list
-                            if 'Golden' in str(d.iloc[0].get('Nivel', ''))
-                        )
-                        if n_golden_f3 == 0 and _picks_f3[0] < faltantes_f3:
-                            for _, row_f3 in df_f3.iterrows():
-                                if _add_f3(row_f3, '⭐ Golden Pick (Flexible)', 0):
-                                    break  # sólo 1 golden
-
-                        # Buckets faltantes en orden alto → medio → bajo
-                        for bi in range(3):
-                            falt_bi = faltantes_bucket(bucket_counts[bi])
-                            if falt_bi == 0 or _picks_f3[0] >= faltantes_f3:
-                                continue
-                            _, min_c, max_c = BUCKETS[bi]
-                            lbl_bi = f'{BUCKETS[bi][0]} — flexible'
-                            cnt_bi = 0
-                            for _, row_f3 in df_f3.iterrows():
-                                if cnt_bi >= falt_bi or _picks_f3[0] >= faltantes_f3:
-                                    break
-                                if not (min_c <= row_f3['Cuota'] < max_c):
-                                    continue
-                                if _add_f3(row_f3, lbl_bi, bi):
-                                    cnt_bi += 1
-
-                        # ── Paso B: slots aún vacíos → sólo cuota < 2.0 ───────
-                        if _picks_f3[0] < faltantes_f3:
-                            df_f3_bajo = df_f3[df_f3['Cuota'] < 2.0].copy()
-                            for _, row_f3 in df_f3_bajo.iterrows():
-                                if _picks_f3[0] >= faltantes_f3:
-                                    break
-                                _add_f3(row_f3, '🟢 Flexible bajo (<2.0)', 2)
-
-                        if _picks_f3[0] > 0:
-                            st.caption(
-                                f"Modo flexible (≤30% edge): {_picks_f3[0]} pick(s) añadidos fuera del rango estándar (2%–15%)."
-                            )
-
-                faltantes = TARGET_PICKS - len(df_top_10_list)
-                if faltantes > 0:
-                    st.caption(
-                        f"Portafolio parcial: {len(df_top_10_list)}/10 picks — no hay suficiente mercado con edge positivo para los {faltantes} slots restantes."
-                    )
-
-                df_top_10 = pd.concat(df_top_10_list).reset_index(drop=True) if df_top_10_list else pd.DataFrame()
-
-                # Asegurar columnas string para display
-                if not df_top_10.empty:
-                    if 'Prob_IA_Str' not in df_top_10.columns:
-                        df_top_10['Prob_IA_Str'] = (df_top_10['Prob_IA'] * 100).round(1).astype(str) + "%"
-                    if 'Edge_Str' not in df_top_10.columns:
-                        df_top_10['Edge_Str'] = (df_top_10['Edge'] * 100).round(2).astype(str) + "%"
-                    if 'Partido' not in df_top_10.columns:
-                        df_top_10['Partido'] = df_top_10['Home'] + " vs " + df_top_10['Away']
-
-                cols_mostrar = ['Nivel', 'Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']
-
-                df_mostrar_top = df_top_10[cols_mostrar].copy()
-                df_mostrar_top.insert(0, "✅ Añadir", True)
-                
-                df_reserva = df_ops[~df_ops.index.isin(selected_indices)].reset_index(drop=True)
-
-                # ── Picks válidos fuera del portafolio (pool completo con edge positivo) ──
-                # Incluye tanto los del rango 2-15% que no entraron como los del pool
-                # completo (edge positivo < 2% o > 15%) que quedaron fuera.
-                _portfolio_pares = {(r.iloc[0]['Partido'], r.iloc[0]['Mercado']) for r in df_top_10_list}
-                _pool_completo = st.session_state.get('pool_mercados', [])
-                if _pool_completo:
-                    df_reserva_full = pd.DataFrame(
-                        _pool_completo,
-                        columns=['Date', 'Home', 'Away', 'Mercado', 'Cuota', 'Prob_IA', 'Edge']
-                    )
-                    df_reserva_full['Partido'] = df_reserva_full['Home'] + " vs " + df_reserva_full['Away']
-                    df_reserva_full['Prob_IA_Str'] = (df_reserva_full['Prob_IA'] * 100).round(1).astype(str) + "%"
-                    df_reserva_full['Edge_Str'] = (df_reserva_full['Edge'] * 100).round(2).astype(str) + "%"
-                    # Excluir lo que ya está en el portafolio
-                    df_reserva_full = df_reserva_full[
-                        ~df_reserva_full.apply(lambda r: (r['Partido'], r['Mercado']) in _portfolio_pares, axis=1)
-                    ].drop_duplicates(subset=['Partido', 'Mercado']).sort_values('Edge', ascending=False).reset_index(drop=True)
-                else:
-                    df_reserva_full = df_reserva.copy()
-                    if 'Prob_IA_Str' not in df_reserva_full.columns:
+                        df_reserva_full['Partido'] = df_reserva_full['Home'] + " vs " + df_reserva_full['Away']
                         df_reserva_full['Prob_IA_Str'] = (df_reserva_full['Prob_IA'] * 100).round(1).astype(str) + "%"
-                    if 'Edge_Str' not in df_reserva_full.columns:
                         df_reserva_full['Edge_Str'] = (df_reserva_full['Edge'] * 100).round(2).astype(str) + "%"
-
-                df_mostrar_reserva = df_reserva_full[['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']].copy()
-                df_mostrar_reserva.insert(0, "✅ Añadir", False)
-
-                modo = "completo ✅" if len(df_top_10) >= TARGET_PICKS else f"parcial ({len(df_top_10)}/{TARGET_PICKS} picks)"
-                st.success(f"Escaneo listo. Portafolio {modo} — {len(df_top_10)} picks seleccionados.")
-
-                # ── Resumen de estructura 1-3-3-3 ─────────────────────────
-                modo_stake_riesgo = st.toggle(
-                    "Stake por Nivel de Riesgo",
-                    key="modo_stake_riesgo",
-                    help="ON: Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5× de la unidad base. OFF: mismo stake para todos los picks."
-                )
-                n_golden = sum(1 for d in df_top_10_list if 'Golden' in str(d.iloc[0].get('Nivel','')))
-                _bc = bucket_counts  # [alto, medio, bajo]
-                col_g, col_h, col_m, col_l = st.columns(4)
-                col_g.metric("Golden", f"{n_golden}/1")
-                col_h.metric("Alto",   f"{_bc[0]}/3")
-                col_m.metric("Medio",  f"{_bc[1]}/3")
-                col_l.metric("Bajo",   f"{_bc[2]}/3")
-
-                st.markdown(f"### Portafolio ({len(df_top_10)} picks)")
-                
-                edit_top10 = st.data_editor(
-                    df_mostrar_top,
-                    hide_index=True,
-                    use_container_width=True,
-                    key="editor_top10",
-                    column_config={"✅ Añadir": st.column_config.CheckboxColumn(required=True)}
-                )
-                
-                with st.expander(f"📂 Ver el resto de picks válidos ({len(df_reserva_full)} con edge positivo fuera del portafolio)"):
-                    if not df_mostrar_reserva.empty:
-                        st.caption("Todos los picks con edge positivo que NO entraron al portafolio — ordenados por edge de mayor a menor. Puedes marcar cualquiera como reemplazo.")
-                        edit_reserva = st.data_editor(
-                            df_mostrar_reserva,
-                            hide_index=True,
-                            use_container_width=True,
-                            key="editor_reserva",
-                            column_config={"✅ Añadir": st.column_config.CheckboxColumn(required=True)}
-                        )
+                        # Excluir lo que ya está en el portafolio
+                        df_reserva_full = df_reserva_full[
+                            ~df_reserva_full.apply(lambda r: (r['Partido'], r['Mercado']) in _portfolio_pares, axis=1)
+                        ].drop_duplicates(subset=['Partido', 'Mercado']).sort_values('Edge', ascending=False).reset_index(drop=True)
                     else:
-                        st.info("No hay más picks de reserva. Se utilizaron todos los disponibles.")
+                        df_reserva_full = df_reserva.copy()
+                        if 'Prob_IA_Str' not in df_reserva_full.columns:
+                            df_reserva_full['Prob_IA_Str'] = (df_reserva_full['Prob_IA'] * 100).round(1).astype(str) + "%"
+                        if 'Edge_Str' not in df_reserva_full.columns:
+                            df_reserva_full['Edge_Str'] = (df_reserva_full['Edge'] * 100).round(2).astype(str) + "%"
 
-                if st.button("Guardar Portafolio Seleccionado", type="primary"):
-                    indices_top = edit_top10[edit_top10["✅ Añadir"] == True].index
-                    indices_res = edit_reserva[edit_reserva["✅ Añadir"] == True].index if not df_mostrar_reserva.empty else []
-                    
-                    df_final_top = df_top_10.iloc[indices_top]
-                    df_final_res = df_reserva_full.iloc[indices_res] if not df_mostrar_reserva.empty else pd.DataFrame()
-                    df_final_a_guardar = pd.concat([df_final_top, df_final_res])
-                    
-                    if df_final_a_guardar.empty:
-                        st.warning("No seleccionaste ningún pick.")
-                    else:
-                        _modo_cmp = st.session_state.get("modo_compuesto", False)
-                        _modo_riesgo = st.session_state.get("modo_stake_riesgo", False)
-                        if _modo_cmp:
-                            _pnl_hist = pd.read_sql(
-                                "SELECT COALESCE(SUM(Beneficio_Neto),0) as total FROM portafolio_historico WHERE Estado != 'Pendiente'",
-                                conn
-                            ).iloc[0]['total']
-                            _base_inversion = inversion_total + _pnl_hist
+                    df_mostrar_reserva = df_reserva_full[['Partido', 'Mercado', 'Cuota', 'Prob_IA_Str', 'Edge_Str']].copy()
+                    df_mostrar_reserva.insert(0, "✅ Añadir", False)
+
+                    modo = "completo ✅" if len(df_top_10) >= TARGET_PICKS else f"parcial ({len(df_top_10)}/{TARGET_PICKS} picks)"
+                    st.success(f"Escaneo listo. Portafolio {modo} — {len(df_top_10)} picks seleccionados.")
+
+                    # ── Resumen de estructura 1-3-3-3 ─────────────────────────
+                    modo_stake_riesgo = st.toggle(
+                        "Stake por Nivel de Riesgo",
+                        key="modo_stake_riesgo",
+                        help="ON: Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5× de la unidad base. OFF: mismo stake para todos los picks."
+                    )
+                    n_golden = sum(1 for d in df_top_10_list if 'Golden' in str(d.iloc[0].get('Nivel','')))
+                    _bc = bucket_counts  # [alto, medio, bajo]
+                    col_g, col_h, col_m, col_l = st.columns(4)
+                    col_g.metric("Golden", f"{n_golden}/1")
+                    col_h.metric("Alto",   f"{_bc[0]}/3")
+                    col_m.metric("Medio",  f"{_bc[1]}/3")
+                    col_l.metric("Bajo",   f"{_bc[2]}/3")
+
+                    st.markdown(f"### Portafolio ({len(df_top_10)} picks)")
+                
+                    edit_top10 = st.data_editor(
+                        df_mostrar_top,
+                        hide_index=True,
+                        use_container_width=True,
+                        key="editor_top10",
+                        column_config={"✅ Añadir": st.column_config.CheckboxColumn(required=True)}
+                    )
+                
+                    with st.expander(f"📂 Ver el resto de picks válidos ({len(df_reserva_full)} con edge positivo fuera del portafolio)"):
+                        if not df_mostrar_reserva.empty:
+                            st.caption("Todos los picks con edge positivo que NO entraron al portafolio — ordenados por edge de mayor a menor. Puedes marcar cualquiera como reemplazo.")
+                            edit_reserva = st.data_editor(
+                                df_mostrar_reserva,
+                                hide_index=True,
+                                use_container_width=True,
+                                key="editor_reserva",
+                                column_config={"✅ Añadir": st.column_config.CheckboxColumn(required=True)}
+                            )
                         else:
-                            _base_inversion = inversion_total
+                            st.info("No hay más picks de reserva. Se utilizaron todos los disponibles.")
 
-                        _n_picks = len(df_final_a_guardar)
-
-                        # ── Días con menos de 8 picks → flat 500 por pick ──
-                        if _n_picks < 8:
-                            def _stake_para_pick(row, unidad):
-                                return 500.0
-                            _stake_label = f"Flat $500/pick ({_n_picks} picks < 8)"
-                        elif _modo_riesgo:
-                            # Stake por nivel de riesgo: la unidad base se distribuye
-                            # ponderada por multiplicador según nivel (Nivel column).
-                            # Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5×
-                            def _mult_nivel(nivel_str):
-                                n = str(nivel_str).lower()
-                                if 'golden' in n: return 1.5
-                                if 'bajo'   in n: return 1.2
-                                if 'medio'  in n: return 1.0
-                                if 'alto'   in n: return 0.5
-                                return 1.0  # fallback
-
-                            _mults = df_final_a_guardar['Nivel'].apply(_mult_nivel) if 'Nivel' in df_final_a_guardar.columns else pd.Series([1.0]*_n_picks)
-                            _suma_mults = _mults.sum()
-                            _unidad_base = _base_inversion / _suma_mults if _suma_mults > 0 else _base_inversion / _n_picks
-
-                            def _stake_para_pick(row, unidad=_unidad_base):
-                                return unidad * _mult_nivel(row.get('Nivel', ''))
-
-                            _stake_label = f"Por Riesgo — unidad ${_unidad_base:,.0f}"
+                    if st.button("Guardar Portafolio Seleccionado", type="primary"):
+                        indices_top = edit_top10[edit_top10["✅ Añadir"] == True].index
+                        indices_res = edit_reserva[edit_reserva["✅ Añadir"] == True].index if not df_mostrar_reserva.empty else []
+                    
+                        df_final_top = df_top_10.iloc[indices_top]
+                        df_final_res = df_reserva_full.iloc[indices_res] if not df_mostrar_reserva.empty else pd.DataFrame()
+                        df_final_a_guardar = pd.concat([df_final_top, df_final_res])
+                    
+                        if df_final_a_guardar.empty:
+                            st.warning("No seleccionaste ningún pick.")
                         else:
-                            stake_plano = _base_inversion / _n_picks
-                            def _stake_para_pick(row, unidad=stake_plano):
-                                return unidad
-                            _stake_label = f"Flat ${stake_plano:,.0f}/pick"
+                            _modo_cmp = st.session_state.get("modo_compuesto", False)
+                            _modo_riesgo = st.session_state.get("modo_stake_riesgo", False)
+                            if _modo_cmp:
+                                _pnl_hist = pd.read_sql(
+                                    "SELECT COALESCE(SUM(Beneficio_Neto),0) as total FROM portafolio_historico WHERE Estado != 'Pendiente'",
+                                    conn
+                                ).iloc[0]['total']
+                                _base_inversion = inversion_total + _pnl_hist
+                            else:
+                                _base_inversion = inversion_total
 
-                        for _, row in df_final_a_guardar.iterrows():
-                            _stake_pick = _stake_para_pick(row)
-                            cursor.execute("""
-                                INSERT INTO portafolio_historico (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob_IA'], row['Edge'], _stake_pick))
-                        conn.commit()
-                        _modo_badge = "Compuesto" if _modo_cmp else "Flat"
-                        st.success(f"{_n_picks} picks guardados ({_modo_badge} — Bankroll: ${_base_inversion:,.0f} | {_stake_label})")
-                        del st.session_state['portafolio_escaneado']
+                            _n_picks = len(df_final_a_guardar)
+
+                            # ── Días con menos de 8 picks → flat 500 por pick ──
+                            if _n_picks < 8:
+                                def _stake_para_pick(row, unidad):
+                                    return 500.0
+                                _stake_label = f"Flat $500/pick ({_n_picks} picks < 8)"
+                            elif _modo_riesgo:
+                                # Stake por nivel de riesgo: la unidad base se distribuye
+                                # ponderada por multiplicador según nivel (Nivel column).
+                                # Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5×
+                                def _mult_nivel(nivel_str):
+                                    n = str(nivel_str).lower()
+                                    if 'golden' in n: return 1.5
+                                    if 'bajo'   in n: return 1.2
+                                    if 'medio'  in n: return 1.0
+                                    if 'alto'   in n: return 0.5
+                                    return 1.0  # fallback
+
+                                _mults = df_final_a_guardar['Nivel'].apply(_mult_nivel) if 'Nivel' in df_final_a_guardar.columns else pd.Series([1.0]*_n_picks)
+                                _suma_mults = _mults.sum()
+                                _unidad_base = _base_inversion / _suma_mults if _suma_mults > 0 else _base_inversion / _n_picks
+
+                                def _stake_para_pick(row, unidad=_unidad_base):
+                                    return unidad * _mult_nivel(row.get('Nivel', ''))
+
+                                _stake_label = f"Por Riesgo — unidad ${_unidad_base:,.0f}"
+                            else:
+                                stake_plano = _base_inversion / _n_picks
+                                def _stake_para_pick(row, unidad=stake_plano):
+                                    return unidad
+                                _stake_label = f"Flat ${stake_plano:,.0f}/pick"
+
+                            for _, row in df_final_a_guardar.iterrows():
+                                _stake_pick = _stake_para_pick(row)
+                                cursor.execute("""
+                                    INSERT INTO portafolio_historico (Date, HomeTeam, AwayTeam, Mercado, Cuota, Prob_IA, Edge, Stake)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (row['Date'], row['Home'], row['Away'], row['Mercado'], row['Cuota'], row['Prob_IA'], row['Edge'], _stake_pick))
+                            conn.commit()
+                            _modo_badge = "Compuesto" if _modo_cmp else "Flat"
+                            st.success(f"{_n_picks} picks guardados ({_modo_badge} — Bankroll: ${_base_inversion:,.0f} | {_stake_label})")
+                            del st.session_state['portafolio_escaneado']
 
         except Exception as e:
             st.error(f"Error en la aplicación: {e}")
@@ -2125,22 +2000,7 @@ elif menu == "Portafolio de Picks":
         if not df_db_hist.empty:
             df_db_hist['Date'] = df_db_hist['Date'].astype(str).str.strip().str.slice(0, 10)
             fechas_en_db = set(df_db_hist['Date'].unique())
-            # Equipos de selecciones para detectar picks WC en DB
-            try:
-                _equipos_wc_tag = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_selecciones_ml", conn)['HomeTeam'].tolist()
-            except Exception:
-                _equipos_wc_tag = []
             for _, r in df_db_hist.iterrows():
-                # Determinar si el pick es de selecciones (Mundial) o clubes
-                _h_tag = str(r['HomeTeam'])
-                _a_tag = str(r['AwayTeam'])
-                if _equipos_wc_tag:
-                    _wc_h = process.extractOne(_h_tag, _equipos_wc_tag)
-                    _wc_a = process.extractOne(_a_tag, _equipos_wc_tag)
-                    _wc_score = min(_wc_h[1] if _wc_h else 0, _wc_a[1] if _wc_a else 0)
-                    _es_wc_pick = _wc_score >= 80
-                else:
-                    _es_wc_pick = False
                 big_portfolio_from_db.append({
                     'Date':    r['Date'],
                     'Home':    r['HomeTeam'],
@@ -2153,7 +2013,6 @@ elif menu == "Portafolio de Picks":
                     'Estado':  r['Estado'],
                     'Beneficio_Neto': r.get('Beneficio_Neto', 0.0),
                     '_from_db': True,
-                    '_es_mundial': _es_wc_pick,
                 })
 
         # ══════════════════════════════════════════════════════
@@ -2165,22 +2024,16 @@ elif menu == "Portafolio de Picks":
 
         if archivos_hist:
             modelo_clubes_hist = cargar_modelo()
-            try:
-                modelo_wc_hist  = joblib.load('modelo_selecciones_rf.pkl')
-                encoder_wc_hist = joblib.load('encoder_equipos_selecciones.pkl')
-            except Exception:
-                modelo_wc_hist  = None
-                encoder_wc_hist = None
 
             equipos_clubes_hist = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
-            try:
-                equipos_wc_hist = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_selecciones_ml", conn)['HomeTeam'].tolist()
-            except Exception:
-                equipos_wc_hist = []
 
             lista_dfs_hist = []
             for f_hist in archivos_hist:
                 try:
+                    # Los archivos de odds del Mundial no se consideran en el portafolio
+                    if 'worldcup' in f_hist.name.lower():
+                        continue
+
                     df_t = pd.read_csv(f_hist)
                     if df_t.empty:
                         continue
@@ -2250,79 +2103,45 @@ elif menu == "Portafolio de Picks":
                     a_csv = str(row['away'])
                     fecha_partido = str(row['inicio_local']).split()[0] if pd.notna(row.get('inicio_local')) else fecha_str
 
-                    # Auto-detectar WC vs clubs por mejor score fuzzy (no depende del nombre del archivo)
-                    h_match_wc = process.extractOne(h_csv, equipos_wc_hist)    if equipos_wc_hist    else None
-                    a_match_wc = process.extractOne(a_csv, equipos_wc_hist)    if equipos_wc_hist    else None
                     h_match_cl = process.extractOne(h_csv, equipos_clubes_hist) if equipos_clubes_hist else None
                     a_match_cl = process.extractOne(a_csv, equipos_clubes_hist) if equipos_clubes_hist else None
 
-                    wc_score = min(h_match_wc[1] if h_match_wc else 0, a_match_wc[1] if a_match_wc else 0)
                     cl_score = min(h_match_cl[1] if h_match_cl else 0, a_match_cl[1] if a_match_cl else 0)
 
-                    if wc_score >= cl_score and wc_score >= 80:
-                        es_mundial = True
-                        h_db, a_db = h_match_wc[0], a_match_wc[0]
-                    elif cl_score >= 80:
-                        es_mundial = False
+                    if cl_score >= 80:
                         h_db, a_db = h_match_cl[0], a_match_cl[0]
                     else:
                         continue
 
                     try:
-                        if es_mundial:
-                            if not modelo_wc_hist:
-                                continue
-                            df_sh = pd.read_sql(f'SELECT * FROM historial_selecciones_ml WHERE HomeTeam="{h_db}" OR AwayTeam="{h_db}" ORDER BY Date DESC LIMIT 6', conn)
-                            df_sa = pd.read_sql(f'SELECT * FROM historial_selecciones_ml WHERE HomeTeam="{a_db}" OR AwayTeam="{a_db}" ORDER BY Date DESC LIMIT 6', conn)
-                            def _sm(df, col, dv): return df[col].mean() if not df.empty and col in df.columns and pd.notna(df[col].mean()) else dv
-                            hst = _sm(df_sh, 'HST', 4.0); hc = _sm(df_sh, 'HC', 4.5)
-                            ast = _sm(df_sa, 'AST', 3.5); ac = _sm(df_sa, 'AC', 4.0)
-                            gf_h = _sm(df_sh, 'FTHG', 1.5); gc_h = _sm(df_sh, 'FTAG', 1.0)
-                            gf_a = _sm(df_sa, 'FTHG', 1.2); gc_a = _sm(df_sa, 'FTAG', 1.3)
-                            if h_db in encoder_wc_hist.classes_ and a_db in encoder_wc_hist.classes_:
-                                h_c = encoder_wc_hist.transform([h_db])[0]
-                                a_c = encoder_wc_hist.transform([a_db])[0]
-                                X_in = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]], columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                                prbs = modelo_wc_hist.predict_proba(X_in)[0]
-                                prob_visita, prob_empate, prob_local = prbs[0], prbs[1], prbs[2]
-                            else:
-                                prob_visita, prob_empate, prob_local = 0.33, 0.34, 0.33
-                            pred_goles_home = (gf_h + gc_a) / 2
-                            pred_goles_away = (gf_a + gc_h) / 2
-                            prom_goles_total = pred_goles_home + pred_goles_away
-                            prom_corners_total = (hc + ac) / 2
-                            prom_shots_total = (hst + ast) / 2
-                            stats_h_loc = {'HC': hc, 'HST': hst}
-                            stats_a_loc = {'AC': ac, 'AST': ast}
-                        else:
-                            if not modelo_clubes_hist:
-                                continue
-                            stats_h_loc = get_recent_stats(h_db, conn)
-                            stats_a_loc = get_recent_stats(a_db, conn)
-                            xg_h = stats_h_loc.get('xG_home', 1.0)
-                            xg_a = stats_a_loc.get('xG_away', 1.0)
-                            xg_diff = xg_h - xg_a
-                            pts_h = obtener_puntos_temporada(h_db, conn)
-                            pts_a = obtener_puntos_temporada(a_db, conn)
-                            dif_tabla = pts_h - pts_a
-                            descanso_h = obtener_dias_descanso(h_db, conn)
-                            descanso_a = obtener_dias_descanso(a_db, conn)
-                            ventaja_fisica = descanso_h - descanso_a
-                            eff_h = stats_h_loc['FTHG'] / (xg_h + 0.01)
-                            eff_a = stats_a_loc['FTAG'] / (xg_a + 0.01)
-                            input_data = [[
-                                stats_h_loc['FTHG'], stats_h_loc['FTAG'], stats_h_loc['HS'], stats_h_loc['AS'],
-                                stats_h_loc['HST'], stats_h_loc['AST'], stats_h_loc['HC'], stats_h_loc['AC'],
-                                stats_h_loc['HY'], stats_h_loc['AY'], xg_h, xg_a, eff_h, xg_diff,
-                                dif_tabla, ventaja_fisica
-                            ]]
-                            pred_probs = modelo_clubes_hist.predict_proba(input_data)[0]
-                            prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
-                            pred_goles_home = (stats_h_loc['FTHG'] + stats_a_loc['FTAG']) / 2
-                            pred_goles_away = (stats_a_loc['FTHG'] + stats_h_loc['FTAG']) / 2
-                            prom_goles_total = pred_goles_home + pred_goles_away
-                            prom_corners_total = (stats_h_loc['HC'] + stats_a_loc['AC']) / 2
-                            prom_shots_total = (stats_h_loc['HST'] + stats_a_loc['AST']) / 2
+                        if not modelo_clubes_hist:
+                            continue
+                        stats_h_loc = get_recent_stats(h_db, conn)
+                        stats_a_loc = get_recent_stats(a_db, conn)
+                        xg_h = stats_h_loc.get('xG_home', 1.0)
+                        xg_a = stats_a_loc.get('xG_away', 1.0)
+                        xg_diff = xg_h - xg_a
+                        pts_h = obtener_puntos_temporada(h_db, conn)
+                        pts_a = obtener_puntos_temporada(a_db, conn)
+                        dif_tabla = pts_h - pts_a
+                        descanso_h = obtener_dias_descanso(h_db, conn)
+                        descanso_a = obtener_dias_descanso(a_db, conn)
+                        ventaja_fisica = descanso_h - descanso_a
+                        eff_h = stats_h_loc['FTHG'] / (xg_h + 0.01)
+                        eff_a = stats_a_loc['FTAG'] / (xg_a + 0.01)
+                        input_data = [[
+                            stats_h_loc['FTHG'], stats_h_loc['FTAG'], stats_h_loc['HS'], stats_h_loc['AS'],
+                            stats_h_loc['HST'], stats_h_loc['AST'], stats_h_loc['HC'], stats_h_loc['AC'],
+                            stats_h_loc['HY'], stats_h_loc['AY'], xg_h, xg_a, eff_h, xg_diff,
+                            dif_tabla, ventaja_fisica
+                        ]]
+                        pred_probs = modelo_clubes_hist.predict_proba(input_data)[0]
+                        prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
+                        pred_goles_home = (stats_h_loc['FTHG'] + stats_a_loc['FTAG']) / 2
+                        pred_goles_away = (stats_a_loc['FTHG'] + stats_h_loc['FTAG']) / 2
+                        prom_goles_total = pred_goles_home + pred_goles_away
+                        prom_corners_total = (stats_h_loc['HC'] + stats_a_loc['AC']) / 2
+                        prom_shots_total = (stats_h_loc['HST'] + stats_a_loc['AST']) / 2
                     except Exception:
                         continue
 
@@ -2416,7 +2235,6 @@ elif menu == "Portafolio de Picks":
                                     'Date': fecha_partido, 'Home': h_db, 'Away': a_db,
                                     'Mercado': nombre_mk, 'Cuota': cuota_f,
                                     'Prob_IA': prob_mk, 'Edge': edge,
-                                    '_es_mundial': es_mundial,
                                 })
                         except Exception:
                             pass
@@ -2560,39 +2378,6 @@ elif menu == "Portafolio de Picks":
                 st.info("No se encontraron oportunidades históricas con edge en los archivos de odds disponibles.")
             else:
                 df_big = pd.DataFrame(big_portfolio_rows)
-
-                # Asegurar columna _es_mundial existe
-                if '_es_mundial' not in df_big.columns:
-                    df_big['_es_mundial'] = False
-
-                # ── Filtro Clubes / Mundial ──────────────────────
-                _n_clubes_big = int((~df_big['_es_mundial']).sum())
-                _n_wc_big     = int(df_big['_es_mundial'].sum())
-                _filtro_opciones = []
-                if _n_clubes_big > 0 and _n_wc_big > 0:
-                    _filtro_opciones = ["Clubes + Mundial", "Solo Clubes", "Solo Mundial"]
-                elif _n_clubes_big > 0:
-                    _filtro_opciones = ["Solo Clubes"]
-                elif _n_wc_big > 0:
-                    _filtro_opciones = ["Solo Mundial"]
-                else:
-                    _filtro_opciones = ["Clubes + Mundial"]
-
-                if len(_filtro_opciones) > 1:
-                    _filtro_sel = st.radio(
-                        "Portafolio a mostrar",
-                        options=_filtro_opciones,
-                        horizontal=True,
-                        key="hist_filtro_tipo",
-                    )
-                else:
-                    _filtro_sel = _filtro_opciones[0]
-
-                if _filtro_sel == "Solo Clubes":
-                    df_big = df_big[~df_big['_es_mundial']].copy()
-                elif _filtro_sel == "Solo Mundial":
-                    df_big = df_big[df_big['_es_mundial']].copy()
-                # "Clubes + Mundial" → sin filtro
 
                 # ── Liquidar contra el historial real ───────────
                 # Normalización via diccionario_alias centralizado
@@ -3212,516 +2997,4 @@ elif menu == "Portafolio de Picks":
                                     return ''
                                 st.dataframe(_df_exp.style.map(_ce_big, subset=['Estado']), hide_index=True, use_container_width=True)
 
-elif menu == "Mundial 2026":
-    st.title("Simulación Mundial 2026")
-    st.markdown("Proyección oficial basada en formato FIFA 48 selecciones. (✅ Real | 🔮 IA)")
-
-    st.markdown("""
-    <style>
-    .wc-group-header {
-        font-size: 0.95rem; font-weight: 700; color: #fff;
-        background: #2c2f3a; padding: 6px 10px;
-        border-radius: 6px 6px 0 0; margin-bottom: 0;
-    }
-    .wc-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-bottom: 0; }
-    .wc-table th { background: #1a1d26; color: #777; padding: 4px 6px; text-align: left; font-weight: 600; border-bottom: 1px solid #333; }
-    .wc-table td { padding: 4px 6px; border-bottom: 1px solid #252830; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
-    .wc-pos12 { background: #0a2e1a; }
-    .wc-pos3  { background: #152a0a; }
-    .wc-pos4  { background: #1e2129; color: #666; }
-    .wc-matches { background: #14161e; border-radius: 0 0 6px 6px; padding: 5px 8px; margin-bottom: 16px; }
-    .wc-match { font-size: 0.75rem; padding: 2px 0; color: #bbb; border-bottom: 1px solid #1e2129; }
-    .wc-match:last-child { border-bottom: none; }
-    .wc-win { color: #2ecc71; font-weight: 700; }
-    .wc-draw { color: #f1c40f; }
-    .bk-title {
-        font-size: 0.72rem; font-weight: 700; color: #666;
-        text-transform: uppercase; letter-spacing: 1.5px;
-        text-align: center; margin: 4px 0 8px 0;
-    }
-    .bk-card {
-        background: #1e2129; border-radius: 7px;
-        border-left: 3px solid #2ecc71;
-        padding: 7px 10px; margin-bottom: 7px; font-size: 0.82rem;
-    }
-    .bk-label { font-size: 0.63rem; color: #555; margin-bottom: 2px; }
-    .bk-card.gold  { border-left-color: #f1c40f; }
-    .bk-card.champ { border-left-color: #f39c12; background: #18150a; }
-    .champ-name { font-size: 1.4rem; font-weight: 800; color: #f1c40f; text-align: center; padding: 4px 0; }
-    </style>
-    """, unsafe_allow_html=True)
-
-    try:
-        modelo_wc  = joblib.load('modelo_selecciones_rf.pkl')
-        encoder_wc = joblib.load('encoder_equipos_selecciones.pkl')
-        
-        df_fixture_wc = pd.read_sql("SELECT * FROM fixture_mundial WHERE Grupo LIKE 'GROUP_%'", conn)
-        df_fixture_wc = df_fixture_wc.drop_duplicates(subset=['fixture_id']).reset_index(drop=True)
-        df_fixture_wc['_letra'] = df_fixture_wc['Grupo'].str.replace('GROUP_', '', regex=False).str.strip()
-
-        # Traducción de nombres del fixture a canónicos DB via ALIAS_GLOBAL
-        TRADUCCION_WC = {k: v for k, v in ALIAS_GLOBAL.items()}
-
-        TRADUCCION_CSV = {
-            "Francia": "France", "España": "Spain", "Argentina": "Argentina",
-            "Inglaterra": "England", "Portugal": "Portugal", "Brasil": "Brazil",
-            "Países Bajos": "Netherlands", "Marruecos": "Morocco", "Bélgica": "Belgium",
-            "Alemania": "Germany", "Croacia": "Croatia", "Italia": "Italy",
-            "Colombia": "Colombia", "Senegal": "Senegal", "México": "Mexico",
-            "Estados Unidos": "United States", "Uruguay": "Uruguay", "Japón": "Japan",
-            "Suiza": "Switzerland", "Dinamarca": "Denmark", "Irán": "Iran",
-            "Turquía": "Turkey", "Türkiye": "Turkey", "Ecuador": "Ecuador", "Austria": "Austria",
-            "Corea del Sur": "Korea Republic", "Nigeria": "Nigeria", "Australia": "Australia",
-            "Argelia": "Algeria", "Egipto": "Egypt", "Canadá": "Canada",
-            "Noruega": "Norway", "Ucrania": "Ukraine", "Panamá": "Panama",
-            "Costa de Marfil": "Ivory Coast", "Polonia": "Poland", "Rusia": "Russia",
-            "Gales": "Wales", "Suecia": "Sweden", "Serbia": "Serbia",
-            "Paraguay": "Paraguay", "Chequia": "Czech Republic", "Hungría": "Hungary",
-            "Escocia": "Scotland", "Túnez": "Tunisia", "Camerún": "Cameroon",
-            "RD Congo": "DR Congo", "Grecia": "Greece", "Eslovaquia": "Slovakia",
-            "Venezuela": "Venezuela", "Uzbekistán": "Uzbekistan", "Costa Rica": "Costa Rica",
-            "Malí": "Mali", "Perú": "Peru", "Chile": "Chile", "Catar": "Qatar",
-            "Rumanía": "Romania", "Irak": "Iraq", "Eslovenia": "Slovenia",
-            "Irlanda": "Ireland", "Sudáfrica": "South Africa", "Arabia Saudita": "Saudi Arabia",
-            "Burkina Faso": "Burkina Faso", "Jordania": "Jordan", "Albania": "Albania",
-            "Bosnia": "Bosnia and Herzegovina", "Honduras": "Honduras",
-            "Macedonia Norte": "North Macedonia", "EAU": "United Arab Emirates",
-            "Cabo Verde": "Cape Verde", "Cabo Verde Islands": "Cape Verde", "Irlanda Norte": "Northern Ireland",
-            "Jamaica": "Jamaica", "Georgia": "Georgia", "Finlandia": "Finland",
-            "Ghana": "Ghana", "Islandia": "Iceland", "Bolivia": "Bolivia",
-            "Israel": "Israel", "Kosovo": "Kosovo", "Omán": "Oman",
-            "Guinea": "Guinea", "Montenegro": "Montenegro", "Curazao": "Curaçao",
-            "Haití": "Haiti", "Siria": "Syria", "Nueva Zelanda": "New Zealand",
-            "Bulgaria": "Bulgaria", "Gabón": "Gabon", "Uganda": "Uganda",
-            "Angola": "Angola", "Benín": "Benin", "Baréin": "Bahrain",
-            "Zambia": "Zambia", "Tailandia": "Thailand", "China": "China",
-            "Palestina": "Palestine", "Guatemala": "Guatemala",
-            "Bielorrusia": "Belarus", "Luxemburgo": "Luxembourg",
-            "Vietnam": "Vietnam", "El Salvador": "El Salvador",
-        }
-
-        try:
-            df_fifa_ranking = pd.read_csv('fifa_ranking_2026.csv')
-            df_fifa_ranking.columns = [c.strip() for c in df_fifa_ranking.columns]
-            df_fifa_ranking['country_en'] = df_fifa_ranking['country'].str.strip().map(TRADUCCION_CSV)
-
-            pts_min = df_fifa_ranking['points'].min()
-            pts_max = df_fifa_ranking['points'].max()
-            val_min = df_fifa_ranking['valor_total_mill_eur'].min()
-            val_max = df_fifa_ranking['valor_total_mill_eur'].max()
-
-            df_fifa_ranking['pts_norm']  = (df_fifa_ranking['points'] - pts_min) / (pts_max - pts_min)
-            df_fifa_ranking['val_norm']  = (df_fifa_ranking['valor_total_mill_eur'] - val_min) / (val_max - val_min)
-
-            FIFA_SCORES = dict(zip(df_fifa_ranking['country_en'], zip(
-                df_fifa_ranking['pts_norm'], df_fifa_ranking['val_norm']
-            )))
-        except Exception:
-            FIFA_SCORES = {}
-
-        df_hist_wc = pd.read_sql("SELECT * FROM historial_selecciones_ml", conn)
-
-        # ── NUEVO HELPER: Buscar resultados reales en historial ──
-        def obtener_resultado_real_mundial(h, a):
-            if df_hist_wc.empty or 'Date' not in df_hist_wc.columns:
-                return None, None
-            match = df_hist_wc[((df_hist_wc['HomeTeam'] == h) & (df_hist_wc['AwayTeam'] == a)) |
-                               ((df_hist_wc['HomeTeam'] == a) & (df_hist_wc['AwayTeam'] == h))]
-            if not match.empty:
-                match = match.sort_values('Date', ascending=False).iloc[0]
-                fecha = str(match['Date'])
-                # Solo consideramos resultados desde Junio 2026 (para ignorar amistosos antiguos)
-                if fecha >= "2026-06-01":
-                    if match['HomeTeam'] == h:
-                        return match['FTHG'], match['FTAG']
-                    else:
-                        return match['FTAG'], match['FTHG']
-            return None, None
-
-        def _fuerza_seleccion(equipo):
-            df_eq = pd.read_sql(
-                f'SELECT HomeTeam, AwayTeam, HST, AST, HC, AC '
-                f'FROM historial_selecciones_ml '
-                f'WHERE HomeTeam="{equipo}" OR AwayTeam="{equipo}" '
-                f'ORDER BY Date DESC LIMIT 8',
-                conn
-            )
-            if df_eq.empty:
-                return 4.0, 5.0
-            df_eq = df_eq.fillna(0.0)
-            hst_vals, hc_vals = [], []
-            for _, row in df_eq.iterrows():
-                if row['HomeTeam'] == equipo:
-                    hst_vals.append(row['HST']); hc_vals.append(row['HC'])
-                else:
-                    hst_vals.append(row['AST']); hc_vals.append(row['AC'])
-            n = len(hst_vals)
-            base_w = np.array([5, 4, 3, 2, 1], dtype=float)
-            w = base_w[:n] if n <= len(base_w) else np.concatenate([base_w, np.ones(n - len(base_w))])
-            w = w / w.sum()
-            hst = float(np.average(hst_vals, weights=w))
-            hc  = float(np.average(hc_vals,  weights=w))
-            return hst, hc
-
-        def predecir_wc(h_raw, a_raw):
-            h = normalizar_nombre(h_raw)
-            a = normalizar_nombre(a_raw)
-
-            classes = list(encoder_wc.classes_)
-
-            if h in classes and a in classes:
-                hst, hc = _fuerza_seleccion(h)
-                ast, ac = _fuerza_seleccion(a)
-                h_c = encoder_wc.transform([h])[0]
-                a_c = encoder_wc.transform([a])[0]
-                # Campo neutral: doble pasada para cancelar el sesgo de localía
-                # probs orden: [0]=visita, [1]=empate, [2]=local
-                X_normal    = pd.DataFrame([[h_c, a_c, hst, ast, hc, ac]],
-                                           columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                X_invertido = pd.DataFrame([[a_c, h_c, ast, hst, ac, hc]],
-                                           columns=['HomeTeam_Code','AwayTeam_Code','HST','AST','HC','AC'])
-                probs_n = modelo_wc.predict_proba(X_normal)[0]
-                probs_i = modelo_wc.predict_proba(X_invertido)[0]
-                # En X_invertido 'local' es 'a' real → cruzar índices
-                p_h_raw = (float(probs_n[2]) + float(probs_i[0])) / 2
-                p_d_raw = (float(probs_n[1]) + float(probs_i[1])) / 2
-                p_a_raw = (float(probs_n[0]) + float(probs_i[2])) / 2
-            else:
-                p_h_raw, p_d_raw, p_a_raw = 0.33, 0.33, 0.33
-
-            UEFA_ES = {
-                "France", "Spain", "England", "Germany", "Portugal", "Netherlands",
-                "Italy", "Belgium", "Croatia", "Switzerland", "Denmark", "Austria",
-                "Poland", "Serbia", "Ukraine", "Czech Republic", "Hungary", "Slovakia",
-                "Romania", "Turkey", "Scotland", "Wales", "Greece", "Slovenia",
-                "Albania", "Georgia", "Norway", "Sweden", "Finland",
-                "Bosnia and Herzegovina", "North Macedonia", "Kosovo", "Montenegro",
-                "Bulgaria", "Luxembourg", "Belarus", "Ireland", "Northern Ireland",
-                "Iceland", "Israel"
-            }
-            CONMEBOL_ES = {
-                "Argentina", "Brazil", "Uruguay", "Colombia", "Chile",
-                "Ecuador", "Peru", "Paraguay", "Venezuela", "Bolivia"
-            }
-
-            def _score_seleccion(equipo):
-                if equipo in FIFA_SCORES:
-                    pts_n, val_n = FIFA_SCORES[equipo]
-                else:
-                    pts_n, val_n = 0.3, 0.05
-                conf = 1.0 if equipo in UEFA_ES or equipo in CONMEBOL_ES else 0.0
-                return 0.40 * pts_n + 0.40 * val_n + 0.20 * conf
-
-            score_h = _score_seleccion(h)
-            score_a = _score_seleccion(a)
-            diff_score = score_h - score_a
-
-            multiplicador_h = max(0.1, 1.0 + diff_score)
-            multiplicador_a = max(0.1, 1.0 - diff_score)
-
-            p_h_ajustada = p_h_raw * multiplicador_h
-            p_a_ajustada = p_a_raw * multiplicador_a
-            p_d_ajustada = p_d_raw
-
-            suma_probs = p_h_ajustada + p_a_ajustada + p_d_ajustada
-            p_h = p_h_ajustada / suma_probs
-            p_a = p_a_ajustada / suma_probs
-            p_d = p_d_ajustada / suma_probs
-
-            hist_h = df_hist_wc[df_hist_wc['HomeTeam'] == h]
-            hist_a = df_hist_wc[df_hist_wc['AwayTeam'] == a]
-
-            gf_h = hist_h['FTHG'].mean() if not hist_h.empty else 1.5
-            gc_h = hist_h['FTAG'].mean() if not hist_h.empty else 1.0
-            gf_a = hist_a['FTAG'].mean() if not hist_a.empty else 1.2
-            gc_a = hist_a['FTHG'].mean() if not hist_a.empty else 1.5
-
-            xg_home = (gf_h + gc_a) / 2
-            xg_away = (gf_a + gc_h) / 2
-
-            if p_h > 0.60:
-                xg_home += 1.0
-                xg_away = max(0, xg_away - 0.5)
-            elif p_a > 0.60:
-                xg_away += 1.0
-                xg_home = max(0, xg_home - 0.5)
-
-            xg_diff = abs(xg_home - xg_away)
-
-            if xg_diff < 0.4: boost_draw = 1.6
-            elif xg_diff < 0.9: boost_draw = 1.2
-            else: boost_draw = 0.8
-
-            p_h_w, p_a_w, p_d_w = p_h, p_a, p_d * boost_draw
-            total_w = p_h_w + p_a_w + p_d_w
-            p_h_w /= total_w; p_a_w /= total_w; p_d_w /= total_w
-
-            if p_d_w >= p_h_w and p_d_w >= p_a_w: pts_h, pts_a = 1, 1
-            elif p_h_w >= p_a_w: pts_h, pts_a = 3, 0
-            else: pts_h, pts_a = 0, 3
-
-            if pts_h == 3 and xg_home <= xg_away: xg_home = xg_away + 0.6
-            elif pts_a == 3 and xg_away <= xg_home: xg_away = xg_home + 0.6
-            elif pts_h == 1 and pts_a == 1:
-                avg = (xg_home + xg_away) / 2
-                xg_home = xg_away = avg
-
-            gh, ga = int(round(xg_home)), int(round(xg_away))
-
-            if pts_h == 3 and gh <= ga: gh = ga + 1
-            elif pts_a == 3 and ga <= gh: ga = gh + 1
-            elif pts_h == 1 and pts_a == 1: gh = ga = max(gh, ga)
-
-            return {
-                "Pts_H": pts_h, "Pts_A": pts_a,
-                "GH": gh, "GA": ga,
-                "p_h": p_h, "p_a": p_a,
-                "Ganador": h if p_h >= p_a else a
-            }
-
-        grupos_keys = list('ABCDEFGHIJKL')
-        posiciones  = {}
-        terceros    = []
-        grupos_data = {}
-
-        for letra in grupos_keys:
-            df_g = df_fixture_wc[df_fixture_wc['_letra'] == letra].copy()
-            if df_g.empty: continue
-
-            tabla    = {}
-            partidos = []
-
-            for _, p in df_g.iterrows():
-                h, a = str(p['HomeTeam']).strip(), str(p['AwayTeam']).strip()
-
-                # ── Buscar resultado real en el historial ──
-                real_gh, real_ga = obtener_resultado_real_mundial(h, a)
-                tiene_resultado = (real_gh is not None and real_ga is not None and pd.notna(real_gh) and pd.notna(real_ga))
-
-                if tiene_resultado:
-                    gh, ga = int(real_gh), int(real_ga)
-                    if gh > ga: pts_h, pts_a = 3, 0
-                    elif ga > gh: pts_h, pts_a = 0, 3
-                    else: pts_h, pts_a = 1, 1
-                    res = {'Pts_H': pts_h, 'Pts_A': pts_a, 'GH': gh, 'GA': ga}
-                else:
-                    # Si no hay resultado oficial, simular con la IA
-                    res = predecir_wc(h, a)
-
-                for eq in (h, a):
-                    if eq not in tabla:
-                        tabla[eq] = {'Pts': 0, 'GF': 0, 'GC': 0, 'PJ': 0}
-
-                tabla[h]['Pts'] += res['Pts_H']; tabla[h]['GF'] += res['GH']
-                tabla[h]['GC']  += res['GA'];    tabla[h]['PJ'] += 1
-                tabla[a]['Pts'] += res['Pts_A']; tabla[a]['GF'] += res['GA']
-                tabla[a]['GC']  += res['GH'];    tabla[a]['PJ'] += 1
-                partidos.append({'H': h, 'A': a, 'GH': res['GH'], 'GA': res['GA'], 'Real': tiene_resultado})
-
-            df_t = pd.DataFrame([
-                {'Sel': eq, 'PJ': v['PJ'], 'Pts': v['Pts'],
-                 'GF': v['GF'], 'GC': v['GC'], 'DG': v['GF'] - v['GC']}
-                for eq, v in tabla.items()
-            ]).sort_values(['Pts','DG','GF'], ascending=False).reset_index(drop=True)
-
-            for ri, row in df_t.iterrows():
-                posiciones[f"{ri+1}{letra}"] = row['Sel']
-            if len(df_t) >= 3:
-                t = df_t.iloc[2]
-                terceros.append((t['Pts'], t['DG'], t['GF'], letra, t['Sel']))
-
-            grupos_data[letra] = {'tabla': df_t, 'partidos': partidos}
-
-        terceros.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
-        mejores_t8 = {x[4] for x in terceros[:8]}
-
-        def get_pos(c):
-            return posiciones.get(c, f"({c})")
-
-        def mejor_3ro(grupos_str):
-            candidatos = {g.strip() for g in grupos_str.split('/')}
-            for _, _, _, grp, eq in terceros:
-                if grp in candidatos and eq in mejores_t8: return eq
-            return f"3°({grupos_str})"
-
-        tab_g, tab_f = st.tabs(["Grupos", "Ruta a la Copa"])
-
-        with tab_g:
-            st.markdown(
-                '<div style="font-size:0.77rem;color:#888;margin-bottom:12px;">'
-                '<span style="background:#0a2e1a;padding:2px 8px;border-radius:3px;margin-right:8px;">1° / 2°</span> Clasificado directo &nbsp;'
-                '<span style="background:#152a0a;padding:2px 8px;border-radius:3px;margin-right:8px;">3°</span> Posible mejor tercero'
-                '</div>', unsafe_allow_html=True
-            )
-
-            for batch_start in range(0, 12, 3):
-                letras_batch = grupos_keys[batch_start:batch_start+3]
-                cols = st.columns(3)
-                for ci, letra in enumerate(letras_batch):
-                    if letra not in grupos_data: continue
-                    df_t     = grupos_data[letra]['tabla']
-                    partidos = grupos_data[letra]['partidos']
-
-                    with cols[ci]:
-                        filas = ""
-                        for ri, row in df_t.iterrows():
-                            if ri < 2: css, ico = "wc-pos12", "🟢"
-                            elif ri == 2 and row['Sel'] in mejores_t8: css, ico = "wc-pos3", "🟡"
-                            elif ri == 2: css, ico = "wc-pos3", "⚪"
-                            else: css, ico = "wc-pos4", ""
-                            
-                            dg = f"+{int(row['DG'])}" if row['DG'] > 0 else str(int(row['DG']))
-                            nombre = row['Sel'][:16] + ("…" if len(row['Sel']) > 16 else "")
-                            filas += (
-                                f'<tr class="{css}">'
-                                f'<td style="color:#666;width:18px">{ri+1}</td>'
-                                f'<td>{ico} {nombre}</td>'
-                                f'<td style="text-align:center;width:28px"><b>{int(row["Pts"])}</b></td>'
-                                f'<td style="text-align:center;width:28px;color:#888">{dg}</td>'
-                                f'</tr>'
-                            )
-                        st.markdown(
-                            f'<div class="wc-group-header">Grupo {letra}</div>'
-                            f'<table class="wc-table"><thead><tr>'
-                            f'<th>#</th><th>Selección</th>'
-                            f'<th style="text-align:center">Pts</th>'
-                            f'<th style="text-align:center">DG</th>'
-                            f'</tr></thead><tbody>{filas}</tbody></table>', unsafe_allow_html=True
-                        )
-
-                        html_m = '<div class="wc-matches">'
-                        for m in partidos:
-                            gh, ga = m['GH'], m['GA']
-                            h_n = m['H'][:13] + ("…" if len(m['H']) > 13 else "")
-                            a_n = m['A'][:13] + ("…" if len(m['A']) > 13 else "")
-                            badge = ' <span title="Resultado Real" style="color:#2ecc71;font-size:0.65rem">✅</span>' if m.get('Real') else ' <span title="Predicción IA" style="color:#555;font-size:0.65rem">🔮</span>'
-                            
-                            if gh > ga: s = f'<span class="wc-win">{h_n} {gh}</span>–{ga} {a_n}{badge}'
-                            elif ga > gh: s = f'{h_n} {gh}–<span class="wc-win">{ga} {a_n}</span>{badge}'
-                            else: s = f'{h_n} <span class="wc-draw">{gh}–{ga}</span> {a_n}{badge}'
-                            html_m += f'<div class="wc-match">{s}</div>'
-                        html_m += '</div>'
-                        st.markdown(html_m, unsafe_allow_html=True)
-
-        with tab_f:
-            def simular_ko(h, a, label=""):
-                real_gh, real_ga = obtener_resultado_real_mundial(h, a)
-                es_real = (real_gh is not None and real_ga is not None and pd.notna(real_gh) and pd.notna(real_ga))
-
-                if es_real:
-                    gh, ga = int(real_gh), int(real_ga)
-                    # Si hubo empate en la vida real, dejamos que la IA decida quién ganó por penales
-                    if gh == ga:
-                        res = predecir_wc(h, a)
-                        if res['p_h'] >= res['p_a']: gh += 1
-                        else: ga += 1
-                    ganador = h if gh > ga else a
-                else:
-                    res = predecir_wc(h, a)
-                    gh, ga = res['GH'], res['GA']
-                    if gh == ga:
-                        if res['p_h'] >= res['p_a']: gh += 1
-                        else: ga += 1
-                    ganador = h if gh > ga else a
-
-                return {'H': h, 'A': a, 'GH': gh, 'GA': ga, 'Ganador': ganador, 'Label': label, 'Real': es_real}
-
-            def card(m, extra_css=""):
-                h, a, gh, ga = m['H'], m['A'], m['GH'], m['GA']
-                lbl = m.get('Label', '')
-                es_real = m.get('Real', False)
-                
-                badge = ' <span title="Resultado Real" style="color:#2ecc71;font-size:0.65rem">✅</span>' if es_real else ' <span title="Predicción IA" style="color:#555;font-size:0.65rem">🔮</span>'
-
-                hn = h[:16] + ("…" if len(h) > 16 else "")
-                an = a[:16] + ("…" if len(a) > 16 else "")
-                if gh > ga: sc = f'<span class="wc-win">{hn}</span> <span style="color:#aaa">{gh}–{ga}</span> {an}'
-                else: sc = f'{hn} <span style="color:#aaa">{gh}–{ga}</span> <span class="wc-win">{an}</span>'
-                
-                return (f'<div class="bk-card {extra_css}">'
-                        f'<div class="bk-label">{lbl}{badge}</div>'
-                        f'<div>{sc}</div></div>')
-
-            def resolver(c):
-                return mejor_3ro(c[2:]) if c.startswith("3_") else get_pos(c)
-
-            # Cargar R32 desde la DB (LAST_32 con equipos definidos, sin TBA)
-            # IMPORTANTE: se ordena por fixture_id (NO por Date/Time). El fixture_id
-            # respeta el orden real del bracket FIFA (Match 73-88); el orden cronológico
-            # de kickoff mezcla partidos de llaves distintas y arma cruces incorrectos
-            # en Octavos/Cuartos/Semis.
-            df_r32_db = pd.read_sql(
-                "SELECT DISTINCT fixture_id, Date, HomeTeam, AwayTeam FROM fixture_mundial "
-                "WHERE Round='LAST_32' AND HomeTeam != 'TBA' AND AwayTeam != 'TBA' "
-                "ORDER BY fixture_id",
-                conn
-            ).drop_duplicates(subset=['fixture_id']).reset_index(drop=True)
-
-            r32 = []
-            for _, _row_r32 in df_r32_db.iterrows():
-                _h32 = normalizar_nombre(str(_row_r32['HomeTeam']))
-                _a32 = normalizar_nombre(str(_row_r32['AwayTeam']))
-                _lbl = f"{_row_r32['HomeTeam']} vs {_row_r32['AwayTeam']}"
-                r32.append(simular_ko(_h32, _a32, _lbl))
-            gana_r32 = [m['Ganador'] for m in r32]
-
-            r16 = [simular_ko(gana_r32[i], gana_r32[i+1], f"R16 · P{i//2+1}") for i in range(0, 16, 2)]
-            gana_r16 = [m['Ganador'] for m in r16]
-
-            qf = [simular_ko(gana_r16[i], gana_r16[i+1], f"Cuartos · {i//2+1}") for i in range(0, 8, 2)]
-            gana_qf = [m['Ganador'] for m in qf]
-
-            sf = [simular_ko(gana_qf[0], gana_qf[1], "Semifinal 1"), simular_ko(gana_qf[2], gana_qf[3], "Semifinal 2")]
-            gana_sf = [m['Ganador'] for m in sf]
-            pierde_sf = [(sf[0]['A'] if sf[0]['Ganador'] == sf[0]['H'] else sf[0]['H']),
-                         (sf[1]['A'] if sf[1]['Ganador'] == sf[1]['H'] else sf[1]['H'])]
-
-            tercer = simular_ko(pierde_sf[0], pierde_sf[1], "3° Puesto")
-            final  = simular_ko(gana_sf[0],   gana_sf[1],   "⚽ Gran Final")
-            campeon = final['Ganador']
-
-            st.markdown(
-                f'<div class="bk-card champ" style="max-width:340px;margin:0 auto 18px;">'
-                f'<div style="text-align:center;color:#888;font-size:0.7rem;letter-spacing:1px;">🏆 CAMPEÓN PROYECTADO</div>'
-                f'<div class="champ-name">🏆 {campeon}</div>'
-                f'</div>', unsafe_allow_html=True
-            )
-            st.markdown("---")
-
-            cf1, cf2 = st.columns(2)
-            with cf1:
-                st.markdown('<div class="bk-title">⚽ Gran Final</div>', unsafe_allow_html=True)
-                st.markdown(card(final, "gold"), unsafe_allow_html=True)
-            with cf2:
-                st.markdown('<div class="bk-title">🥉 3° Puesto</div>', unsafe_allow_html=True)
-                st.markdown(card(tercer), unsafe_allow_html=True)
-            st.markdown("---")
-
-            st.markdown('<div class="bk-title">Semifinales</div>', unsafe_allow_html=True)
-            csf = st.columns(2)
-            for i, m in enumerate(sf):
-                with csf[i]: st.markdown(card(m), unsafe_allow_html=True)
-            st.markdown("---")
-
-            st.markdown('<div class="bk-title">Cuartos de Final</div>', unsafe_allow_html=True)
-            cqf = st.columns(4)
-            for i, m in enumerate(qf):
-                with cqf[i]: st.markdown(card(m), unsafe_allow_html=True)
-            st.markdown("---")
-
-            st.markdown('<div class="bk-title">Ronda de 16</div>', unsafe_allow_html=True)
-            cr16 = st.columns(4)
-            for i, m in enumerate(r16):
-                with cr16[i % 4]: st.markdown(card(m), unsafe_allow_html=True)
-            st.markdown("---")
-
-            with st.expander("▶ Ver Ronda de 32 (16 partidos)"):
-                cr32 = st.columns(4)
-                for i, m in enumerate(r32):
-                    with cr32[i % 4]: st.markdown(card(m), unsafe_allow_html=True)
-
-    except Exception as e:
-        import traceback
-        st.error(f"Error en Oráculo Mundial: {e}")
-        st.code(traceback.format_exc())
 conn.close()
