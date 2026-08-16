@@ -2573,43 +2573,36 @@ elif menu == "Portafolio de Picks":
                     help="ON: Golden 1.5×, Bajo 1.2×, Medio 1.0×, Alto 0.5× de la unidad base. OFF: mismo stake para todos los picks."
                 )
 
-                # ── Fecha de inicio del historial ──────────────
-                _todas_fechas_hist = sorted(df_big['Date'].unique())
-                _fecha_min_hist = _todas_fechas_hist[0]
-                _fecha_max_hist = _todas_fechas_hist[-1]
+                # ── Selector de Temporada ───────────────────────
+                # Cada temporada agrupa los partidos desde julio del año N
+                # hasta junio del año N+1 (calendario estándar de las ligas
+                # europeas). Ajusta _MES_INICIO_TEMPORADA si se prefiere otro
+                # mes de corte.
+                _MES_INICIO_TEMPORADA = 7  # 7 = julio
 
-                # Botones de acceso rápido
-                st.markdown("**Inicio del historial**")
-                _qf_cols = st.columns(4)
-                _hoy_date = datetime.today().date()
-                if _qf_cols[0].button("Última semana",  key="hist_qf_1s", use_container_width=True):
-                    st.session_state["hist_fecha_inicio_val"] = max(_fecha_min_hist, _hoy_date - timedelta(days=7))
-                if _qf_cols[1].button("Último mes",     key="hist_qf_1m", use_container_width=True):
-                    st.session_state["hist_fecha_inicio_val"] = max(_fecha_min_hist, _hoy_date - timedelta(days=30))
-                if _qf_cols[2].button("Últimos 3 meses",key="hist_qf_3m", use_container_width=True):
-                    st.session_state["hist_fecha_inicio_val"] = max(_fecha_min_hist, _hoy_date - timedelta(days=90))
-                if _qf_cols[3].button("Todo",           key="hist_qf_all", use_container_width=True):
-                    st.session_state["hist_fecha_inicio_val"] = _fecha_min_hist
+                def _etiqueta_temporada(f):
+                    _anio_ini = f.year if f.month >= _MES_INICIO_TEMPORADA else f.year - 1
+                    return f"{str(_anio_ini)[-2:]}/{str(_anio_ini + 1)[-2:]}"
 
-                # Valor por defecto: primera fecha disponible (o lo que haya en session_state)
-                _default_fecha = st.session_state.get("hist_fecha_inicio_val", _fecha_min_hist)
-                # Asegurarse de que no esté fuera del rango real de datos
-                _default_fecha = max(_fecha_min_hist, min(_default_fecha, _fecha_max_hist))
+                df_big['_Temporada'] = df_big['Date'].apply(_etiqueta_temporada)
+                _temporadas_disponibles = sorted(df_big['_Temporada'].unique(), reverse=True)
+                _opciones_temporada = [f"Temporada {t}" for t in _temporadas_disponibles] + ["Todo el Historial"]
 
-                _fecha_inicio_hist = st.date_input(
-                    "O elige una fecha exacta:",
-                    value=_default_fecha,
-                    min_value=_fecha_min_hist,
-                    max_value=_fecha_max_hist,
-                    key="hist_fecha_inicio",
-                    help="Solo se consideran días iguales o posteriores a esta fecha para el cálculo de equity y KPIs.",
+                st.markdown("**Temporada**")
+                _temporada_sel = st.selectbox(
+                    "Elige la temporada a visualizar:",
+                    _opciones_temporada,
+                    index=0,
+                    key="hist_temporada_sel",
+                    help="Agrupa los picks por temporada futbolística (julio a junio), para poder ver cada una por separado. 'Todo el Historial' muestra el acumulado completo de todas las temporadas.",
                     label_visibility="visible",
                 )
-                # Sincronizar session_state con el date_input por si el usuario lo cambió manualmente
-                st.session_state["hist_fecha_inicio_val"] = _fecha_inicio_hist
 
-                # Filtrar df_big desde la fecha seleccionada
-                df_big = df_big[df_big['Date'] >= _fecha_inicio_hist].copy()
+                # Filtrar df_big según la temporada elegida
+                if _temporada_sel != "Todo el Historial":
+                    _temporada_activa = _temporada_sel.replace("Temporada ", "")
+                    df_big = df_big[df_big['_Temporada'] == _temporada_activa].copy()
+                df_big = df_big.drop(columns=['_Temporada'])
 
                 # ── Asignar stakes reales día a día ──────────
                 # Días con <8 picks → flat stake fijo de $500 por pick (igual que tab1, independiente del bankroll)
