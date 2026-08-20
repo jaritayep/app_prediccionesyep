@@ -13,11 +13,15 @@ import json
 from pathlib import Path
 import re
 from diccionario_alias import ALIAS_GLOBAL, normalizar_nombre
+import sys
+# Agrega la carpeta Machine learning/ al path para poder importar ia_features
+# sin duplicar el archivo (single source of truth para el contrato de features)
+sys.path.insert(0, str(Path(__file__).resolve().parent / "Machine learning"))
+
 from ia_features import (
     N_FORMA, PESOS_FORMA, FEATURE_STATS, DEFAULT_FORMA,
     perspectiva_equipo, promedio_ponderado, construir_fila_features,
 )
-
 
 def poisson_prob(lamba_val, k):
     """Calcula la probabilidad de que ocurran exactamente k eventos"""
