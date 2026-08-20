@@ -1,56 +1,71 @@
 import sqlite3
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 import joblib
-import os
+import numpy as np
 
-def entrenar_ia():
-    # 1. CONEXIÓN SEGURA
-    # Buscamos el archivo en la misma carpeta donde vive este script
-    db_name = 'premier_analytics_v3.db'
+def entrenar_ia_super_pro():
+    conn = sqlite3.connect('database_partidos.db')
+    df = pd.read_sql("SELECT * FROM dataset_entrenamiento_ia", conn)
     
-    if not os.path.exists(db_name):
-        print(f"❌ Error: No se encuentra el archivo {db_name} en esta carpeta.")
-        print(f"Directorio actual: {os.getcwd()}")
-        return
+    # Parche de rescate para el historial
+    df['Home_xG_home'] = df['Home_xG_home'].fillna(df['Home_FTHG'])
+    df['Home_xG_away'] = df['Home_xG_away'].fillna(df['Home_FTAG'])
+    df['Home_xG_Diff'] = df['Home_xG_home'] - df['Home_xG_away']
+    df['Home_Efficiency'] = df['Home_Efficiency'].fillna(1.0) 
+    df['Diferencia_Tabla'] = df['Diferencia_Tabla'].fillna(0)
+    df['Ventaja_Fisica'] = df['Ventaja_Fisica'].fillna(0)
 
-    conn = sqlite3.connect(db_name)
+    # --- LAS 16 VARIABLES DEFINITIVAS ---
+    features = [
+        'Home_FTHG', 'Home_FTAG',     
+        'Home_HS', 'Home_AS',         
+        'Home_HST', 'Home_AST',       
+        'Home_HC', 'Home_AC',         
+        'Home_HY', 'Home_AY',         
+        'Home_xG_home', 'Home_xG_away', 
+        'Home_Efficiency',            
+        'Home_xG_Diff',               
+        'Diferencia_Tabla',
+        'Ventaja_Fisica'              # ¡La nueva métrica de fatiga!
+    ]
     
-    try:
-        # 2. CARGA DE DATOS
-        print("Leyendo datos históricos de la base de datos...")
-        df = pd.read_sql("SELECT * FROM historial_multiliga_ml", conn)
-        conn.close()
+    df['Target'] = df['FTR'].map({'H': 2, 'D': 1, 'A': 0})
+    
+    df['Date'] = pd.to_datetime(df['Date'])
+    fecha_reciente = df['Date'].max()
+    df['dias_antiguedad'] = (fecha_reciente - df['Date']).dt.days
+    df['peso_temporal'] = np.exp(-df['dias_antiguedad'] / 400)
+    
+    df_ml = df[features + ['Target', 'peso_temporal']].dropna()
+    print(f"📚 Entrenando la IA Definitiva con {len(df_ml)} partidos válidos...")
+    
+    X = df_ml[features]
+    y = df_ml['Target']
+    weights = df_ml['peso_temporal']
 
-        # --- 3. PREPARACIÓN DE DATOS (Feature Engineering) ---
-        # Definimos nuestro objetivo: Ganador (H=2, D=1, A=0)
-        df['Target'] = df['FTR'].map({'H': 2, 'D': 1, 'A': 0})
-        
-        # Seleccionamos las variables de las que la IA aprenderá
-        # HS: Tiros Local, AS: Tiros Visita, HST: Tiros a puerta Local, etc.
-        features = ['HS', 'AS', 'HST', 'AST', 'HC', 'AC', 'B365H', 'B365D', 'B365A']
-        
-        # Limpieza rápida: eliminamos filas con nulos en estas columnas
-        df_ml = df[features + ['Target']].dropna()
-        
-        X = df_ml[features]
-        y = df_ml['Target']
+    indices = np.arange(len(X))
+    X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split(
+        X, y, indices, test_size=0.2, random_state=42
+    )
+    weights_train = weights.iloc[idx_train]
 
-        # --- 4. EL MODELO (Random Forest) ---
-        print(f"Entrenando modelo con {len(df_ml)} partidos de toda Europa...")
-        
-        # Usamos 100 árboles de decisión para mayor precisión
-        model = RandomForestClassifier(n_estimators=100, random_state=42)
-        model.fit(X, y)
+    model = RandomForestClassifier(
+        n_estimators=300, 
+        max_depth=12,            
+        min_samples_leaf=5,      
+        random_state=42,
+        class_weight='balanced'
+    )
+    
+    model.fit(X_train, y_train, sample_weight=weights_train)
+    score = model.score(X_test, y_test)
+    print(f"🔥 SCORE FINAL (16 Variables): {score:.2%}")
 
-        # --- 5. GUARDAR EL CEREBRO ---
-        joblib.dump(model, 'modelo_ia.pkl')
-        print("✅ ¡Éxito! Modelo entrenado y guardado como 'modelo_ia.pkl'")
-        
-    except Exception as e:
-        print(f"❌ Error durante el proceso: {e}")
-        if "no such table" in str(e):
-            print("Tip: Asegúrate de haber corrido el script de descarga histórica primero.")
+    joblib.dump(model, './modelo_ia.pkl')
+    conn.close()
+    print("✅ Modelo guardado con éxito como 'modelo_ia.pkl'")
 
 if __name__ == "__main__":
-    entrenar_ia()
+    entrenar_ia_super_pro()

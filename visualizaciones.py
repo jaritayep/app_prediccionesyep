@@ -13,6 +13,10 @@ import json
 from pathlib import Path
 import re
 from diccionario_alias import ALIAS_GLOBAL, normalizar_nombre
+from ia_features import (
+    N_FORMA, PESOS_FORMA, FEATURE_STATS, DEFAULT_FORMA,
+    perspectiva_equipo, promedio_ponderado, construir_fila_features,
+)
 
 
 def poisson_prob(lamba_val, k):
@@ -69,25 +73,38 @@ def corregir_nombre_equipo(nombre_api, lista_db):
     return mejor_match if score > 72 else nombre_norm
 
 def cargar_modelo():
+    """Devuelve {'model':..., 'feature_cols':...} guardado por ml_model_nuevo.py,
+    o None si no existe. El orden de columnas viaja junto al modelo para no
+    tener que hardcodearlo (ni arriesgarnos a que se desincronice) aquí."""
     return joblib.load(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
 
 def get_recent_stats(equipo, conn):
-    # 1. Coma eliminada y columnas de xG añadidas
-    q = f'SELECT "FTHG", "FTAG", "HS", "AS", "HST", "AST", "HC", "AC", "HY", "AY", "xG_home", "xG_away" FROM historial_multiliga_ml WHERE HomeTeam="{equipo}" OR AwayTeam="{equipo}" ORDER BY Date DESC LIMIT 5'
-    res = pd.read_sql(q, conn)
-    
-    if res.empty: 
-        return pd.Series(
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.0, 1.0], 
-            index=['FTHG','FTAG','HS','AS','HST','AST','HC','AC','HY','AY', 'xG_home', 'xG_away']
-        )
-        
-    pesos = np.array([5, 4, 3, 2, 1])[:len(res)]
-    
-    # 3. Limpieza preventiva: Si por algún motivo hay un hueco sin xG, lo rellenamos con 1.0 para que np.average no falle
-    res = res.fillna(1.0)
-    
-    return pd.Series({col: np.average(res[col], weights=pesos/pesos.sum()) for col in res.columns})
+    """Forma reciente de un equipo (últimos N_FORMA partidos), en perspectiva
+    propia (goles/tiros/córners/tarjetas/xG a favor y en contra), sin importar
+    si jugó de local o visita. Usa exactamente la misma lógica que el
+    entrenamiento (ia_features.py) para que el modelo reciba el mismo tipo
+    de dato con el que fue entrenado."""
+    q = (
+        f'SELECT HomeTeam, AwayTeam, "FTHG", "FTAG", "HS", "AS", "HST", "AST", '
+        f'"HC", "AC", "HY", "AY", "xG_home", "xG_away" '
+        f'FROM historial_multiliga_ml WHERE HomeTeam=? OR AwayTeam=? '
+        f'ORDER BY Date DESC LIMIT {N_FORMA}'
+    )
+    res = pd.read_sql(q, conn, params=(equipo, equipo))
+
+    if res.empty:
+        return dict(DEFAULT_FORMA)
+
+    # Mismo parche que en entrenamiento: si falta xG, se usa el gol real de esa fila
+    res['xG_home'] = res['xG_home'].fillna(res['FTHG'])
+    res['xG_away'] = res['xG_away'].fillna(res['FTAG'])
+    res = res.fillna(0)
+
+    historial = [perspectiva_equipo(row, es_local=(row['HomeTeam'] == equipo))
+                 for _, row in res.iterrows()]
+    # historial[0] es el partido más reciente (ORDER BY Date DESC), tal como
+    # espera promedio_ponderado()
+    return promedio_ponderado(historial)
 def get_recent_stats_wc(equipo, conn):
     """Stats ponderadas (últimas 5 partidas) de una selección, desde historial_selecciones_ml.
     Corrige la perspectiva: FTHG/HST/HC son del equipo cuando juega de local,
@@ -527,48 +544,47 @@ if menu == "Análisis del Día":
                 tend_h = tend_a = []
                 _tiros_h = _tiros_a = _corners_h = _corners_a = 0.0
 
-                model = cargar_modelo()
-                if model:
+                modelo_pack = cargar_modelo()
+                if modelo_pack:
+                    model, feature_cols = modelo_pack['model'], modelo_pack['feature_cols']
+
                     stats_h, stats_a   = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
                     stats_h_dict, stats_a_dict = stats_h, stats_a
 
-                    xg_h = stats_h.get('xG_home', 1.0)
-                    xg_a = stats_a.get('xG_away', 1.0)
-                    xg_diff       = xg_h - xg_a
-                    pts_h         = obtener_puntos_temporada(home_team, conn)
-                    pts_a         = obtener_puntos_temporada(away_team, conn)
-                    dif_tabla     = pts_h - pts_a
-                    descanso_h    = obtener_dias_descanso(home_team, conn)
-                    descanso_a    = obtener_dias_descanso(away_team, conn)
+                    xg_h = stats_h['xg_favor']
+                    xg_a = stats_a['xg_favor']
+                    xg_diff        = xg_h - xg_a
+                    pts_h          = obtener_puntos_temporada(home_team, conn)
+                    pts_a          = obtener_puntos_temporada(away_team, conn)
+                    dif_tabla      = pts_h - pts_a
+                    descanso_h     = obtener_dias_descanso(home_team, conn)
+                    descanso_a     = obtener_dias_descanso(away_team, conn)
                     ventaja_fisica = descanso_h - descanso_a
 
-                    eff_h = stats_h['FTHG'] / (xg_h + 0.01)
-                    eff_a = stats_a['FTAG'] / (xg_a + 0.01)
+                    eff_h = stats_h['goles_favor'] / (xg_h + 0.01)
 
-                    input_data = [[
-                        stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'],
-                        stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'],
-                        stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff,
-                        dif_tabla, ventaja_fisica
-                    ]]
+                    # Mismo ensamblado que en entrenamiento; se reordena según
+                    # feature_cols para que coincida EXACTO con lo que el modelo espera,
+                    # sin depender de que ambos archivos escriban las columnas en el mismo orden.
+                    fila = construir_fila_features(stats_h, stats_a, dif_tabla, ventaja_fisica)
+                    input_data = [[fila[col] for col in feature_cols]]
 
                     prob_ia     = model.predict_proba(input_data)[0]
                     prob_local  = float(prob_ia[2])
                     prob_empate = float(prob_ia[1])
                     prob_visita = float(prob_ia[0])
 
-                    # pred_home/pred_away usan xg_h/xg_a para ser coherentes con
-                    # los inputs del modelo que genera la torta. Antes usaban promedios
-                    # de goles reales, lo que causaba discrepancias (ej: Canadá con mayor
-                    # xG pero Sudáfrica ganando en la torta).
-                    pred_home      = (xg_h + stats_a.get('xG_away', xg_a)) / 2
-                    pred_away      = (xg_a + stats_h.get('xG_home', xg_h)) / 2
+                    # pred_home/pred_away: ataque propio vs. tasa de xG que el rival
+                    # suele conceder (mismo criterio de "ataque vs defensa" que se usa
+                    # en el resto del archivo, ej. pred_goles_home en Portafolio de Picks).
+                    pred_home      = (xg_h + stats_a['xg_contra']) / 2
+                    pred_away      = (xg_a + stats_h['xg_contra']) / 2
                     promedio_goles = pred_home + pred_away
                     prob_over      = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
-                    _tiros_h       = stats_h['HST']
-                    _tiros_a       = stats_a['AST']
-                    _corners_h     = stats_h['HC']
-                    _corners_a     = stats_a['AC']
+                    _tiros_h       = stats_h['tiros_arco_favor']
+                    _tiros_a       = stats_a['tiros_arco_favor']
+                    _corners_h     = stats_h['corners_favor']
+                    _corners_a     = stats_a['corners_favor']
 
                     # --- SECCIÓN 2: TORTA CON ANOTACIÓN CENTRAL ---
                     _outcomes  = {'LOCAL': prob_local, 'EMPATE': prob_empate, 'VISITA': prob_visita}
@@ -635,8 +651,8 @@ if menu == "Análisis del Día":
             with cd1:
                 st.markdown("#### **Media Amarillas**")
                 m1, m2 = st.columns(2)
-                m1.metric(f"{home_team[:12]}", f"{stats_h_dict.get('HY', 0):.1f}")
-                m2.metric(f"{away_team[:12]}", f"{stats_a_dict.get('AY', 0):.1f}")
+                m1.metric(f"{home_team[:12]}", f"{stats_h_dict.get('amarillas_favor', 0):.1f}")
+                m2.metric(f"{away_team[:12]}", f"{stats_a_dict.get('amarillas_favor', 0):.1f}")
 
             with cd2:
                 q_cards = (
@@ -885,11 +901,18 @@ elif menu == "Auditoría (Resultados)":
 
                 if sh is not None and sa is not None and len(sh) > 0 and len(sa) > 0:
                     # 1. Proyecciones
-                    proj_goles_total = (sh['FTHG'] + sh['FTAG'] + sa['FTHG'] + sa['FTAG']) / 2
-                    proj_goles_home  = (sh['FTHG'] + sa['FTAG']) / 2   # Ataque local vs defensa visita
-                    proj_goles_away  = (sa['FTHG'] + sh['FTAG']) / 2   # Ataque visita vs defensa local
-                    proj_corners     = sh['HC'] + sa['AC']
-                    proj_tiros       = sh['HST'] + sa['AST']
+                    if es_wc:
+                        proj_goles_total = (sh['FTHG'] + sh['FTAG'] + sa['FTHG'] + sa['FTAG']) / 2
+                        proj_goles_home  = (sh['FTHG'] + sa['FTAG']) / 2   # Ataque local vs defensa visita
+                        proj_goles_away  = (sa['FTHG'] + sh['FTAG']) / 2   # Ataque visita vs defensa local
+                        proj_corners     = sh['HC'] + sa['AC']
+                        proj_tiros       = sh['HST'] + sa['AST']
+                    else:
+                        proj_goles_total = (sh['goles_favor'] + sh['goles_contra'] + sa['goles_favor'] + sa['goles_contra']) / 2
+                        proj_goles_home  = (sh['goles_favor'] + sa['goles_contra']) / 2   # Ataque local vs defensa visita
+                        proj_goles_away  = (sa['goles_favor'] + sh['goles_contra']) / 2   # Ataque visita vs defensa local
+                        proj_corners     = sh['corners_favor'] + sa['corners_favor']
+                        proj_tiros       = sh['tiros_arco_favor'] + sa['tiros_arco_favor']
 
                     # 2. Resultados Reales
                     real_goles_home  = r['FTHG']
@@ -922,7 +945,7 @@ elif menu == "Auditoría (Resultados)":
 
                     # Amarillas solo para clubes (historial_selecciones_ml puede no tenerlas)
                     if not es_wc:
-                        proj_amarillas = sh['HY'] + sa['AY']
+                        proj_amarillas = sh['amarillas_favor'] + sa['amarillas_favor']
                         real_amarillas = r['HY'] + r['AY']
                         stats_partido.append(("Amarillas", proj_amarillas, real_amarillas, 1.0))
 
@@ -1102,7 +1125,9 @@ elif menu == "Portafolio de Picks":
             boton_disabled = fecha_seleccionada is None
 
             if st.button("Escanear Mercado", type="primary", disabled=boton_disabled):
-                modelo_clubes = cargar_modelo()
+                modelo_pack_clubes = cargar_modelo()
+                modelo_clubes  = modelo_pack_clubes['model'] if modelo_pack_clubes else None
+                feature_cols_clubes = modelo_pack_clubes['feature_cols'] if modelo_pack_clubes else None
 
                 with st.spinner(f"Analizando los partidos del {fecha_seleccionada} con IA..."):
                     df_pinnacle = df_master_odds[df_master_odds['Fecha_Match'] == fecha_seleccionada]
@@ -1140,8 +1165,8 @@ elif menu == "Portafolio de Picks":
                         stats_h = get_recent_stats(h_db, conn)
                         stats_a = get_recent_stats(a_db, conn)
                         
-                        xg_h = stats_h.get('xG_home', 1.0) 
-                        xg_a = stats_a.get('xG_away', 1.0)
+                        xg_h = stats_h['xg_favor']
+                        xg_a = stats_a['xg_favor']
                         xg_diff = xg_h - xg_a
                         pts_h = obtener_puntos_temporada(h_db, conn)
                         pts_a = obtener_puntos_temporada(a_db, conn)
@@ -1149,24 +1174,18 @@ elif menu == "Portafolio de Picks":
                         descanso_h = obtener_dias_descanso(h_db, conn)
                         descanso_a = obtener_dias_descanso(a_db, conn)
                         ventaja_fisica = descanso_h - descanso_a
-                        eff_h = stats_h['FTHG'] / (xg_h + 0.01)
-                        eff_a = stats_a['FTAG'] / (xg_a + 0.01)
 
-                        input_data = [[
-                            stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], 
-                            stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], 
-                            stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff, 
-                            dif_tabla, ventaja_fisica
-                        ]]
+                        fila = construir_fila_features(stats_h, stats_a, dif_tabla, ventaja_fisica)
+                        input_data = [[fila[col] for col in feature_cols_clubes]]
                         
                         pred_probs = modelo_clubes.predict_proba(input_data)[0]
                         prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
 
-                        pred_goles_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
-                        pred_goles_away = (stats_a['FTHG'] + stats_h['FTAG']) / 2
+                        pred_goles_home = (stats_h['goles_favor'] + stats_a['goles_contra']) / 2
+                        pred_goles_away = (stats_a['goles_favor'] + stats_h['goles_contra']) / 2
                         prom_goles_total = pred_goles_home + pred_goles_away
-                        prom_corners_total = (stats_h['HC'] + stats_a['AC']) / 2
-                        prom_shots_total = (stats_h['HST'] + stats_a['AST']) / 2
+                        prom_corners_total = (stats_h['corners_favor'] + stats_a['corners_favor']) / 2
+                        prom_shots_total = (stats_h['tiros_arco_favor'] + stats_a['tiros_arco_favor']) / 2
 
                         mercados_a_evaluar = [
                             ("Ganador (Local)", buscar_cuota_segura(row, ['1x2_home']), prob_local),
@@ -1218,11 +1237,11 @@ elif menu == "Portafolio de Picks":
                                 # Mercados de córners — modelados con Poisson
                                 if linea > 15.5: continue  # Cap para líneas irreales
                                 if 'corners_home' in col_str:
-                                    if 'over' in col_str: mercados_a_evaluar.append((f"Córners Local (+{linea})", val_num, prob_over(stats_h.get('HC', prom_corners_total), linea)))
-                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Local (-{linea})", val_num, prob_under(stats_h.get('HC', prom_corners_total), linea)))
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Córners Local (+{linea})", val_num, prob_over(stats_h.get('corners_favor', prom_corners_total), linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Local (-{linea})", val_num, prob_under(stats_h.get('corners_favor', prom_corners_total), linea)))
                                 elif 'corners_away' in col_str:
-                                    if 'over' in col_str: mercados_a_evaluar.append((f"Córners Visita (+{linea})", val_num, prob_over(stats_a.get('AC', prom_corners_total), linea)))
-                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Visita (-{linea})", val_num, prob_under(stats_a.get('AC', prom_corners_total), linea)))
+                                    if 'over' in col_str: mercados_a_evaluar.append((f"Córners Visita (+{linea})", val_num, prob_over(stats_a.get('corners_favor', prom_corners_total), linea)))
+                                    elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Visita (-{linea})", val_num, prob_under(stats_a.get('corners_favor', prom_corners_total), linea)))
                                 else:
                                     if 'over' in col_str: mercados_a_evaluar.append((f"Córners Totales (+{linea})", val_num, prob_over(prom_corners_total, linea)))
                                     elif 'under' in col_str: mercados_a_evaluar.append((f"Córners Totales (-{linea})", val_num, prob_under(prom_corners_total, linea)))
@@ -2023,7 +2042,9 @@ elif menu == "Portafolio de Picks":
         big_portfolio_from_csv = []
 
         if archivos_hist:
-            modelo_clubes_hist = cargar_modelo()
+            modelo_pack_hist = cargar_modelo()
+            modelo_clubes_hist = modelo_pack_hist['model'] if modelo_pack_hist else None
+            feature_cols_hist = modelo_pack_hist['feature_cols'] if modelo_pack_hist else None
 
             equipos_clubes_hist = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
 
@@ -2118,8 +2139,8 @@ elif menu == "Portafolio de Picks":
                             continue
                         stats_h_loc = get_recent_stats(h_db, conn)
                         stats_a_loc = get_recent_stats(a_db, conn)
-                        xg_h = stats_h_loc.get('xG_home', 1.0)
-                        xg_a = stats_a_loc.get('xG_away', 1.0)
+                        xg_h = stats_h_loc['xg_favor']
+                        xg_a = stats_a_loc['xg_favor']
                         xg_diff = xg_h - xg_a
                         pts_h = obtener_puntos_temporada(h_db, conn)
                         pts_a = obtener_puntos_temporada(a_db, conn)
@@ -2127,21 +2148,15 @@ elif menu == "Portafolio de Picks":
                         descanso_h = obtener_dias_descanso(h_db, conn)
                         descanso_a = obtener_dias_descanso(a_db, conn)
                         ventaja_fisica = descanso_h - descanso_a
-                        eff_h = stats_h_loc['FTHG'] / (xg_h + 0.01)
-                        eff_a = stats_a_loc['FTAG'] / (xg_a + 0.01)
-                        input_data = [[
-                            stats_h_loc['FTHG'], stats_h_loc['FTAG'], stats_h_loc['HS'], stats_h_loc['AS'],
-                            stats_h_loc['HST'], stats_h_loc['AST'], stats_h_loc['HC'], stats_h_loc['AC'],
-                            stats_h_loc['HY'], stats_h_loc['AY'], xg_h, xg_a, eff_h, xg_diff,
-                            dif_tabla, ventaja_fisica
-                        ]]
+                        fila = construir_fila_features(stats_h_loc, stats_a_loc, dif_tabla, ventaja_fisica)
+                        input_data = [[fila[col] for col in feature_cols_hist]]
                         pred_probs = modelo_clubes_hist.predict_proba(input_data)[0]
                         prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
-                        pred_goles_home = (stats_h_loc['FTHG'] + stats_a_loc['FTAG']) / 2
-                        pred_goles_away = (stats_a_loc['FTHG'] + stats_h_loc['FTAG']) / 2
+                        pred_goles_home = (stats_h_loc['goles_favor'] + stats_a_loc['goles_contra']) / 2
+                        pred_goles_away = (stats_a_loc['goles_favor'] + stats_h_loc['goles_contra']) / 2
                         prom_goles_total = pred_goles_home + pred_goles_away
-                        prom_corners_total = (stats_h_loc['HC'] + stats_a_loc['AC']) / 2
-                        prom_shots_total = (stats_h_loc['HST'] + stats_a_loc['AST']) / 2
+                        prom_corners_total = (stats_h_loc['corners_favor'] + stats_a_loc['corners_favor']) / 2
+                        prom_shots_total = (stats_h_loc['tiros_arco_favor'] + stats_a_loc['tiros_arco_favor']) / 2
                     except Exception:
                         continue
 
@@ -2189,8 +2204,8 @@ elif menu == "Portafolio de Picks":
                             if 'home' in col_str: mercados_ev.append((f"Hándicap Local ({linea:+})", val_num, _prob_hdp(pred_goles_home, pred_goles_away, linea)))
                             elif 'away' in col_str: mercados_ev.append((f"Hándicap Visita ({linea:+})", val_num, _prob_hdp(pred_goles_away, pred_goles_home, linea)))
                         elif 'corners' in col_str:
-                            hc_v = stats_h_loc.get('HC', prom_corners_total)
-                            ac_v = stats_a_loc.get('AC', prom_corners_total)
+                            hc_v = stats_h_loc.get('corners_favor', prom_corners_total)
+                            ac_v = stats_a_loc.get('corners_favor', prom_corners_total)
                             if 'home' in col_str:
                                 if 'over' in col_str: mercados_ev.append((f"Córners Local (+{linea})", val_num, prob_over(hc_v, linea)))
                                 elif 'under' in col_str: mercados_ev.append((f"Córners Local (-{linea})", val_num, _prob_under_loc(hc_v, linea)))
@@ -2201,8 +2216,8 @@ elif menu == "Portafolio de Picks":
                                 if 'over' in col_str: mercados_ev.append((f"Córners Totales (+{linea})", val_num, prob_over(prom_corners_total, linea)))
                                 elif 'under' in col_str: mercados_ev.append((f"Córners Totales (-{linea})", val_num, _prob_under_loc(prom_corners_total, linea)))
                         elif 'shots' in col_str:
-                            hst_v = stats_h_loc.get('HST', prom_shots_total)
-                            ast_v = stats_a_loc.get('AST', prom_shots_total)
+                            hst_v = stats_h_loc.get('tiros_arco_favor', prom_shots_total)
+                            ast_v = stats_a_loc.get('tiros_arco_favor', prom_shots_total)
                             if 'home' in col_str:
                                 if 'over' in col_str: mercados_ev.append((f"Tiros Local (+{linea})", val_num, prob_over(hst_v, linea)))
                                 elif 'under' in col_str: mercados_ev.append((f"Tiros Local (-{linea})", val_num, _prob_under_loc(hst_v, linea)))
