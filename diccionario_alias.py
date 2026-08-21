@@ -59,6 +59,7 @@ ALIAS_GLOBAL = {
     "West Ham United": "West Ham",
     "Ipswich": "Ipswich",                  # DB stores "Ipswich"
     "Ipswich Town": "Ipswich",
+    "Coventry City": "Coventry City",
 
     # ── CLUBES — LA LIGA ──────────────────────────────────────────────────────
     "Atlético Madrid": "Ath Madrid",       # DB stores "Ath Madrid"
