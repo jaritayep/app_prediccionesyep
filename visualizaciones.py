@@ -78,7 +78,33 @@ def corregir_nombre_equipo(nombre_api, lista_db):
     return mejor_match if score > 72 else nombre_norm
 
 def cargar_modelo():
+    """Devuelve el bundle completo {'model': ..., 'feature_cols': [...]} que guarda
+    ml_model_nuevo.py via joblib.dump(). Ya NO devuelve el modelo pelado —
+    quien llame a esto debe desempaquetar bundle['model'] y bundle['feature_cols']."""
     return joblib.load(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
+
+def construir_forma_reciente(equipo, conn, hist_table='historial_multiliga_ml'):
+    """Forma reciente de un equipo con perspectiva local/visita YA CORREGIDA,
+    usando perspectiva_equipo() + promedio_ponderado() de ia_features — el
+    MISMO contrato de features que usa ml_model_nuevo.py al entrenar.
+
+    OJO: get_recent_stats() de más abajo NO corrige esta perspectiva (promedia
+    columnas HomeTeam/AwayTeam crudas tal cual), por eso NO debe alimentar al
+    modelo — solo sirve para los gráficos/stats de display de la UI."""
+    q = (f'SELECT HomeTeam, AwayTeam, "FTHG", "FTAG", "HS", "AS", "HST", "AST", '
+         f'"HC", "AC", "HY", "AY", "xG_home", "xG_away" '
+         f'FROM {hist_table} '
+         f'WHERE HomeTeam="{equipo}" OR AwayTeam="{equipo}" '
+         f'ORDER BY Date DESC LIMIT {N_FORMA}')
+    res = pd.read_sql(q, conn)
+    if res.empty:
+        return dict(DEFAULT_FORMA)
+    res['xG_home'] = res['xG_home'].fillna(res['FTHG'])
+    res['xG_away'] = res['xG_away'].fillna(res['FTAG'])
+    res = res.fillna(0.0)
+    historial = [perspectiva_equipo(row, es_local=(row['HomeTeam'] == equipo))
+                 for _, row in res.iterrows()]
+    return promedio_ponderado(historial)
 
 def get_recent_stats(equipo, conn):
     # 1. Coma eliminada y columnas de xG añadidas
@@ -538,14 +564,21 @@ if menu == "Análisis del Día":
                 tend_h = tend_a = []
                 _tiros_h = _tiros_a = _corners_h = _corners_a = 0.0
 
-                model = cargar_modelo()
-                if model:
+                bundle = cargar_modelo()
+                if bundle:
+                    model_obj    = bundle['model']
+                    feature_cols = bundle['feature_cols']
+
                     stats_h, stats_a   = get_recent_stats(home_team, conn), get_recent_stats(away_team, conn)
                     stats_h_dict, stats_a_dict = stats_h, stats_a
 
-                    xg_h = stats_h.get('xG_home', 1.0)
-                    xg_a = stats_a.get('xG_away', 1.0)
-                    xg_diff       = xg_h - xg_a
+                    # Forma reciente con perspectiva corregida — el vector que de verdad
+                    # espera el modelo (contrato definido en ia_features.py)
+                    forma_h = construir_forma_reciente(home_team, conn)
+                    forma_a = construir_forma_reciente(away_team, conn)
+
+                    xg_h = forma_h['xg_favor']
+                    xg_a = forma_a['xg_favor']
                     pts_h         = obtener_puntos_temporada(home_team, conn)
                     pts_a         = obtener_puntos_temporada(away_team, conn)
                     dif_tabla     = pts_h - pts_a
@@ -553,27 +586,18 @@ if menu == "Análisis del Día":
                     descanso_a    = obtener_dias_descanso(away_team, conn)
                     ventaja_fisica = descanso_h - descanso_a
 
-                    eff_h = stats_h['FTHG'] / (xg_h + 0.01)
-                    eff_a = stats_a['FTAG'] / (xg_a + 0.01)
+                    fila_features = construir_fila_features(forma_h, forma_a, dif_tabla, ventaja_fisica)
+                    X_pred = pd.DataFrame([fila_features])[feature_cols]
 
-                    input_data = [[
-                        stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'],
-                        stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'],
-                        stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff,
-                        dif_tabla, ventaja_fisica
-                    ]]
-
-                    prob_ia     = model.predict_proba(input_data)[0]
+                    prob_ia     = model_obj.predict_proba(X_pred)[0]
                     prob_local  = float(prob_ia[2])
                     prob_empate = float(prob_ia[1])
                     prob_visita = float(prob_ia[0])
 
-                    # pred_home/pred_away usan xg_h/xg_a para ser coherentes con
-                    # los inputs del modelo que genera la torta. Antes usaban promedios
-                    # de goles reales, lo que causaba discrepancias (ej: Canadá con mayor
-                    # xG pero Sudáfrica ganando en la torta).
-                    pred_home      = (xg_h + stats_a.get('xG_away', xg_a)) / 2
-                    pred_away      = (xg_a + stats_h.get('xG_home', xg_h)) / 2
+                    # pred_home/pred_away usan xg_h/xg_a (perspectiva corregida) para ser
+                    # coherentes con los inputs del modelo que genera la torta.
+                    pred_home      = (xg_h + forma_a['xg_contra']) / 2
+                    pred_away      = (xg_a + forma_h['xg_contra']) / 2
                     promedio_goles = pred_home + pred_away
                     prob_over      = 1 / (1 + np.exp(-(promedio_goles - 2.5)))
                     _tiros_h       = stats_h['HST']
@@ -1113,7 +1137,7 @@ elif menu == "Portafolio de Picks":
             boton_disabled = fecha_seleccionada is None
 
             if st.button("Escanear Mercado", type="primary", disabled=boton_disabled):
-                modelo_clubes = cargar_modelo()
+                bundle_clubes = cargar_modelo()
 
                 with st.spinner(f"Analizando los partidos del {fecha_seleccionada} con IA..."):
                     df_pinnacle = df_master_odds[df_master_odds['Fecha_Match'] == fecha_seleccionada]
@@ -1147,30 +1171,27 @@ elif menu == "Portafolio de Picks":
                         a_db = a_db_match[0]
 
                         # --- MOTOR DE IA (Clubes) ---
-                        if not modelo_clubes: continue
+                        if not bundle_clubes: continue
+                        model_clubes = bundle_clubes['model']
+                        feature_cols_clubes = bundle_clubes['feature_cols']
+
                         stats_h = get_recent_stats(h_db, conn)
                         stats_a = get_recent_stats(a_db, conn)
-                        
-                        xg_h = stats_h.get('xG_home', 1.0) 
-                        xg_a = stats_a.get('xG_away', 1.0)
-                        xg_diff = xg_h - xg_a
+
+                        forma_h = construir_forma_reciente(h_db, conn)
+                        forma_a = construir_forma_reciente(a_db, conn)
+
                         pts_h = obtener_puntos_temporada(h_db, conn)
                         pts_a = obtener_puntos_temporada(a_db, conn)
                         dif_tabla = pts_h - pts_a
                         descanso_h = obtener_dias_descanso(h_db, conn)
                         descanso_a = obtener_dias_descanso(a_db, conn)
                         ventaja_fisica = descanso_h - descanso_a
-                        eff_h = stats_h['FTHG'] / (xg_h + 0.01)
-                        eff_a = stats_a['FTAG'] / (xg_a + 0.01)
 
-                        input_data = [[
-                            stats_h['FTHG'], stats_h['FTAG'], stats_h['HS'], stats_h['AS'], 
-                            stats_h['HST'], stats_h['AST'], stats_h['HC'], stats_h['AC'], 
-                            stats_h['HY'], stats_h['AY'], xg_h, xg_a, eff_h, xg_diff, 
-                            dif_tabla, ventaja_fisica
-                        ]]
-                        
-                        pred_probs = modelo_clubes.predict_proba(input_data)[0]
+                        fila_features = construir_fila_features(forma_h, forma_a, dif_tabla, ventaja_fisica)
+                        X_pred = pd.DataFrame([fila_features])[feature_cols_clubes]
+
+                        pred_probs = model_clubes.predict_proba(X_pred)[0]
                         prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
 
                         pred_goles_home = (stats_h['FTHG'] + stats_a['FTAG']) / 2
@@ -2034,7 +2055,7 @@ elif menu == "Portafolio de Picks":
         big_portfolio_from_csv = []
 
         if archivos_hist:
-            modelo_clubes_hist = cargar_modelo()
+            bundle_clubes_hist = cargar_modelo()
 
             equipos_clubes_hist = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
 
@@ -2125,28 +2146,28 @@ elif menu == "Portafolio de Picks":
                         continue
 
                     try:
-                        if not modelo_clubes_hist:
+                        if not bundle_clubes_hist:
                             continue
+                        model_clubes_hist    = bundle_clubes_hist['model']
+                        feature_cols_hist    = bundle_clubes_hist['feature_cols']
+
                         stats_h_loc = get_recent_stats(h_db, conn)
                         stats_a_loc = get_recent_stats(a_db, conn)
-                        xg_h = stats_h_loc.get('xG_home', 1.0)
-                        xg_a = stats_a_loc.get('xG_away', 1.0)
-                        xg_diff = xg_h - xg_a
+
+                        forma_h = construir_forma_reciente(h_db, conn)
+                        forma_a = construir_forma_reciente(a_db, conn)
+
                         pts_h = obtener_puntos_temporada(h_db, conn)
                         pts_a = obtener_puntos_temporada(a_db, conn)
                         dif_tabla = pts_h - pts_a
                         descanso_h = obtener_dias_descanso(h_db, conn)
                         descanso_a = obtener_dias_descanso(a_db, conn)
                         ventaja_fisica = descanso_h - descanso_a
-                        eff_h = stats_h_loc['FTHG'] / (xg_h + 0.01)
-                        eff_a = stats_a_loc['FTAG'] / (xg_a + 0.01)
-                        input_data = [[
-                            stats_h_loc['FTHG'], stats_h_loc['FTAG'], stats_h_loc['HS'], stats_h_loc['AS'],
-                            stats_h_loc['HST'], stats_h_loc['AST'], stats_h_loc['HC'], stats_h_loc['AC'],
-                            stats_h_loc['HY'], stats_h_loc['AY'], xg_h, xg_a, eff_h, xg_diff,
-                            dif_tabla, ventaja_fisica
-                        ]]
-                        pred_probs = modelo_clubes_hist.predict_proba(input_data)[0]
+
+                        fila_features = construir_fila_features(forma_h, forma_a, dif_tabla, ventaja_fisica)
+                        X_pred = pd.DataFrame([fila_features])[feature_cols_hist]
+
+                        pred_probs = model_clubes_hist.predict_proba(X_pred)[0]
                         prob_visita, prob_empate, prob_local = pred_probs[0], pred_probs[1], pred_probs[2]
                         pred_goles_home = (stats_h_loc['FTHG'] + stats_a_loc['FTAG']) / 2
                         pred_goles_away = (stats_a_loc['FTHG'] + stats_h_loc['FTAG']) / 2
