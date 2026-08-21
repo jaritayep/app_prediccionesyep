@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import os
 
 API_KEY = "c81aa18fa4974dda90812a83f1aec599"
-LIGAS = ['PL', 'PD', 'BL1', 'SA', 'FL1', "PPL", "CL"] # Ligas principales
+LIGAS = ['PL', 'PD', 'BL1', 'SA', 'FL1', "CL"] # Ligas principales
 DB_NAME = "database_partidos.db"
 
 def actualizar_partidos_semana():
