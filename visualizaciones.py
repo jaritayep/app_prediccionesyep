@@ -2754,11 +2754,39 @@ elif menu == "Portafolio de Picks":
                     lambda r: pd.Series(_calc_beneficio(r)), axis=1
                 )
 
+                # ── Días con portafolio chico (≤3 partidos) quedan fuera del histórico ──
+                # Cuando un día tuvo 3 partidos o menos en juego, sus picks quedan
+                # muy pegados entre sí (mismo puñado de encuentros), así que se
+                # excluyen del cálculo agregado del portafolio histórico para no
+                # distorsionar win rate / yield / equity. Se muestran aparte más abajo.
+                df_big['_PartidoKey']  = df_big['Home'].astype(str) + " vs " + df_big['Away'].astype(str)
+                _partidos_por_dia_big  = df_big.groupby('Date')['_PartidoKey'].transform('nunique')
+                df_big_dias_chicos     = df_big[_partidos_por_dia_big <= 3].drop(columns=['_PartidoKey']).copy()
+                df_big = df_big[_partidos_por_dia_big > 3].drop(columns=['_PartidoKey']).reset_index(drop=True)
+
+                if not df_big_dias_chicos.empty:
+                    _n_dias_chicos = df_big_dias_chicos['Date'].nunique()
+                    st.info(
+                        f"🔎 Dejamos **{_n_dias_chicos} día(s)** fuera de las estadísticas del portafolio "
+                        "histórico porque tuvieron 3 partidos o menos en juego: con tan poca cancha, los "
+                        "picks de ese día quedan demasiado correlacionados entre sí y podrían inflar o "
+                        "distorsionar los números agregados. Eso sí — igual son picks que respaldamos, "
+                        "así que los dejamos a la vista por separado en vez de descartarlos."
+                    )
+                    with st.expander(f"📂 Ver {_n_dias_chicos} día(s) con portafolio chico"):
+                        for _fecha_chica in sorted(df_big_dias_chicos['Date'].unique()):
+                            _picks_chicos = df_big_dias_chicos[df_big_dias_chicos['Date'] == _fecha_chica]
+                            st.markdown(f"**{_fecha_chica}** — {len(_picks_chicos)} pick(s)")
+                            _df_chico_show = _picks_chicos[['Home', 'Away', 'Mercado', 'Cuota', 'Estado']].copy()
+                            _df_chico_show.columns = ['Local', 'Visita', 'Mercado', 'Cuota', 'Estado']
+                            _df_chico_show['Cuota'] = _df_chico_show['Cuota'].round(2)
+                            st.dataframe(_df_chico_show, hide_index=True, use_container_width=True)
+
                 # ── Separar cerrados vs pendientes ───────────
                 df_big_cerrado  = df_big[df_big['Estado'].isin(['Ganada', 'Perdida'])].copy()
                 df_big_pendiente = df_big[df_big['Estado'] == 'Pendiente'].copy()
 
-                n_dias_total    = len(fechas_con_picks)
+                n_dias_total    = df_big['Date'].nunique()
                 n_dias_cerrados = df_big_cerrado['Date'].nunique() if not df_big_cerrado.empty else 0
                 n_dias_pend     = df_big_pendiente['Date'].nunique() if not df_big_pendiente.empty else 0
 
