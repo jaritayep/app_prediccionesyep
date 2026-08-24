@@ -1057,7 +1057,11 @@ elif menu == "Portafolio de Picks":
         st.caption("Cruzando modelo ML de Clubes y Poisson contra líneas de Pinnacle. (Edge 2% - 15%)")
         
         try:
-            equipos_clubes = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
+            equipos_clubes = pd.read_sql(
+                "SELECT DISTINCT HomeTeam AS Team FROM historial_multiliga_ml "
+                "UNION SELECT DISTINCT AwayTeam AS Team FROM historial_multiliga_ml",
+                conn
+            )['Team'].tolist()
             
             directorio_odds = Path("odds_data")
             archivos_csv = list(directorio_odds.glob("*.csv")) if directorio_odds.exists() else []
@@ -2075,7 +2079,11 @@ elif menu == "Portafolio de Picks":
         if archivos_hist:
             bundle_clubes_hist = cargar_modelo()
 
-            equipos_clubes_hist = pd.read_sql("SELECT DISTINCT HomeTeam FROM historial_multiliga_ml", conn)['HomeTeam'].tolist()
+            equipos_clubes_hist = pd.read_sql(
+                "SELECT DISTINCT HomeTeam AS Team FROM historial_multiliga_ml "
+                "UNION SELECT DISTINCT AwayTeam AS Team FROM historial_multiliga_ml",
+                conn
+            )['Team'].tolist()
 
             lista_dfs_hist = []
             for f_hist in archivos_hist:
