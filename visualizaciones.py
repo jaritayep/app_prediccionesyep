@@ -1174,8 +1174,13 @@ elif menu == "Portafolio de Picks":
                         a_csv = str(row['away'])
                         fecha_partido = str(row['inicio_local']).split()[0] if pd.notna(row['inicio_local']) else str(pd.Timestamp.now().date())
                         
-                        h_db_match = process.extractOne(h_csv, equipos_clubes, scorer=fuzz.token_sort_ratio)
-                        a_db_match = process.extractOne(a_csv, equipos_clubes, scorer=fuzz.token_sort_ratio)
+                        # El diccionario de alias manda: si hay match exacto por alias,
+                        # se usa directamente y NO pasa por fuzzy matching (evita que
+                        # nombres cortos/variantes conocidas dependan del score fuzzy).
+                        h_alias = normalizar_nombre(h_csv)
+                        a_alias = normalizar_nombre(a_csv)
+                        h_db_match = (h_alias, 100) if h_alias in equipos_clubes else process.extractOne(h_csv, equipos_clubes, scorer=fuzz.token_sort_ratio)
+                        a_db_match = (a_alias, 100) if a_alias in equipos_clubes else process.extractOne(a_csv, equipos_clubes, scorer=fuzz.token_sort_ratio)
                         
                         if not h_db_match or not a_db_match or h_db_match[1] < 80 or a_db_match[1] < 80:
                             continue
@@ -2148,8 +2153,12 @@ elif menu == "Portafolio de Picks":
                     a_csv = str(row['away'])
                     fecha_partido = str(row['inicio_local']).split()[0] if pd.notna(row.get('inicio_local')) else fecha_str
 
-                    h_match_cl = process.extractOne(h_csv, equipos_clubes_hist, scorer=fuzz.token_sort_ratio) if equipos_clubes_hist else None
-                    a_match_cl = process.extractOne(a_csv, equipos_clubes_hist, scorer=fuzz.token_sort_ratio) if equipos_clubes_hist else None
+                    # El diccionario de alias manda: match exacto por alias primero,
+                    # fuzzy sólo como respaldo para variantes que el diccionario no conoce.
+                    h_alias_cl = normalizar_nombre(h_csv)
+                    a_alias_cl = normalizar_nombre(a_csv)
+                    h_match_cl = (h_alias_cl, 100) if equipos_clubes_hist and h_alias_cl in equipos_clubes_hist else (process.extractOne(h_csv, equipos_clubes_hist, scorer=fuzz.token_sort_ratio) if equipos_clubes_hist else None)
+                    a_match_cl = (a_alias_cl, 100) if equipos_clubes_hist and a_alias_cl in equipos_clubes_hist else (process.extractOne(a_csv, equipos_clubes_hist, scorer=fuzz.token_sort_ratio) if equipos_clubes_hist else None)
 
                     cl_score = min(h_match_cl[1] if h_match_cl else 0, a_match_cl[1] if a_match_cl else 0)
 

@@ -60,6 +60,8 @@ ALIAS_GLOBAL = {
     "Ipswich": "Ipswich",                  # DB stores "Ipswich"
     "Ipswich Town": "Ipswich",
     "Coventry City": "Coventry City",
+    "Coventry": "Coventry City",           # nombres cortos usados por algunas casas de apuestas
+    "Coventry FC": "Coventry City",
 
     # ── CLUBES — LA LIGA ──────────────────────────────────────────────────────
     "Atlético Madrid": "Ath Madrid",       # DB stores "Ath Madrid"
