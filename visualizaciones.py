@@ -73,8 +73,15 @@ def corregir_nombre_equipo(nombre_api, lista_db):
     # If the alias-resolved name is directly in the DB, use it as-is
     if nombre_norm in lista_db:
         return nombre_norm
-    # Otherwise fall back to fuzzy matching
-    mejor_match, score = process.extractOne(nombre_norm.strip(), lista_db, scorer=fuzz.token_set_ratio)
+    # Otherwise fall back to fuzzy matching.
+    # NOTA: usamos token_sort_ratio, NO token_set_ratio. token_set_ratio infla
+    # el score cuando dos nombres comparten una sola palabra genérica ("City",
+    # "United", "Real", etc.), lo que causaba falsos positivos graves
+    # (ej: "Coventry City" -> "Man City" con score 67, y "Sociedad Real" ->
+    # "Sociedad" con score 100). token_sort_ratio exige que el resto del
+    # nombre también se parezca, y sigue detectando variantes reales
+    # (typos, orden de palabras, abreviaciones no cubiertas por el alias).
+    mejor_match, score = process.extractOne(nombre_norm.strip(), lista_db, scorer=fuzz.token_sort_ratio)
     return mejor_match if score > 72 else nombre_norm
 
 def cargar_modelo():
@@ -486,9 +493,15 @@ if menu == "Análisis del Día":
             home_raw, away_raw = partido_texto.split(" vs ")
 
             hist_table = "historial_multiliga_ml"
+            # Unimos HomeTeam y AwayTeam: un equipo que sólo aparece como
+            # visitante en el historial (ej. recién ascendido, o con pocos
+            # partidos jugados de local) quedaba fuera de la lista y forzaba
+            # un fuzzy match incorrecto contra otro equipo.
             equipos_db = pd.read_sql(
-                f"SELECT DISTINCT HomeTeam FROM {hist_table}", conn
-            )['HomeTeam'].tolist()
+                f"SELECT DISTINCT HomeTeam AS Team FROM {hist_table} "
+                f"UNION SELECT DISTINCT AwayTeam AS Team FROM {hist_table}",
+                conn
+            )['Team'].tolist()
 
             home_team = corregir_nombre_equipo(home_raw, equipos_db)
             away_team = corregir_nombre_equipo(away_raw, equipos_db)

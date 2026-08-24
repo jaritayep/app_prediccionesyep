@@ -66,7 +66,7 @@ ALIAS_GLOBAL = {
     "Atletico Madrid": "Ath Madrid",
     "Atlético de Madrid": "Ath Madrid",
     "Atletico de Madrid": "Ath Madrid",
-    "Athletic Club": "Athletic Club",      # DB stores "Athletic Club" (Bilbao)
+    "Athletic Club": "Ath Bilbao",         # DB stores "Ath Bilbao" (football-data.co.uk short name)
     "Athletic Bilbao": "Ath Bilbao",       # DB stores "Ath Bilbao"
     "Real Betis": "Betis",                 # DB stores "Betis"
     "Real Sociedad": "Sociedad",           # DB stores "Sociedad"
@@ -93,9 +93,8 @@ ALIAS_GLOBAL = {
     "Gladbach": "M'gladbach",
     "B. Monchengladbach": "M'gladbach",
     "BMG": "M'gladbach",
-    "Mönchengladbach": "Borussia Monchengladbach",
-    "Borussia Mönchengladbach": "Borussia Monchengladbach",
-    "BMG": "Borussia Monchengladbach",
+    "Mönchengladbach": "M'gladbach",
+    "Borussia Mönchengladbach": "M'gladbach",
     "FC Bayern": "Bayern Munich",          # DB stores "Bayern Munich"
     "Bayern": "Bayern Munich",
     "FC Bayern München": "Bayern Munich",
