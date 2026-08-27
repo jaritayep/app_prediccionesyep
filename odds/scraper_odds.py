@@ -262,7 +262,14 @@ def scrapear_liga(nombre_liga: str, config: dict, locales_db: list, visitas_db: 
         fecha_dt = datetime.fromisoformat(partido["inicio"].replace("Z", "+00:00"))
         fecha_local = fecha_dt.astimezone()
 
-        fila = {"liga": nombre_liga, "home": home_name, "away": away_name, "inicio_local": fecha_local.strftime("%Y-%m-%d %H:%M")}
+        fila = {
+            "match_id": mid,
+            "liga": nombre_liga,
+            "home": home_name,
+            "away": away_name,
+            "inicio_local": fecha_local.strftime("%Y-%m-%d %H:%M"),
+            "actualizado": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
         for k, v in straight["1x2"].items(): fila[f"1x2_{k}"] = v
         for h in [h for h in straight["handicap"] if not h["es_alt"]][:2]: fila[f"hdp_{h['lado']}_{h['handicap']}"] = h["odds"]
@@ -326,15 +333,35 @@ def main():
         return []
 
     os.makedirs("odds_data", exist_ok=True)
-    fecha_str = hoy.strftime("%Y%m%d")
+    csv_path = "odds_data/pinnacle_odds.csv"
 
-    csv_path = f"odds_data/pinnacle_{fecha_str}.csv"
-    df = pd.DataFrame(todos)
-    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    
+    df_nuevo = pd.DataFrame(todos)
+    df_nuevo["match_id"] = df_nuevo["match_id"].astype(str)
+
+    if os.path.exists(csv_path):
+        df_existente = pd.read_csv(csv_path, encoding="utf-8-sig", dtype={"match_id": str})
+
+        ids_existentes = set(df_existente["match_id"])
+        ids_nuevos = set(df_nuevo["match_id"])
+        n_actualizados = len(ids_existentes & ids_nuevos)
+        n_nuevos = len(ids_nuevos - ids_existentes)
+
+        # concat + drop_duplicates(keep="last") = upsert: filas nuevas
+        # reemplazan por completo a las existentes con el mismo match_id
+        combinado = pd.concat([df_existente, df_nuevo], ignore_index=True)
+        combinado = combinado.drop_duplicates(subset="match_id", keep="last")
+    else:
+        combinado = df_nuevo
+        n_nuevos = len(df_nuevo)
+        n_actualizados = 0
+
+    combinado = combinado.sort_values("inicio_local").reset_index(drop=True)
+    combinado.to_csv(csv_path, index=False, encoding="utf-8-sig")
+
     print(f"\n{'='*65}")
-    print(f"✅ ¡Éxito! {len(todos)} partidos guardados.")
-    print(f"📂 Archivo limpio listo para la IA: {csv_path}")
+    print(f"✅ ¡Éxito! {n_nuevos} partidos nuevos, {n_actualizados} actualizados.")
+    print(f"📊 Total acumulado en el archivo: {len(combinado)} partidos.")
+    print(f"📂 Archivo: {csv_path}")
     print("=" * 65)
 
 if __name__ == "__main__":
