@@ -70,7 +70,7 @@ ALIAS_GLOBAL = {
     "Atletico de Madrid": "Ath Madrid",
     "Athletic Club": "Ath Bilbao",         # DB stores "Ath Bilbao" (football-data.co.uk short name)
     "Athletic Bilbao": "Ath Bilbao",       # DB stores "Ath Bilbao"
-    "Barcelona": "Barça",
+    "Barça": "Barcelona",
     "Real Betis": "Betis",                 # DB stores "Betis"
     "Real Sociedad": "Sociedad",           # DB stores "Sociedad"
     "Celta Vigo": "Celta",                 # DB stores "Celta"
