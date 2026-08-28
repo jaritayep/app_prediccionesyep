@@ -13,6 +13,8 @@ import pandas as pd
 from datetime import datetime, timezone, timedelta
 from thefuzz import process
 
+from diccionario_alias import normalizar_nombre
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────────────────────────────────────
@@ -36,6 +38,7 @@ PERIODO_PARTIDO = 0
 KEYWORDS_CORNERS = ["corner", "córner", "rincón"]
 KEYWORDS_SHOTS   = ["shot", "tiro", "disparo", "shots on"]
 REQUEST_DELAY = 1.5
+UMBRAL_FUZZY = 80  # score mínimo (0-100) para aceptar un match por fuzzy fallback
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONEXIÓN A BASE DE DATOS
@@ -103,6 +106,44 @@ def contiene_keyword(texto: str, keywords: list) -> bool:
     return any(kw in texto.lower() for kw in keywords)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MATCHING DE EQUIPOS (ALIAS PRIMERO, FUZZY COMO FALLBACK)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def encontrar_match(nombre_pinnacle: str, lista_db: list):
+    """
+    Empareja el nombre de un equipo tal como lo devuelve Pinnacle con el
+    nombre correspondiente en la base de datos.
+
+    1) Normaliza el nombre de Pinnacle vía diccionario_alias y lo compara
+       (case-insensitive) contra cada nombre de la DB, también normalizado.
+       Esto resuelve casos donde fuzzy matching falla por longitud/formato
+       muy distinto, ej: "Wolverhampton Wanderers" (Pinnacle) vs "Wolves" (DB).
+    2) Si no hay match exacto tras normalizar, cae a fuzzy matching sobre
+       los nombres ya normalizados (cubre erratas o equipos no listados
+       en el diccionario, ej. clubes de La Liga/Bundesliga/Ligue 1).
+
+    Devuelve (nombre_tal_como_esta_en_lista_db, score) o (None, 0).
+    """
+    candidato = normalizar_nombre(nombre_pinnacle)
+    candidato_lower = candidato.lower()
+
+    lista_normalizada = [normalizar_nombre(n) for n in lista_db]
+
+    # 1) Match exacto tras normalizar alias
+    for original, normalizado in zip(lista_db, lista_normalizada):
+        if normalizado.lower() == candidato_lower:
+            return original, 100
+
+    # 2) Fallback: fuzzy sobre los nombres normalizados
+    match = process.extractOne(candidato, lista_normalizada)
+    if match:
+        nombre_matcheado, score = match
+        idx = lista_normalizada.index(nombre_matcheado)
+        return lista_db[idx], score
+
+    return None, 0
+
+# ─────────────────────────────────────────────────────────────────────────────
 # AUTO-DESCUBRIMIENTO DE LIGAS (EL RADAR DE IDs)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -119,8 +160,8 @@ def auto_descubrir_ligas():
         name_lower = league.get("name", "").lower()
         l_id = league.get("id")
         
-        # Cruzamos el nombre de la liga y el país para una precisión absoluta
-        if "premier league" in name_lower and "england" in name_lower:
+        # Filtro estricto para evitar ligas menores inglesas (Isthmian, Northern, Southern, etc.)
+        if "premier league" in name_lower and "england" in name_lower and not any(sub in name_lower for sub in ["isthmian", "northern", "southern", "women", "u21", "reserve"]):
             ligas_oficiales["Premier League"] = {"league_id": l_id, "pais": "Inglaterra"}
         elif ("la liga" in name_lower or "laliga" in name_lower) and "spain" in name_lower:
             ligas_oficiales["La Liga"] = {"league_id": l_id, "pais": "España"}
@@ -232,11 +273,15 @@ def scrapear_liga(nombre_liga: str, config: dict, locales_db: list, visitas_db: 
 
     partidos_filtrados = []
     for p in partidos:
-        match_home = process.extractOne(p["home"], locales_db)
-        match_away = process.extractOne(p["away"], visitas_db)
-        if match_home and match_away and match_home[1] > 80 and match_away[1] > 80:
+        match_home, score_home = encontrar_match(p["home"], locales_db)
+        match_away, score_away = encontrar_match(p["away"], visitas_db)
+        if match_home and match_away and score_home > UMBRAL_FUZZY and score_away > UMBRAL_FUZZY:
+            # Sobrescribimos con el nombre tal como está en la DB para que el
+            # CSV resultante calce exactamente con tabla_predicciones_limpia.
+            p["home"] = match_home
+            p["away"] = match_away
             partidos_filtrados.append(p)
-            
+
     if not partidos_filtrados:
         print(f"  ⚠ Ningún partido de {nombre_liga} programado en tu DB para hoy/mañana.")
         return []
